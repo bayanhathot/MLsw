@@ -1,15 +1,16 @@
 import tkinter as tk
 from tkinter import ttk
 
+import database.mock_database
 from database.database import HeavyDB
 
 
 class InventoryApp:
     """Tkinter inventory UI"""
 
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk,db = None) -> None:
         self.root = root
-        self.db = HeavyDB()  # HINT: BAD PRACTICE, TIGHT COUPLING — refactor via dependency injection
+        self.db = db if db is not None else HeavyDB()
 
         main = ttk.Frame(root, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
@@ -19,7 +20,7 @@ class InventoryApp:
 
         btn_row = ttk.Frame(main)
         btn_row.pack(fill=tk.X, pady=(0, 4))
-        self.add_btn = ttk.Button(btn_row, text="Add", command=self._on_add)
+        self.add_btn = ttk.Button(btn_row, text="add", command=self._on_add)
         self.add_btn.pack(side=tk.LEFT, padx=(0, 4))
         self.remove_btn = ttk.Button(btn_row, text="Remove", command=self._on_remove)
         self.remove_btn.pack(side=tk.LEFT)
@@ -65,4 +66,5 @@ if __name__ == "__main__":
     r = tk.Tk()
     r.title("InventoryManager v1.0")
     InventoryApp(r)
+    r.mainloop()
     r.mainloop()

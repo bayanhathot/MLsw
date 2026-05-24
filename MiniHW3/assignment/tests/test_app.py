@@ -7,13 +7,13 @@ import tkinter as tk
 import unittest
 
 from app import InventoryApp
-
+from database.database import HeavyDB
 
 class TestInventoryApp(unittest.TestCase):
     def setUp(self) -> None:
         self.root = tk.Tk()
         self.root.withdraw()
-        self.app = InventoryApp(self.root)  # HINT: refactor this to use dependency injection
+        self.app = InventoryApp(self.root,HeavyDB)  # HINT: refactor this to use dependency injection
 
     def tearDown(self) -> None:
         self.root.destroy()
