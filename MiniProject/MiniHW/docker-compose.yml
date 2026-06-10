@@ -1,0 +1,10 @@
+services:
+  web:
+    build:
+      context: ./web
+    hostname: web
+    container_name: web
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./web:/app
