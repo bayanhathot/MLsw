@@ -1,7 +1,7 @@
-from flask import flask
+from flask import Flask
 
 def create_app():
-    app = flask(__name__)
+    app = Flask(__name__)
     # Secret key to secure sessions and cookies.
     # It can be any random string, but it must be kept secret.
     app.config['SECRET_KEY'] = 'jfdnosandg fsghaajsfgas'
