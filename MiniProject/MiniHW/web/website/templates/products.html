@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Product Manager{% endblock %}
+{% block content %}
+
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Product Manager</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 50%;
+            margin-top: 1em;
+        }
+
+        th, td {
+            border: 1px solid #ccc;
+            padding: 0.5em;
+            text-align: left;
+        }
+
+        form {
+            display: inline;
+        }
+
+        input {
+            margin-right: 0.5em;
+        }
+    </style>
+</head>
+<body>
+<h1>Product Manager</h1>
+<!-- Add Product -->
+<section>
+    <h2>Add Product</h2>
+    <form action="{{ url_for("views.add_product") }}" method="post">
+        <input type="text" name="name" placeholder="Product Name" required>
+        <input type="number" step="0.01" name="price" placeholder="Price" required>
+    <button type="submit">Add</button>
+    </form>
+</section>
+<!-- List & Remove Products -->
+<section>
+    <h2>Existing Products</h2>
+    {% if products %}
+    <table>
+        <thead>
+        <tr>
+            <th>Name</th>
+            <th>Price</th>
+            <th>Action</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for p in products %}
+        <tr>
+            <td>{{ p.name }}</td>
+            <td>{{ "%.2f"|format(p.price|float) }}</td>
+            <td>
+                <form action="{{ url_for("views.delete_product", name=p.name) }}"
+                method="post">
+                <button type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No products available.</p>
+    {% endif %}
+</section>
+</body>
+</html>
+{% endblock %}
