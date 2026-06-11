@@ -1,5 +1,13 @@
+<<<<<<< HEAD
 flask
 flask_login
 flask_sqlalchemy
 pytest
 flask_pymongo
+=======
+Flask==3.0.3
+Flask-Login==0.6.3
+Flask-SQLAlchemy==3.1.1
+pytest==8.3.4
+Flask-PyMongo==2.3.0
+>>>>>>> e1db3af3d008d118371d94880fadb9e17a84e1c9
