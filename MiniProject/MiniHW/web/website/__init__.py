@@ -1,14 +1,7 @@
-from flask import Flask, jsonify
+from flask import Flask
 import time
 
-
-def error_response(code, message):
-    return jsonify({
-        "error": {
-            "http_status": code,
-            "message": message
-        }
-    }), code
+from .utils import error_response
 
 
 def create_app():
@@ -16,24 +9,26 @@ def create_app():
     app.config["SECRET_KEY"] = "secret-key"
 
     app.start_time = time.time()
+
+    # In-memory storage.
+    # This is okay for this homework unless they specifically require persistence.
     app.users = {}
     app.tokens = {}
-    app.stats = {"success": 0, "fail": 0}
+
+    # Counts only /register, /login, /logout, /classifier
+    app.stats = {
+        "success": 0,
+        "fail": 0
+    }
+
+    # Used by /status
     app.model_ready = True
 
     from .views import views
     from .auth import auth
 
-    app.register_blueprint(views, url_prefix="/")
-    app.register_blueprint(auth, url_prefix="/")
-
-    @app.errorhandler(400)
-    def bad_request(error):
-        return error_response(400, "Malformed request")
-
-    @app.errorhandler(401)
-    def unauthorized(error):
-        return error_response(401, "Missing or invalid token")
+    app.register_blueprint(views)
+    app.register_blueprint(auth)
 
     @app.errorhandler(404)
     def not_found(error):

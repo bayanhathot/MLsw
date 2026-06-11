@@ -1,70 +1,30 @@
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
+
+from .utils import (
+    error_response,
+    increment_success,
+    increment_fail,
+    get_authenticated_user,
+    get_json_body,
+    validate_username_password,
+)
 
 auth = Blueprint("auth", __name__)
 
 
-def error_response(code, message):
-    return jsonify({
-        "error": {
-            "http_status": code,
-            "message": message
-        }
-    }), code
-
-
-def increment_success():
-    current_app.stats["success"] += 1
-
-
-def increment_fail():
-    current_app.stats["fail"] += 1
-
-
-def get_bearer_token():
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return None
-
-    token = auth_header[len("Bearer "):].strip()
-    if not token:
-        return None
-
-    return token
-
-
-def get_authenticated_user():
-    token = get_bearer_token()
-    if not token:
-        return None, None
-
-    username = current_app.tokens.get(token)
-    if not username:
-        return None, None
-
-    return token, username
-
-
 @auth.route("/register", methods=["POST"])
 def register():
-    if not request.is_json:
+    data = get_json_body()
+
+    if data is None:
         increment_fail()
         return error_response(400, "Malformed request")
 
-    data = request.get_json(silent=True)
-    if not data:
-        increment_fail()
-        return error_response(400, "Malformed request")
+    username, password = validate_username_password(data)
 
-    username = data.get("username")
-    password = data.get("password")
-
-    if not isinstance(username, str) or not isinstance(password, str):
-        increment_fail()
-        return error_response(400, "Malformed request")
-
-    if not username.strip() or not password.strip():
+    if username is None or password is None:
         increment_fail()
         return error_response(400, "Malformed request")
 
@@ -73,34 +33,30 @@ def register():
         return error_response(409, "Username already exists")
 
     current_app.users[username] = generate_password_hash(password)
+
     increment_success()
-    return jsonify({"message": "User registered successfully"}), 201
+    return jsonify({
+        "message": "User registered successfully"
+    }), 201
 
 
 @auth.route("/login", methods=["POST"])
 def login():
-    if not request.is_json:
+    data = get_json_body()
+
+    if data is None:
         increment_fail()
         return error_response(400, "Malformed request")
 
-    data = request.get_json(silent=True)
-    if not data:
-        increment_fail()
-        return error_response(400, "Malformed request")
+    username, password = validate_username_password(data)
 
-    username = data.get("username")
-    password = data.get("password")
-
-    if not isinstance(username, str) or not isinstance(password, str):
-        increment_fail()
-        return error_response(400, "Malformed request")
-
-    if not username.strip() or not password.strip():
+    if username is None or password is None:
         increment_fail()
         return error_response(400, "Malformed request")
 
     stored_password_hash = current_app.users.get(username)
-    if not stored_password_hash:
+
+    if stored_password_hash is None:
         increment_fail()
         return error_response(401, "Invalid username or password")
 
@@ -112,17 +68,22 @@ def login():
     current_app.tokens[token] = username
 
     increment_success()
-    return jsonify({"token": token}), 200
+    return jsonify({
+        "token": token
+    }), 200
 
 
 @auth.route("/logout", methods=["POST"])
 def logout():
     token, username = get_authenticated_user()
 
-    if not token:
+    if token is None:
         increment_fail()
         return error_response(401, "Missing or invalid token")
 
     current_app.tokens.pop(token, None)
+
     increment_success()
-    return jsonify({"message": "Logged out successfully"}), 200
+    return jsonify({
+        "message": "Logged out successfully"
+    }), 200

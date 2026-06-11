@@ -1,7 +1,5 @@
 import uuid
 
-import requests
-
 
 def base_url() -> str:
     host = "localhost"

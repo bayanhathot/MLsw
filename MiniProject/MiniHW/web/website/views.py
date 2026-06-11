@@ -1,44 +1,16 @@
 from flask import Blueprint, jsonify, current_app, request
+from PIL import Image
 import time
+import os
+
+from .utils import (
+    error_response,
+    increment_success,
+    increment_fail,
+    get_authenticated_user,
+)
 
 views = Blueprint("views", __name__)
-
-
-def error_response(code, message):
-    return jsonify({
-        "error": {
-            "http_status": code,
-            "message": message
-        }
-    }), code
-
-
-def get_bearer_token():
-    auth_header = request.headers.get("Authorization", "")
-
-    if not auth_header.startswith("Bearer "):
-        return None
-
-    token = auth_header[len("Bearer "):].strip()
-
-    if not token:
-        return None
-
-    return token
-
-
-def get_authenticated_user():
-    token = get_bearer_token()
-
-    if not token:
-        return None, None
-
-    username = current_app.tokens.get(token)
-
-    if not username:
-        return None, None
-
-    return token, username
 
 
 @views.route("/", methods=["GET"])
@@ -52,7 +24,7 @@ def home():
 def status():
     token, username = get_authenticated_user()
 
-    if not token:
+    if token is None:
         return error_response(401, "Missing or invalid token")
 
     uptime = time.time() - current_app.start_time
@@ -68,3 +40,114 @@ def status():
             "api_version": 1
         }
     }), 200
+
+
+@views.route("/classifier", methods=["POST"])
+def classifier():
+    token, username = get_authenticated_user()
+
+    if token is None:
+        increment_fail()
+        return error_response(401, "Missing or invalid token")
+
+    if "image" not in request.files:
+        increment_fail()
+        return error_response(400, "Malformed request")
+
+    image_file = request.files["image"]
+
+    if image_file.filename is None or image_file.filename == "":
+        increment_fail()
+        return error_response(400, "Malformed request")
+
+    filename = image_file.filename.lower()
+
+    if not (filename.endswith(".png") or filename.endswith(".jpeg")):
+        increment_fail()
+        return error_response(400, "Unsupported image format")
+
+    if image_file.mimetype not in ["image/png", "image/jpeg"]:
+        increment_fail()
+        return error_response(400, "Unsupported image format")
+
+    try:
+        image = Image.open(image_file.stream)
+        image.verify()
+    except Exception:
+        increment_fail()
+        return error_response(400, "Unsupported image format")
+
+    try:
+        matches = classify_image(filename)
+    except Exception:
+        increment_fail()
+        return error_response(500, "Internal server error")
+
+    if not valid_matches(matches):
+        increment_fail()
+        return error_response(500, "Internal server error")
+
+    increment_success()
+    return jsonify({
+        "matches": matches
+    }), 200
+
+
+def classify_image(filename):
+    """
+    Replace this function with your real model later.
+
+    The interface format requires:
+    [
+        {"name": string, "score": number}
+    ]
+
+    score must satisfy:
+    0.0 < score <= 1.0
+    and total score sum <= 1.0
+    """
+
+    # Temporary format-correct placeholder.
+    # For final submission, connect this to a real image classification model.
+    return [
+        {
+            "name": "unknown",
+            "score": 1.0
+        }
+    ]
+
+
+def valid_matches(matches):
+    if not isinstance(matches, list):
+        return False
+
+    if len(matches) == 0:
+        return False
+
+    total_score = 0.0
+
+    for match in matches:
+        if not isinstance(match, dict):
+            return False
+
+        if set(match.keys()) != {"name", "score"}:
+            return False
+
+        name = match["name"]
+        score = match["score"]
+
+        if not isinstance(name, str):
+            return False
+
+        if not isinstance(score, (int, float)):
+            return False
+
+        if score <= 0.0 or score > 1.0:
+            return False
+
+        total_score += score
+
+    if total_score <= 0.0 or total_score > 1.0:
+        return False
+
+    return True
