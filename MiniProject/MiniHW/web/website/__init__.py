@@ -1,24 +1,20 @@
 from flask import Flask
+import time
 
 def create_app():
     app = Flask(__name__)
-    # Secret key to secure sessions and cookies.
-    # It can be any random string, but it must be kept secret.
-    app.config['SECRET_KEY'] = 'jfdnosandg fsghaajsfgas'
+    app.config["SECRET_KEY"] = "secret-key"
+
+    app.start_time = time.time()
+    app.users = {}
+    app.tokens = {}
+    app.stats = {"success": 0, "fail": 0}
+    app.model_ready = True
 
     from .views import views
     from .auth import auth
 
-    # Register the blueprints with the Flask app
-    # You can specify a URL prefix for each blueprint if you want.
-    app.register_blueprint(views, url_prefix='/')
-    app.register_blueprint(auth, url_prefix='/')
-
-    # MONGODB ADDITION.
-    from pymongo import MongoClient
-    from .models import ProductModel
-    app.config["MONGO_URI"] = "mongodb://db:27017/db"
-    app.mongo = MongoClient(app.config["MONGO_URI"])
-    app.mongo.products = ProductModel(app.mongo.mydb.products)
+    app.register_blueprint(views, url_prefix="/")
+    app.register_blueprint(auth, url_prefix="/")
 
     return app
