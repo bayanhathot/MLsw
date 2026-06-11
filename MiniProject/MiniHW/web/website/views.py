@@ -1,47 +1,70 @@
-from flask import Blueprint, render_template
+from flask import Blueprint, jsonify, current_app, request
+import time
 
-views = Blueprint('views', __name__)
+views = Blueprint("views", __name__)
 
-@views.route('/')
+
+def error_response(code, message):
+    return jsonify({
+        "error": {
+            "http_status": code,
+            "message": message
+        }
+    }), code
+
+
+def get_bearer_token():
+    auth_header = request.headers.get("Authorization", "")
+
+    if not auth_header.startswith("Bearer "):
+        return None
+
+    token = auth_header[len("Bearer "):].strip()
+
+    if not token:
+        return None
+
+    return token
+
+
+def get_authenticated_user():
+    token = get_bearer_token()
+
+    if not token:
+        return None, None
+
+    username = current_app.tokens.get(token)
+
+    if not username:
+        return None, None
+
+    return token, username
+
+
+@views.route("/", methods=["GET"])
 def home():
-    return render_template('home.html'),200
+    return jsonify({
+        "message": "PictureServer is running"
+    }), 200
 
-@views.route('/about')
-def about():
-    return "<h1>About</h1><p>This is the about page!</p>"
 
-@views.route('/status')
+@views.route("/status", methods=["GET"])
 def status():
-    return {"version": "1.0", "status": "OK"}, 200
+    token, username = get_authenticated_user()
 
-@views.route('/secret')
-def secret():
-    return {"error": {"http_status": 401,"message": "You are not logged in"}}, 401
+    if not token:
+        return error_response(401, "Missing or invalid token")
 
-from flask import current_app, redirect, url_for
-from pymongo.errors import DuplicateKeyError
-from flask import request, jsonify
+    uptime = time.time() - current_app.start_time
 
-@views.route("/products")
-def products():
-    products = current_app.mongo.products.all()
-    return render_template("products.html", products=products)
-
-@views.route("/add-product", methods=["POST"])
-def add_product():
-    # pull form-fields instead of JSON
-    name = request.form.get("name")
-    price = request.form.get("price")
-    try:
-        inserted = current_app.mongo.products.insert(name, price)
-        return redirect(url_for("views.products"))
-    except DuplicateKeyError:
-        return jsonify({"error": "product name already exists"}),409
-
-@views.route("/delete-product/<name>", methods=["POST"])
-def delete_product(name):
-    deleted = current_app.mongo.products.remove(name)
-    if deleted:
-        return redirect(url_for("views.products"))
-    else:
-        return jsonify({"error": "not found"}), 404
+    return jsonify({
+        "status": {
+            "uptime": uptime,
+            "processed": {
+                "success": current_app.stats["success"],
+                "fail": current_app.stats["fail"]
+            },
+            "health": "ok" if current_app.model_ready else "error",
+            "api_version": 1
+        }
+    }), 200
