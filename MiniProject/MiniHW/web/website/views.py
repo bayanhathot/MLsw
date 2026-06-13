@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, current_app, request
+from flask import Blueprint, jsonify, current_app, request, render_template_string
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -19,10 +19,10 @@ views = Blueprint("views", __name__)
 
 @views.route("/", methods=["GET"])
 def home():
-    return jsonify({
-        "message": "PictureServer is running"
-    }), 200
-
+    # פשוט קורא ומציג את ה-HTML שכתבנו למעלה
+    with open("index.html", "r", encoding="utf-8") as f:
+        html_content = f.read()
+    return render_template_string(html_content)
 
 @views.route("/status", methods=["GET"])
 def status():
