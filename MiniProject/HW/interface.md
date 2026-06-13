@@ -76,7 +76,7 @@ The request body SHALL be a JSON object containing `username` and `password` str
 #### GOOD
 
 ```bash
-curl -X POST http://localhost/register \
+curl -X POST http://localhost:5000/register \
      -H "Content-Type: application/json" \
      -d "{\"username\": \"testuser\", \"password\": \"securepassword123\"}"
 
@@ -186,7 +186,7 @@ Supported image types SHALL be PNG and JPEG. The images uploaded MUST end in ".p
 #### GOOD
 
 ```bash
-curl -X POST http://localhost/classifier \
+curl -X POST http://localhost:5000/classifier \
      -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR..." \
      -H "Content-Type: multipart/form-data" \
      -F "image=@./somepic.png;type=image/png"
@@ -291,7 +291,7 @@ The "health" SHALL be "ok" if classification can be done, and "error" otherwise.
 ### Example
 
 ```bash
-curl -X GET http://localhost/status \
+curl -X GET http://localhost:5000/status \
      -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR..."
 
 ```
