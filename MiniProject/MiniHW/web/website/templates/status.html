@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <span class="pill">Protected API status</span>
+    <h1>Server status</h1>
+    <p>The response below comes directly from <code>GET /status</code>.</p>
+
+    <div class="grid">
+        <div class="metric"><span>Uptime</span><strong id="uptime">—</strong></div>
+        <div class="metric"><span>Success</span><strong id="successCount">—</strong></div>
+        <div class="metric"><span>Fail</span><strong id="failCount">—</strong></div>
+    </div>
+
+    <div class="grid">
+        <div class="metric"><span>Health</span><strong id="health">—</strong></div>
+        <div class="metric"><span>API version</span><strong id="apiVersion">—</strong></div>
+        <div class="metric"><span>Auth</span><strong>Bearer</strong></div>
+    </div>
+
+    <button class="primary" id="statusButton" type="button">Refresh status</button>
+    <div id="message" class="message"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    requireTokenForPage();
+
+    const statusButton = document.getElementById("statusButton");
+    const message = document.getElementById("message");
+
+    function showMessage(text, type) {
+        message.textContent = text;
+        message.className = "message " + type;
+    }
+
+    async function refreshStatus() {
+        statusButton.disabled = true;
+        statusButton.textContent = "Refreshing...";
+        try {
+            const response = await apiFetch("/status");
+            const data = await response.json();
+            if (response.ok) {
+                document.getElementById("uptime").textContent = data.status.uptime.toFixed(1) + "s";
+                document.getElementById("successCount").textContent = data.status.processed.success;
+                document.getElementById("failCount").textContent = data.status.processed.fail;
+                document.getElementById("health").textContent = data.status.health;
+                document.getElementById("apiVersion").textContent = data.status.api_version;
+                showMessage("Status refreshed.", "success");
+            } else {
+                showMessage(data.error?.message || "Could not get status.", "error");
+            }
+        } catch (error) {
+            showMessage("Could not connect to the server.", "error");
+        } finally {
+            statusButton.disabled = false;
+            statusButton.textContent = "Refresh status";
+        }
+    }
+
+    statusButton.addEventListener("click", refreshStatus);
+    refreshStatus();
+</script>
+{% endblock %}

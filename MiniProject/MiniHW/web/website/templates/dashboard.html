@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <div>
+        <span class="pill">Logged in as {{ username }}</span>
+        <h1>Your classification dashboard.</h1>
+        <p>
+            Use this page for the video demo: check server status, upload a valid image,
+            upload an invalid file, then verify that success and fail counters changed.
+        </p>
+        <div class="actions">
+            <a class="button" href="/classify">Classify image</a>
+            <a class="button secondary" href="/status-page">Check status</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Live server summary</h2>
+        <p class="small">Fetched from the protected <code>GET /status</code> endpoint.</p>
+        <div class="grid">
+            <div class="metric"><span>Success</span><strong id="successCount">—</strong></div>
+            <div class="metric"><span>Fail</span><strong id="failCount">—</strong></div>
+            <div class="metric"><span>Health</span><strong id="healthText">—</strong></div>
+        </div>
+        <button class="primary secondary" id="refreshButton" type="button">Refresh status</button>
+        <div id="message" class="message"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    requireTokenForPage();
+
+    const successCount = document.getElementById("successCount");
+    const failCount = document.getElementById("failCount");
+    const healthText = document.getElementById("healthText");
+    const refreshButton = document.getElementById("refreshButton");
+    const message = document.getElementById("message");
+
+    function showMessage(text, type) {
+        message.textContent = text;
+        message.className = "message " + type;
+    }
+
+    async function loadStatus() {
+        refreshButton.disabled = true;
+        refreshButton.textContent = "Refreshing...";
+        try {
+            const response = await apiFetch("/status");
+            const data = await response.json();
+            if (response.ok) {
+                successCount.textContent = data.status.processed.success;
+                failCount.textContent = data.status.processed.fail;
+                healthText.textContent = data.status.health;
+                showMessage("Status loaded.", "success");
+            } else {
+                showMessage(data.error?.message || "Could not load status.", "error");
+            }
+        } catch (error) {
+            showMessage("Could not connect to the server.", "error");
+        } finally {
+            refreshButton.disabled = false;
+            refreshButton.textContent = "Refresh status";
+        }
+    }
+
+    refreshButton.addEventListener("click", loadStatus);
+    loadStatus();
+</script>
+{% endblock %}

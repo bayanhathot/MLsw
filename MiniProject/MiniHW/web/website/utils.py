@@ -1,82 +1,80 @@
-from flask import jsonify, request, current_app
+from functools import wraps
+from typing import Optional
+
+from flask import current_app, jsonify, redirect, request, url_for
+
+COUNTED_ENDPOINTS = {"/register", "/login", "/logout", "/classifier"}
 
 
-def error_response(code, message):
-    return jsonify({
+def json_error(message: str, http_status: int):
+    response = jsonify({
         "error": {
-            "http_status": code,
-            "message": message
+            "http_status": http_status,
+            "message": message,
         }
-    }), code
+    })
+    response.status_code = http_status
+    return response
 
 
-def increment_success():
-    current_app.stats["success"] += 1
+def should_count_endpoint_failure() -> bool:
+    return request.path in COUNTED_ENDPOINTS
 
 
-def increment_fail():
-    current_app.stats["fail"] += 1
+def record_success() -> None:
+    current_app.extensions["stats"].increment_success()
 
 
-def get_bearer_token():
-    auth_header = request.headers.get("Authorization", "")
+def record_fail() -> None:
+    current_app.extensions["stats"].increment_fail()
 
-    parts = auth_header.split()
 
+def get_bearer_token() -> Optional[str]:
+    header = request.headers.get("Authorization", "")
+    parts = header.split()
     if len(parts) != 2:
         return None
-
-    if parts[0] != "Bearer":
+    scheme, token = parts
+    if scheme.lower() != "bearer" or not token:
         return None
-
-    token = parts[1].strip()
-
-    if not token:
-        return None
-
     return token
 
 
-def get_authenticated_user():
-    token = get_bearer_token()
-
-    if token is None:
-        return None, None
-
-    username = current_app.tokens.get(token)
-
-    if username is None:
-        return None, None
-
-    return token, username
+def get_cookie_token() -> Optional[str]:
+    return request.cookies.get("session_token")
 
 
-def get_json_body():
-    if not request.is_json:
-        return None
-
-    data = request.get_json(silent=True)
-
-    if not isinstance(data, dict):
-        return None
-
-    return data
+def username_from_token(token: Optional[str]) -> Optional[str]:
+    return current_app.extensions["sessions"].get_username(token)
 
 
-def validate_username_password(data):
-    username = data.get("username")
-    password = data.get("password")
+def require_bearer_auth(count_failure: bool = True):
+    """Decorator for protected API endpoints. It only accepts Authorization: Bearer."""
 
-    if not isinstance(username, str):
-        return None, None
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(*args, **kwargs):
+            token = get_bearer_token()
+            username = username_from_token(token)
+            if not username:
+                if count_failure:
+                    record_fail()
+                return json_error("Missing or invalid token", 401)
+            return view_func(username=username, token=token, *args, **kwargs)
 
-    if not isinstance(password, str):
-        return None, None
+        return wrapper
 
-    if not username.strip():
-        return None, None
+    return decorator
 
-    if not password.strip():
-        return None, None
 
-    return username, password
+def require_page_login(view_func):
+    """Decorator for browser pages. Uses the session cookie set after login."""
+
+    @wraps(view_func)
+    def wrapper(*args, **kwargs):
+        username = username_from_token(get_cookie_token())
+        if not username:
+            return redirect(url_for("routes.login_page"))
+        return view_func(username=username, *args, **kwargs)
+
+    return wrapper

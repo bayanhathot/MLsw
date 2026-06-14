@@ -1,9 +1,11 @@
 import uuid
 
+import requests
+
 
 def base_url() -> str:
     host = "localhost"
-    port = "5000" #TODO: REMEMBER TO CHANGE TO THE PORT YOUR SERVER IS RUNNING ON
+    port = "5000"
     return f"http://{host}:{port}"
 
 

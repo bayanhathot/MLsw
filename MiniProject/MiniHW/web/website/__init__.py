@@ -1,45 +1,37 @@
 from flask import Flask
-import time
 
-from .utils import error_response
+from .routes import bp as routes_bp
+from .store import JsonUserStore, ProcessedStats, SessionStore
+from .utils import json_error, should_count_endpoint_failure
 
 
 def create_app():
     app = Flask(__name__)
-    app.config["SECRET_KEY"] = "secret-key"
+    app.config.from_prefixed_env()
+    app.config.setdefault("SECRET_KEY", "dev-secret-key-change-me")
 
-    app.start_time = time.time()
+    app.extensions["users"] = JsonUserStore("instance/users.json")
+    app.extensions["sessions"] = SessionStore()
+    app.extensions["stats"] = ProcessedStats()
 
-    # In-memory storage.
-    # This is okay for this homework unless they specifically require persistence.
-    app.users = {}
-    app.tokens = {}
+    app.register_blueprint(routes_bp)
 
-    # Counts only /register, /login, /logout, /classifier
-    app.stats = {
-        "success": 0,
-        "fail": 0
-    }
-
-    # Used by /status
-    app.model_ready = True
-
-    from .views import views
-    from .auth import auth
-
-    app.register_blueprint(views)
-    app.register_blueprint(auth)
+    @app.errorhandler(400)
+    def bad_request(error):
+        return json_error("Malformed request", 400)
 
     @app.errorhandler(404)
     def not_found(error):
-        return error_response(404, "Not found")
+        return json_error("Endpoint not found", 404)
 
     @app.errorhandler(405)
     def method_not_allowed(error):
-        return error_response(405, "Unsupported http method")
+        if should_count_endpoint_failure():
+            app.extensions["stats"].increment_fail()
+        return json_error("Unsupported http method", 405)
 
     @app.errorhandler(500)
     def internal_server_error(error):
-        return error_response(500, "Internal server error")
+        return json_error("Internal server error", 500)
 
     return app

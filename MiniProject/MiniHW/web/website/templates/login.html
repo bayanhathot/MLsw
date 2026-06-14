@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <div>
+        <span class="pill">Secure image classification</span>
+        <h1>Log in and classify images instantly.</h1>
+        <p>
+            This website is a friendly browser client for the same API used by the tests:
+            register, login, status, classifier, and logout.
+        </p>
+    </div>
+
+    <div class="card compact-card">
+        <h2>Login</h2>
+        <p>Enter your account details. A bearer token will be saved in the browser for protected pages.</p>
+
+        <form id="loginForm">
+            <label for="username">Username</label>
+            <input id="username" type="text" autocomplete="username" required>
+
+            <label for="password">Password</label>
+            <input id="password" type="password" autocomplete="current-password" required>
+
+            <button class="primary" id="loginButton" type="submit">Login</button>
+        </form>
+
+        <div id="message" class="message"></div>
+
+        <p class="link-text">No account yet? <a href="/register">Create one</a></p>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const form = document.getElementById("loginForm");
+    const button = document.getElementById("loginButton");
+    const message = document.getElementById("message");
+
+    function showMessage(text, type) {
+        message.textContent = text;
+        message.className = "message " + type;
+    }
+
+    form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        button.disabled = true;
+        button.textContent = "Logging in...";
+        showMessage("Checking credentials...", "info");
+
+        const username = document.getElementById("username").value.trim();
+        const password = document.getElementById("password").value;
+
+        try {
+            const response = await fetch("/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json();
+
+            if (response.ok && data.token) {
+                setToken(data.token);
+                showMessage("Login successful. Redirecting...", "success");
+                setTimeout(() => window.location.href = "/dashboard", 500);
+            } else {
+                showMessage(data.error?.message || "Login failed", "error");
+            }
+        } catch (error) {
+            showMessage("Could not connect to the server.", "error");
+        } finally {
+            button.disabled = false;
+            button.textContent = "Login";
+        }
+    });
+</script>
+{% endblock %}
