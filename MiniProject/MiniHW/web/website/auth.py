@@ -101,17 +101,6 @@ def get_authenticated_user():
 
     return token, username
 
-# תיקון 1: הוספת מטפל שגיאות גלובלי לרמת ה-Blueprint עבור שגיאות 405
-@auth.app_errorhandler(405)
-def method_not_allowed_handler(e):
-    increment_fail()
-    return jsonify({
-        "error": {
-            "http_status": 405,
-            "message": "Unsupported http method"
-        }
-    }), 405
-
 @auth.route("/register", methods=["POST"])
 def register():
     ensure_auth_storage()
