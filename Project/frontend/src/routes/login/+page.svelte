@@ -1,3 +1,14 @@
+<!--
+  File: src/routes/login/+page.svelte
+  Purpose: Login page placeholder for the future signed-in Zonix version.
+  What it does:
+  - Shows a frontend-only email/password form.
+  - Validates that both fields are filled.
+  - Logs a placeholder message instead of calling a backend.
+  Future behavior:
+  - This page should call a backend auth endpoint and store a session/token.
+-->
+
 <script>
   /*
     Login page route: /login
@@ -15,7 +26,7 @@
     error = "";
 
     if (!email.trim() || !password.trim()) {
-      error = "Enter your email and password to open the vault.";
+      error = "Please enter both email and password.";
       return;
     }
 
@@ -41,7 +52,7 @@
       <p class="error">{error}</p>
     {/if}
 
-    <button class="primary-button" onclick={handleLogin}>Open vault</button>
+    <button class="primary-button" onclick={handleLogin}>Sign in</button>
 
     <p class="switch">
       New to Zonix? <a href="/register">Create account</a>

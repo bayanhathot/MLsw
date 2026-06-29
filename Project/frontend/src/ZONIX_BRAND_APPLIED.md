@@ -1,3 +1,9 @@
+# File: ZONIX_BRAND_APPLIED.md
+
+## Purpose
+This document explains how the Zonix brand identity was translated into the frontend.
+It is not executed by the app; it is documentation for the team and lecturer.
+
 # Zonix Brand Applied
 
 This frontend keeps the Zonix identity but uses clear product copy instead of over-branded labels.

@@ -1,3 +1,18 @@
+<!--
+  File: src/lib/components/DJPlayerCard.svelte
+  Purpose: Fixed bottom AI DJ control deck.
+  What it does:
+  - Shows the current AI DJ moment: cover image, title, and artist.
+  - Lets the user play/pause the continuous session.
+  - Lets the user stop the AI DJ session.
+  - Shows a simple flow/progress bar for the current rendered audio chunk.
+  - Provides Coach the DJ buttons such as Good vibe, More energy, Less vocals, and Smoother.
+  - Provides a volume slider UI using Svelte local state.
+  Important product decision:
+  - This is NOT just a Spotify-style song player. Zonix is an AI DJ that plans a continuous flow,
+    so the controls focus on guiding the next musical moments rather than only skipping songs.
+-->
+
 <script>
   /**
    * Fixed AI DJ control deck.

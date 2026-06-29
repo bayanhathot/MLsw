@@ -1,4 +1,13 @@
 /**
+ * File: src/lib/constants/appStates.js
+ * Purpose: Single source of truth for allowed frontend session states.
+ * What it does:
+ * - Defines all legal UI states used by the store and components.
+ * - Prevents typo bugs by avoiding raw strings spread across the app.
+ * - Documents the lifecycle of an AI DJ session: idle -> starting -> playing -> buffering_next -> stopped/error.
+ */
+
+/**
  * Purpose:
  * Defines the only valid high-level states for the Smart AI DJ frontend session.
  *

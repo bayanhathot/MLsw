@@ -1,3 +1,9 @@
+# File: ZONIX_FINAL_DESIGN_NOTES.md
+
+## Purpose
+This document explains the final MVP design choices and why the interface looks/behaves this way.
+It is not executed by the app; it is design documentation for the project.
+
 # Zonix Final MVP Frontend Design
 
 This source package applies the final selected design direction:

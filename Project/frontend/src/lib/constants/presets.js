@@ -1,4 +1,15 @@
 /**
+ * File: src/lib/constants/presets.js
+ * Purpose: Quick vibe presets shown in the prompt composer.
+ * What it does:
+ * - Stores user-facing preset labels.
+ * - Stores the longer prompt text each label inserts into the prompt box.
+ * - Keeps preset data separate from UI components so it is easy to edit later.
+ * Future use:
+ * - These can later be replaced by backend recommendations, user recent prompts, or saved zones.
+ */
+
+/**
  * Prompt shortcuts for the MVP.
  * They are intentionally text-only so this section can later become recent
  * prompts, saved vibes, or personalized suggestions.

@@ -1,3 +1,17 @@
+<!--
+  File: src/lib/components/PromptComposer.svelte
+  Purpose: Prompt input used to start or retune an AI DJ session.
+  What it does:
+  - Lets the user describe the vibe they want.
+  - Lets the user select quick preset prompts to fill the input.
+  - Calls onPromptChange whenever the input changes.
+  - Calls onStart when the user starts or updates the vibe.
+  - Can render in normal mode before playback or compact overlay mode while playback is active.
+  Product behavior:
+  - Before starting, this is the main call-to-action.
+  - While playing, it can be reopened from the Change vibe strip, then hidden again.
+-->
+
 <script>
   /**
    * Prompt composer.

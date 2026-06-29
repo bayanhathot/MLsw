@@ -1,4 +1,18 @@
 /**
+ * File: src/app.css
+ * Purpose: Global Zonix design system and shared application styles.
+ * What it does:
+ * - Defines all reusable CSS variables: colors, text colors, radii, shadows, and fonts.
+ * - Creates the calm dark navy/black background used across every route.
+ * - Provides reusable utility classes such as .card, .primary-button, .secondary-button, and .badge.
+ * - Sets accessibility-friendly focus styles for buttons, links, inputs, and text fields.
+ * - Adds global responsive and visual foundations used by all Svelte components.
+ * Why this file exists:
+ * - Keeping shared styles here prevents duplicated CSS in every component.
+ * - Components can rely on variables like var(--accent-2) instead of hardcoding colors repeatedly.
+ */
+
+/**
  * Zonix final MVP design system.
  *
  * Direction:

@@ -1,3 +1,12 @@
+/**
+ * File: src/lib/types.js
+ * Purpose: JSDoc type definitions shared across the JavaScript frontend.
+ * What it does:
+ * - Documents the expected shape of app states, presets, now-playing metadata, AI reasoning, sessions, and store state.
+ * - Gives VS Code/Svelte language tools better autocomplete and type checking without converting the project to TypeScript.
+ * - Acts as a contract between frontend mock data and the future backend API.
+ */
+
 // cSpell:ignore Zonix explainability
 
 /**

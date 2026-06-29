@@ -1,3 +1,15 @@
+/**
+ * File: src/lib/stores/sessionStore.js
+ * Purpose: Central frontend state manager for the Zonix AI DJ session.
+ * What it does:
+ * - Stores the current prompt, session status, progress, current session data, play/pause state, feedback, and errors.
+ * - Exposes methods used by components: setPrompt, start, togglePlay, stop, sendFeedback, toggleReasoning, and reset.
+ * - Simulates a start-up progress sequence before returning mock session data.
+ * Why this file is important:
+ * - Components stay simple because they read state from the store and call store methods.
+ * - Later, backend integration can happen inside the services/store without rewriting the whole UI.
+ */
+
 import { writable } from "svelte/store";
 import { APP_STATES } from "../constants/appStates.js";
 import {

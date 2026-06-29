@@ -1,3 +1,8 @@
+<!--
+  File: src/assets/zonix-logo.svg
+  Purpose: Vector Zonix logo used by Navbar.svelte.
+  What it does: Provides scalable brand artwork that can be imported by Svelte/Vite and rendered as an image.
+-->
 <svg width="220" height="64" viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">Zonix logo</title>
   <desc id="desc">Zonix wordmark with a compact ZX mark</desc>

@@ -1,3 +1,14 @@
+/**
+ * File: src/lib/data/mockSession.js
+ * Purpose: Mock AI DJ session returned by the fake frontend service.
+ * What it does:
+ * - Provides realistic demo data before the real backend/model is connected.
+ * - Describes the current track/moment, cover image, audio URL placeholder, and AI reasoning text.
+ * - Lets the frontend look and behave like a product during the MVP/demo stage.
+ * Important:
+ * - This is demo data only. Later, FastAPI/Flask should return the same shape from a real endpoint.
+ */
+
 import coverUrl from "../../assets/hero.png";
 
 /**

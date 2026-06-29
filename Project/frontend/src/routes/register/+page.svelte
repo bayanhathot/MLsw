@@ -1,3 +1,14 @@
+<!--
+  File: src/routes/register/+page.svelte
+  Purpose: Register page placeholder for future user accounts.
+  What it does:
+  - Shows a frontend-only account creation form.
+  - Validates required fields and matching passwords.
+  - Logs a placeholder message instead of calling a backend.
+  Future behavior:
+  - This page should call a backend register endpoint, then redirect to login or home.
+-->
+
 <script>
   /*
     Register page route: /register
@@ -17,7 +28,7 @@
     error = "";
 
     if (!name.trim() || !email.trim() || !password.trim()) {
-      error = "Fill the required fields to create your vault.";
+      error = "Please fill all required fields.";
       return;
     }
 
@@ -32,7 +43,7 @@
 
 <section class="auth-page">
   <div class="auth-card card">
-    <p class="eyebrow">Create vault</p>
+    <p class="eyebrow">Create account</p>
     <h1>Register.</h1>
     <p class="muted">
       Accounts will unlock saved sessions, listening history, and personal settings.
@@ -60,11 +71,11 @@
     {/if}
 
     <button class="primary-button" onclick={handleRegister}>
-      Create vault
+      Create account
     </button>
 
     <p class="switch">
-      Already locked in? <a href="/login">Sign in</a>
+      Already have an account? <a href="/login">Sign in</a>
     </p>
   </div>
 </section>

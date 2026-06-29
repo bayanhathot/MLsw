@@ -1,3 +1,16 @@
+/**
+ * File: src/lib/services/sessionApi.js
+ * Purpose: Frontend API layer for AI DJ session actions.
+ * What it does:
+ * - Simulates backend calls for starting, stopping, and sending feedback.
+ * - Keeps async/backend behavior outside components and stores.
+ * - Makes the future backend migration easier because only this service layer needs to call real endpoints.
+ * Future backend mapping:
+ * - startSessionMock      -> POST /sessions/start
+ * - sendFeedbackMock      -> POST /sessions/{id}/feedback
+ * - stopSessionMock       -> POST /sessions/{id}/stop
+ */
+
 import { mockSession } from "../data/mockSession.js";
 
 /**

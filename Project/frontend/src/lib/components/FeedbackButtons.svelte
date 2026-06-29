@@ -1,3 +1,15 @@
+<!--
+  File: src/lib/components/FeedbackButtons.svelte
+  Purpose: Optional standalone feedback section for guiding the AI DJ.
+  What it does:
+  - Displays simple human labels instead of technical ML terms.
+  - Sends the selected feedback option to the parent component through onFeedback.
+  - Highlights the currently selected feedback with class:active.
+  Current usage note:
+  - The final MVP mostly places feedback inside DJPlayerCard, but this component is kept reusable
+    if you want a separate feedback card on another page or future signed-in dashboard.
+-->
+
 <script>
   /*
     Zonix feedback controls.

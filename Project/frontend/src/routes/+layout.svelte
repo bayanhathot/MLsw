@@ -1,3 +1,15 @@
+<!--
+  File: src/routes/+layout.svelte
+  Purpose: Root SvelteKit layout shared by all pages.
+  What it does:
+  - Imports global CSS once for the whole app.
+  - Renders the Navbar above every route.
+  - Provides the main centered app shell width.
+  - Uses Svelte 5 {@render children()} to display the active route page.
+  Why this file exists:
+  - In SvelteKit, +layout.svelte replaces the old Vite App.svelte outer shell.
+-->
+
 <script>
   import "../app.css";
   import Navbar from "$lib/components/Navbar.svelte";

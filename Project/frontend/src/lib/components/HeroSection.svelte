@@ -1,3 +1,14 @@
+<!--
+  File: src/lib/components/HeroSection.svelte
+  Purpose: Main brand/landing hero for the Zonix guest homepage.
+  What it does:
+  - Shows the core product promise: Your AI DJ. Zero interruptions.
+  - Adds soft waveform-like visual elements in the background.
+  - Keeps the design branded but understandable, avoiding confusing labels.
+  Why this file exists:
+  - Separating the hero from the route keeps the homepage readable and makes the hero reusable.
+-->
+
 <script>
   /**
    * Hero section for Zonix.

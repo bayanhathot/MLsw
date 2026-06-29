@@ -1,3 +1,14 @@
+<!--
+  File: src/lib/components/Navbar.svelte
+  Purpose: Top navigation bar for the MVP frontend.
+  What it does:
+  - Displays the Zonix logo asset and links it to the home route.
+  - Shows a placeholder theme button for future light/dark or appearance switching.
+  - Shows a clear Sign in link to the /login route.
+  Important design decision:
+  - The navbar uses the real logo asset while keeping actions simple and understandable.
+-->
+
 <script>
   /**
    * Minimal Zonix navigation for the guest/MVP version.

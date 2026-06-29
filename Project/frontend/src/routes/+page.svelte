@@ -1,3 +1,19 @@
+<!--
+  File: src/routes/+page.svelte
+  Purpose: Home route for the main guest AI DJ experience.
+  What it does:
+  - Renders the hero, prompt composer, current-vibe strip, errors, and bottom player.
+  - Controls when the prompt is visible or hidden.
+  - Shows the full prompt before starting, hides it while playing, and allows Change vibe to reopen it.
+  - Passes store state and store actions down to components.
+  Main flow:
+  1. User writes/selects a vibe.
+  2. User clicks Start AI DJ.
+  3. Prompt hides and bottom player becomes active.
+  4. User can coach the DJ or change the vibe.
+  5. Stopping the session shows the prompt again.
+-->
+
 <script>
   /**
    * Zonix home route.
@@ -17,20 +33,35 @@
   import PromptComposer from "$lib/components/PromptComposer.svelte";
   import DJPlayerCard from "$lib/components/DJPlayerCard.svelte";
 
+  /* Local UI-only state:
+     Tracks whether the compact prompt panel is currently open while a session is active.
+     This is different from the global sessionStore because it only controls page layout. */
   let promptPanelOpen = $state(false);
 
+  /* Derived state:
+     true when the AI DJ is starting, playing, or preparing the next chunk.
+     When this is true, the page should avoid showing the full prompt unless the user asked to change vibe. */
   let isSessionActive = $derived(
     $sessionStore.status === APP_STATES.PLAYING ||
       $sessionStore.status === APP_STATES.BUFFERING_NEXT ||
       $sessionStore.status === APP_STATES.STARTING
   );
 
+  /* Derived state:
+     true only when the session is already usable.
+     This enables the small Current vibe strip and Change vibe button. */
   let canChangeVibe = $derived(
     $sessionStore.status === APP_STATES.PLAYING || $sessionStore.status === APP_STATES.BUFFERING_NEXT
   );
 
+  /* Derived state:
+     Shows the prompt in two cases:
+     1. no active session, so the user needs a starting point;
+     2. active session + promptPanelOpen, so the user is editing the vibe. */
   let shouldShowPrompt = $derived(!isSessionActive || promptPanelOpen);
 
+  /* Starts or updates the AI DJ session.
+     The prompt panel closes immediately so the UI returns to listening mode. */
   function startVibe() {
     promptPanelOpen = false;
     sessionStore.start();
