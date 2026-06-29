@@ -1,24 +1,12 @@
 <script>
-  /**
-   * Purpose:
-   * Shows simple music-feeling feedback buttons.
-   *
-   * How this connects to the project:
-   * In the future, these clicks become personalization signals. For example,
-   * "More energy" can affect the next generated chunk/segment selection.
-   *
-   * Engineering decision:
-   * Feedback uses user-language, not ML-language. We avoid technical feedback
-   * like "bad graph edge" because normal users should not think about internals.
-   */
+  /*
+    Simple user feedback.
 
-  /** @type {string | null} */
-  export let selectedFeedback = null;
+    The user should not need to understand ML scores.
+    These buttons describe musical preference changes.
+  */
 
-  /** @type {(feedback: string) => void} */
-  export let onFeedback = () => {};
-
-  const options = [
+  const FEEDBACK_OPTIONS = [
     "Good vibe",
     "More energy",
     "Less vocals",
@@ -26,18 +14,30 @@
     "Surprise me",
     "Stop this style"
   ];
+
+  /**
+   * @type {{
+   *   selectedFeedback?: string | null,
+   *   onFeedback?: (feedback: string) => void
+   * }}
+   */
+  let {
+    selectedFeedback = null,
+    onFeedback = () => {}
+  } = $props();
 </script>
 
 <section class="feedback card">
-  <h3>Guide the AI DJ</h3>
-  <p>These controls will later adjust the next song moments the AI DJ chooses.</p>
+  <div>
+    <p class="eyebrow">Guide the DJ</p>
+    <h3>How should the next moments feel?</h3>
+  </div>
 
-  <div class="buttons">
-    {#each options as option}
+  <div class="feedback-row">
+    {#each FEEDBACK_OPTIONS as option}
       <button
         class:active={selectedFeedback === option}
-        class="secondary-button"
-        on:click={() => onFeedback(option)}
+        onclick={() => onFeedback(option)}
       >
         {option}
       </button>
@@ -47,27 +47,43 @@
 
 <style>
   .feedback {
+    display: grid;
+    gap: 18px;
     padding: 24px;
     margin-bottom: 24px;
   }
 
+  .eyebrow {
+    color: var(--accent-2);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
   h3 {
-    margin: 0 0 8px;
+    margin: 6px 0 0;
+    font-size: 24px;
   }
 
-  p {
-    margin: 0 0 16px;
-    color: var(--text-muted);
-  }
-
-  .buttons {
+  .feedback-row {
     display: flex;
-    gap: 10px;
     flex-wrap: wrap;
+    gap: 10px;
   }
 
-  .active {
-    border-color: rgba(56, 189, 248, 0.8);
-    background: rgba(56, 189, 248, 0.16);
+  button {
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    padding: 10px 14px;
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+  }
+
+  button.active,
+  button:hover {
+    border-color: var(--accent-2);
+    background: rgba(125, 211, 252, 0.14);
   }
 </style>

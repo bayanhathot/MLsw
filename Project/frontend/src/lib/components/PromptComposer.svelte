@@ -1,77 +1,78 @@
 <script>
-  import { PRESETS } from "../constants/presets.js";
+  /*
+    Prompt composer.
+
+    Lets the user write a vibe or choose a preset.
+    Presets fill the prompt but do not start automatically.
+  */
+
+  import { PRESETS } from "$lib/constants/presets.js";
 
   /**
-   * Purpose:
-   * Prompt input and preset chip area.
-   *
-   * How this connects to the project:
-   * This is where the user tells the AI DJ what vibe they want. It replaces the
-   * old duration-based generator form with a simpler "Start AI DJ" flow.
-   *
-   * Engineering decisions:
-   * - Presets fill the prompt instead of starting automatically, so users can edit.
-   * - There is no duration selector because the session continues until stopped.
-   * - Callback props keep this component visual; state changes happen in the store.
-   *
-   * @typedef {import("../types.js").Preset} Preset
+   * @typedef {import("$lib/types.js").Preset} Preset
    */
 
-  /** @type {string} */
-  export let prompt = "";
-
-  /** @type {boolean} */
-  export let isStarting = false;
-
-  /** @type {(prompt: string) => void} */
-  export let onPromptChange = () => {};
-
-  /** @type {() => void} */
-  export let onStart = () => {};
+  /**
+   * @type {{
+   *   prompt?: string,
+   *   isStarting?: boolean,
+   *   onPromptChange?: (prompt: string) => void,
+   *   onStart?: () => void
+   * }}
+   */
+  let {
+    prompt = "",
+    isStarting = false,
+    onPromptChange = () => {},
+    onStart = () => {}
+  } = $props();
 
   /**
-   * Inserts a preset prompt into the prompt box.
-   *
+ * Handles textarea input.
+ *
+ * Svelte passes a normal Event here, so we cast currentTarget
+ * to HTMLTextAreaElement before reading value.
+ *
+ * @param {Event} event
+ */
+function handlePromptInput(event) {
+  const target = /** @type {HTMLTextAreaElement} */ (event.currentTarget);
+  onPromptChange(target.value);
+}
+
+  /**
    * @param {Preset} preset
    */
   function usePreset(preset) {
     onPromptChange(preset.prompt);
   }
-
-  /**
-   * Reads textarea value safely from the DOM event.
-   *
-   * @param {Event} event
-   */
-  function handlePromptInput(event) {
-    const target = /** @type {HTMLTextAreaElement} */ (event.currentTarget);
-    onPromptChange(target.value);
-  }
 </script>
 
 <section class="composer card">
-  <label for="prompt">Describe the vibe you want</label>
+  <div class="composer-header">
+    <div>
+      <p class="eyebrow">Describe your vibe</p>
+      <h2>What should the AI DJ play?</h2>
+    </div>
 
-  <textarea
-    id="prompt"
-    value={prompt}
-    on:input={handlePromptInput}
-    placeholder="Example: Start an emotional tarab vibe with strong vocal peaks..."
-  ></textarea>
-
-  <div class="actions">
     <button
       class="primary-button"
-      on:click={onStart}
-      disabled={isStarting || prompt.trim() === ""}
+      onclick={onStart}
+      disabled={isStarting || !prompt.trim()}
     >
       {isStarting ? "Starting..." : "Start AI DJ"}
     </button>
   </div>
 
-  <div class="presets" aria-label="Quick vibe presets">
+  <textarea
+    value={prompt}
+    oninput={handlePromptInput}
+    placeholder="Example: late night emotional Arabic classics with smooth transitions and warm vocals"
+  ></textarea>
+
+  <div class="preset-row">
     {#each PRESETS as preset}
-      <button class="chip" on:click={() => usePreset(preset)}>
+      <button class="preset-chip" onclick={() => usePreset(preset)}>
         {preset.label}
       </button>
     {/each}
@@ -80,63 +81,74 @@
 
 <style>
   .composer {
-    padding: 24px;
-    margin-bottom: 24px;
+    padding: 28px;
+    margin-bottom: 28px;
   }
 
-  label {
-    display: block;
-    margin-bottom: 12px;
+  .composer-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 18px;
+  }
+
+  .eyebrow {
+    color: var(--accent-2);
+    font-size: 12px;
     font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  h2 {
+    margin: 6px 0 0;
+    font-size: 30px;
   }
 
   textarea {
     width: 100%;
-    min-height: 118px;
+    min-height: 120px;
     resize: vertical;
     border: 1px solid var(--border-soft);
     border-radius: 20px;
-    background: rgba(255, 255, 255, 0.08);
+    padding: 18px;
     color: var(--text-main);
-    padding: 16px;
+    background: rgba(255, 255, 255, 0.08);
     outline: none;
+    font: inherit;
   }
 
   textarea::placeholder {
     color: var(--text-muted);
   }
 
-  .actions {
+  .preset-row {
     display: flex;
-    justify-content: flex-end;
-    margin-top: 14px;
-  }
-
-  .presets {
-    display: flex;
-    gap: 10px;
     flex-wrap: wrap;
+    gap: 10px;
     margin-top: 18px;
   }
 
-  .chip {
+  .preset-chip {
     border: 1px solid var(--border-soft);
-    border-radius: var(--radius-sm);
-    padding: 9px 13px;
+    border-radius: 999px;
+    padding: 10px 14px;
     color: var(--text-main);
-    background: rgba(255, 255, 255, 0.07);
+    background: rgba(255, 255, 255, 0.06);
+    cursor: pointer;
   }
 
-  .chip:hover {
-    background: rgba(255, 255, 255, 0.14);
+  .preset-chip:hover {
+    border-color: var(--accent-2);
   }
 
-  @media (max-width: 600px) {
-    .actions {
-      justify-content: stretch;
+  @media (max-width: 720px) {
+    .composer-header {
+      flex-direction: column;
     }
 
-    .primary-button {
+    .composer-header button {
       width: 100%;
     }
   }
