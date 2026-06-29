@@ -1,22 +1,26 @@
 <!doctype html>
 <!--
   File: src/app.html
-  Purpose: Global HTML template used by SvelteKit for every route.
-  What it does:
-  - Defines the base HTML document structure.
-  - Adds page metadata such as charset, viewport, description, and title.
-  - Provides the SvelteKit head injection marker in the <head> section.
-  - Provides the SvelteKit body injection marker where the app is mounted.
-  - Keeps the body wrapper display: contents so route/layout styling controls the visible layout.
+
+  Purpose:
+  This is the global HTML template used by SvelteKit.
+
+  Important:
+  Do not write the SvelteKit placeholder names inside comments.
+  They must appear only in the real head/body locations below.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Zonix — get in the zone with intelligent, seamless music mixing." />
+    <meta
+      name="description"
+      content="Zonix — get in the zone with intelligent, seamless music mixing."
+    />
     <title>Zonix | Get in the zone</title>
     %sveltekit.head%
   </head>
+
   <body data-sveltekit-preload-data="hover">
     <div style="display: contents">%sveltekit.body%</div>
   </body>

@@ -2,7 +2,17 @@ services:
   frontend:
     build:
       context: ./frontend
-    container_name: smart-dj-frontend
+    container_name: zonix-frontend
     ports:
       - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: zonix-backend
+    ports:
+      - "5000:5000"
     restart: unless-stopped

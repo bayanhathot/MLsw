@@ -37,9 +37,9 @@ The main flow is:
 - `FeedbackButtons.svelte`: reusable standalone feedback card, kept for future pages even though feedback is now mostly inside the player deck.
 
 ### State and data
-- `stores/sessionStore.js`: central state manager. Components read from it and call its methods.
-- `services/sessionApi.js`: fake async API layer. Replace this later with real backend calls.
-- `data/mockSession.js`: demo session data that simulates backend/model output.
+- `stores/sessionStore.js`: central state manager. Components read from it and call its methods. It calls the real FastAPI backend through `sessionApi.js`.
+- `services/sessionApi.js`: frontend API layer. It sends HTTP requests to FastAPI endpoints.
+- `data/mockSession.js`: old demo data kept only as reference/fallback documentation; the active flow now uses the backend.
 - `constants/appStates.js`: all legal session states.
 - `constants/presets.js`: quick-start prompts shown in the prompt composer.
 - `types.js`: JSDoc type definitions that document the frontend/backend data contract.
@@ -59,14 +59,14 @@ Zonix is not only switching between songs. The app plans continuous DJ-style seg
 - stop AI DJ,
 - future vibe updates.
 
-## Backend integration plan
-When the backend is ready, replace the mock functions in `services/sessionApi.js` with real HTTP calls:
+## Backend integration
+The frontend is connected to the FastAPI backend through `services/sessionApi.js`:
 
-- `startSessionMock` -> `POST /sessions/start`
-- `sendFeedbackMock` -> `POST /sessions/{session_id}/feedback`
-- `stopSessionMock` -> `POST /sessions/{session_id}/stop`
+- `startSession()` -> `POST /sessions/start`
+- `sendFeedback()` -> `POST /sessions/{session_id}/feedback`
+- `stopSession()` -> `POST /sessions/{session_id}/stop`
 
-The UI should not need major changes if the backend returns objects matching the types in `types.js`.
+The UI components do not call `fetch()` directly. They call `sessionStore`, and `sessionStore` calls `sessionApi.js`. This keeps the connection clean and easy to change later.
 
 ## Asset note
 Binary image files such as `assets/hero.png` cannot contain source comments. Their purpose is documented here and in `assets/ASSET_NOTES.md`.

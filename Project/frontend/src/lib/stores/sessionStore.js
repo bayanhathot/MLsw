@@ -4,18 +4,19 @@
  * What it does:
  * - Stores the current prompt, session status, progress, current session data, play/pause state, feedback, and errors.
  * - Exposes methods used by components: setPrompt, start, togglePlay, stop, sendFeedback, toggleReasoning, and reset.
- * - Simulates a start-up progress sequence before returning mock session data.
+ * - Runs a short start-up progress sequence before calling the FastAPI backend.
+ * - Sends prompt, feedback, and stop requests to the backend through sessionApi.js.
  * Why this file is important:
  * - Components stay simple because they read state from the store and call store methods.
- * - Later, backend integration can happen inside the services/store without rewriting the whole UI.
+ * - Backend integration stays isolated inside the services/store instead of being spread through UI components.
  */
 
 import { writable } from "svelte/store";
 import { APP_STATES } from "../constants/appStates.js";
 import {
-  sendFeedbackMock,
-  startSessionMock,
-  stopSessionMock
+  sendFeedback as apiSendFeedback,
+  startSession as apiStartSession,
+  stopSession as apiStopSession
 } from "../services/sessionApi.js";
 
 /**
@@ -98,7 +99,7 @@ function createSessionStore() {
           await new Promise((resolve) => setTimeout(resolve, 550));
         }
 
-        const session = await startSessionMock({ prompt });
+        const session = await apiStartSession({ prompt });
 
         update((state) => ({
           ...state,
@@ -139,7 +140,9 @@ function createSessionStore() {
       }
 
       const sessionId = latestState.session?.id ?? null;
-      await stopSessionMock({ sessionId });
+      if (sessionId) {
+        await apiStopSession({ sessionId });
+      }
 
       update((state) => ({
         ...state,
@@ -160,12 +163,25 @@ function createSessionStore() {
       }
 
       const sessionId = latestState.session?.id ?? null;
-      await sendFeedbackMock({ sessionId, feedback });
+      if (!sessionId) {
+        return;
+      }
 
-      update((state) => ({
-        ...state,
-        selectedFeedback: feedback
-      }));
+      try {
+        const updatedSession = await apiSendFeedback({ sessionId, feedback });
+
+        update((state) => ({
+          ...state,
+          session: updatedSession,
+          selectedFeedback: feedback,
+          error: null
+        }));
+      } catch {
+        update((state) => ({
+          ...state,
+          error: "Zonix could not send the feedback to the backend."
+        }));
+      }
     },
 
     toggleReasoning() {

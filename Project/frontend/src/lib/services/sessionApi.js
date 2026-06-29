@@ -1,68 +1,81 @@
 /**
  * File: src/lib/services/sessionApi.js
- * Purpose: Frontend API layer for AI DJ session actions.
- * What it does:
- * - Simulates backend calls for starting, stopping, and sending feedback.
- * - Keeps async/backend behavior outside components and stores.
- * - Makes the future backend migration easier because only this service layer needs to call real endpoints.
- * Future backend mapping:
- * - startSessionMock      -> POST /sessions/start
- * - sendFeedbackMock      -> POST /sessions/{id}/feedback
- * - stopSessionMock       -> POST /sessions/{id}/stop
- */
-
-import { mockSession } from "../data/mockSession.js";
-
-/**
- * Backend communication boundary.
  *
- * Current MVP:
- * Returns mock Zonix data.
+ * Purpose:
+ * This file is the frontend API layer.
+ * It hides the raw fetch() calls from the UI components.
  *
- * Future backend:
- * Replace the mock with FastAPI/Flask calls such as:
- * - POST /sessions/start
- * - POST /sessions/{id}/feedback
- * - POST /sessions/{id}/stop
+ * Components should not know backend URLs directly.
+ * They should call functions like startSession(), sendFeedback(), and stopSession().
  */
 
-/**
- * @param {number} ms
- * @returns {Promise<void>}
- */
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const API_BASE_URL = "http://localhost:5000";
 
 /**
+ * Start a new AI DJ session by sending the user's prompt to FastAPI.
+ *
  * @param {{ prompt: string }} params
- * @returns {Promise<import("../types.js").Session>}
+ * @returns {Promise<import("$lib/types.js").Session>}
  */
-export async function startSessionMock({ prompt }) {
-  await wait(500);
+export async function startSession(params) {
+  const response = await fetch(`${API_BASE_URL}/sessions/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      prompt: params.prompt
+    })
+  });
 
-  return {
-    ...mockSession,
-    prompt
-  };
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to start AI DJ session.");
+  }
+
+  return response.json();
 }
 
 /**
- * @param {{ sessionId: string | null, feedback: string }} params
- * @returns {Promise<{ ok: true }>}
+ * Send feedback to the active AI DJ session.
+ *
+ * @param {{ sessionId: string, feedback: string }} params
+ * @returns {Promise<import("$lib/types.js").Session>}
  */
-export async function sendFeedbackMock({ sessionId, feedback }) {
-  console.info("Mock Zonix feedback sent", { sessionId, feedback });
-  await wait(150);
-  return { ok: true };
+export async function sendFeedback(params) {
+  const response = await fetch(`${API_BASE_URL}/sessions/${params.sessionId}/feedback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      feedback: params.feedback
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to send feedback.");
+  }
+
+  return response.json();
 }
 
 /**
- * @param {{ sessionId: string | null }} params
- * @returns {Promise<{ ok: true }>}
+ * Stop the active AI DJ session.
+ *
+ * @param {{ sessionId: string }} params
+ * @returns {Promise<{ session_id: string, status: string, message: string }>}
  */
-export async function stopSessionMock({ sessionId }) {
-  console.info("Mock Zonix session stopped", { sessionId });
-  await wait(150);
-  return { ok: true };
+export async function stopSession(params) {
+  const response = await fetch(`${API_BASE_URL}/sessions/${params.sessionId}/stop`, {
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to stop AI DJ session.");
+  }
+
+  return response.json();
 }
