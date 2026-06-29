@@ -1,411 +1,541 @@
 # Smart AI DJ Mixer — Frontend
 
-This folder contains the frontend for the **Smart AI DJ Mixer** project.
+This folder contains the **Svelte + Vite frontend** for the Smart AI DJ Mixer project.
 
-The frontend is a **Svelte + Vite** single-page application. Its goal is to give users a simple AI-music experience: the user describes a music vibe, the interface simulates/generates an AI DJ mix, then shows the final player, selected song segments, transition explanations, and feedback buttons.
+The current frontend direction is a **prompt-first continuous AI DJ experience**:
 
-The current version uses **mock data** so the frontend can be developed before the backend, audio model, and renderer are fully ready.
+> The user describes a vibe, clicks **Start AI DJ**, and the app keeps playing matching song moments until the user stops.
+
+The frontend is intentionally designed to feel like a modern music player, not a technical ML dashboard. Internal model details such as segment scores, transition scores, and raw timestamps are hidden from the normal user interface. A simplified optional **AI reasoning** panel remains available for demo/lecturer explanation.
 
 ---
 
-## 1. Project idea
+## 1. Product Goal
 
-The app is not a normal playlist generator. It is designed to show that the AI DJ:
+The frontend should prove the main product idea:
 
-1. Understands the user's requested vibe.
-2. Selects meaningful parts inside songs, not only full songs.
-3. Plans smooth transitions between segments.
-4. Renders or prepares a playable mix.
-5. Explains why segments and transitions were chosen.
+1. A user can describe a music vibe naturally.
+2. The AI DJ starts a continuous listening session.
+3. The user sees what is currently playing: song, artist, album/source, cover, and vibe.
+4. The user can guide the session using simple feedback.
+5. Technical reasoning is available only when needed, not shown by default.
 
-Main user flow:
+The product should feel closer to:
 
 ```text
-User opens homepage
-→ writes a prompt or chooses a preset
-→ clicks Generate Mix
-→ sees progress steps
-→ listens to generated mix
-→ sees segment timeline
-→ reads explanations
-→ gives feedback
+Spotify / YouTube Music + AI DJ
+```
+
+not:
+
+```text
+ML dashboard with raw model scores
 ```
 
 ---
 
-## 2. Technology stack
+## 2. Current MVP User Flow
+
+```text
+User opens home page
+→ User writes prompt or clicks preset
+→ Preset fills the prompt
+→ User clicks Start AI DJ
+→ App shows startup progress
+→ Player appears with current song details
+→ User can pause/play or stop session
+→ User can send simple feedback
+→ User can optionally open AI reasoning
+```
+
+There is **no duration selector** anymore because the product is now a continuous AI DJ session, not a fixed 3-minute generated file.
+
+---
+
+## 3. Technology Stack
 
 ```text
 Frontend framework: Svelte
 Build tool: Vite
-Language: JavaScript with JSDoc type comments
-Styling: CSS inside Svelte components + global CSS variables
-Deployment container: Docker + Nginx
+Language: JavaScript with JSDoc typing
+Styling: Plain CSS with global design tokens
+Container serving: Nginx production container
 ```
 
 ### Why Svelte?
 
-Svelte was chosen because the project needs an interactive frontend, but not a very heavy enterprise framework.
-
-The frontend needs:
+Svelte is lightweight and good for building an interactive MVP quickly. It allows each component to contain:
 
 ```text
-Prompt input
-Preset chips
-Generation loading state
-Audio player
-Timeline interaction
-Selected segment explanation
-Feedback buttons
+logic
++ HTML structure
++ local CSS
 ```
 
-Svelte makes these interactions simple while keeping the code readable for a student project.
+This is useful for the project because the UI has changing states: idle, starting, playing, stopped, and error.
+
+### Why JSDoc?
+
+The project uses JavaScript, but JSDoc comments give VS Code useful type checking.
+
+This keeps the code easier than TypeScript for now, while still documenting the expected frontend/backend data shapes.
 
 ---
 
-## 3. Folder structure
-
-Recommended structure:
+## 4. Folder Structure
 
 ```text
-frontend/
-  public/
-    demo_mix.mp3              # Optional local demo audio file
+src/
+  App.svelte
+  app.css
+  main.js
 
-  src/
-    App.svelte                # Main page composition
-    app.css                   # Global styles and design tokens
-    main.js                   # Svelte app entry point
+  assets/
+    hero.png
 
-    lib/
-      components/             # Reusable UI components
-        Navbar.svelte
-        HeroSection.svelte
-        DJPlayerCard.svelte
-        PromptComposer.svelte
-        MixTimeline.svelte
-        SegmentDetails.svelte
-        FeedbackButtons.svelte
+  lib/
+    components/
+      Navbar.svelte
+      HeroSection.svelte
+      PromptComposer.svelte
+      DJPlayerCard.svelte
+      FeedbackButtons.svelte
+      AIReasoningPanel.svelte
 
-      constants/              # Values reused across the app
-        appStates.js
-        presets.js
+    constants/
+      appStates.js
+      presets.js
 
-      data/                   # Temporary mock data
-        mockMix.js
+    data/
+      mockSession.js
 
-      services/               # Backend/mock API access layer
-        mixApi.js
+    services/
+      sessionApi.js
 
-      stores/                 # Shared frontend state
-        mixStore.js
+    stores/
+      sessionStore.js
 
-      types.js                # JSDoc data contracts
-
-  Dockerfile                  # Production frontend container
-  nginx.conf                  # Nginx static file server config
-  package.json
+    types.js
 ```
 
 ---
 
-## 4. Main engineering decisions
+## 5. Important Files
 
-### 4.1 Mock-first development
+### `src/main.js`
 
-The frontend currently does not depend on the real backend. Instead, it uses `mockMix.js` and `mixApi.js`.
+Entry point of the Svelte app.
 
-This allows frontend work to continue while the backend/model team works separately.
+It imports global CSS, loads `App.svelte`, and mounts it into the HTML element with id `app`.
 
-Later, only `mixApi.js` should need to change from:
-
-```js
-generateMixMock(...)
-```
-
-to a real backend request such as:
-
-```js
-fetch('/api/mixes/generate')
-```
-
-This is a healthy engineering habit because UI components do not care whether data comes from mock data or a real server.
-
----
-
-### 4.2 Central store for shared state
-
-The app state is managed in:
+Browser flow:
 
 ```text
-src/lib/stores/mixStore.js
-```
-
-The store keeps:
-
-```text
-current status: idle / generating / completed / error
-prompt text
-duration
-current progress step
-progress percentage
-generated mix result
-selected timeline segment
-error message
-```
-
-This avoids passing too many props between components and keeps the app easier to scale.
-
----
-
-### 4.3 Data contracts with JSDoc
-
-The file:
-
-```text
-src/lib/types.js
-```
-
-defines the expected shape of important objects:
-
-```text
-Mix
-Segment
-Transition
-Preset
-MixState
-AppStatus
-```
-
-These are written as JSDoc comments, not TypeScript files. This keeps the project in JavaScript while still giving VS Code useful type checking.
-
-Example purpose:
-
-```text
-A Mix must have title, duration, audio_url, segments, and transitions.
-A Segment must have song, artist, role, start time, end time, score, and explanation.
-A Transition must have from/to segment ids, duration, score, and explanation.
-```
-
-This helps prevent bugs when the backend is added later.
-
----
-
-### 4.4 Components only display UI
-
-Components should mostly receive data and display it.
-
-For example:
-
-```text
-DJPlayerCard.svelte
-  displays idle/generating/completed/error player state
-
-PromptComposer.svelte
-  displays prompt box, duration selector, presets, and generate button
-
-MixTimeline.svelte
-  displays selected segments and transitions
-
-SegmentDetails.svelte
-  explains the selected segment
-```
-
-The business logic should stay mainly in:
-
-```text
-mixStore.js
-mixApi.js
-```
-
-This makes the code easier to change later.
-
----
-
-## 5. App states
-
-The frontend uses four main UI states:
-
-```text
-idle
-  User has not generated a mix yet.
-
-generating
-  The app is building the mix and showing progress steps.
-
-completed
-  A mix is ready, so the player, timeline, explanations, and feedback appear.
-
-error
-  Something failed, so the user sees a friendly error message.
-```
-
-The states are defined in:
-
-```text
-src/lib/constants/appStates.js
+index.html
+→ main.js
+→ App.svelte
+→ frontend UI
 ```
 
 ---
 
-## 6. Components overview
+### `src/App.svelte`
+
+Main page composition file.
+
+This file does not contain all business logic. It connects the major page sections together:
+
+```text
+Navbar
+HeroSection
+DJPlayerCard
+PromptComposer
+FeedbackButtons
+AIReasoningPanel
+```
+
+It reads state from `sessionStore.js` and decides which components should appear.
+
+Engineering rule:
+
+```text
+App.svelte should arrange the page.
+State logic belongs in stores.
+Backend/mock calls belong in services.
+Visual details belong in components.
+```
+
+---
+
+### `src/app.css`
+
+Global styling and design tokens.
+
+It defines shared CSS variables such as:
+
+```css
+--bg-main
+--bg-card
+--text-main
+--text-muted
+--accent
+--accent-2
+--radius-lg
+--shadow-soft
+```
+
+This makes the design easier to change later. For example, changing the accent color should happen mostly in `app.css`, not in every component.
+
+---
+
+## 6. Components
 
 ### `Navbar.svelte`
 
 Top navigation bar.
 
-Contains:
+Current purpose:
 
 ```text
-Logo / product name
-Explore link
-Presets link
-Sign in button
+Show product identity
+Show simple navigation placeholders
+Show Sign in button placeholder
 ```
 
-Currently, links are placeholders. They can be connected later when routing/authentication is added.
+Login is not implemented yet. The app should work for guests first.
 
 ---
 
 ### `HeroSection.svelte`
 
-Main hero text at the top of the page.
+Main marketing message.
 
-Purpose:
-
-```text
-Explain the app quickly.
-Make the product feel like an AI music player, not a technical form.
-```
-
----
-
-### `DJPlayerCard.svelte`
-
-Central visual card of the app.
-
-It changes depending on app state:
+Explains the product in a simple way:
 
 ```text
-idle       → AI DJ is ready
-生成ating  → progress bar and current step
-completed  → mix title, score, duration, audio player
-error      → friendly failure message
+Tell the AI DJ your vibe.
+It keeps mixing the best song moments until you stop.
 ```
 
-This card is important because it makes the app feel like a music product.
+This section helps the user understand the app before interacting.
 
 ---
 
 ### `PromptComposer.svelte`
 
-The main input area.
+Prompt input section.
 
 Contains:
 
 ```text
 Prompt textarea
-Duration selector
-Generate Mix button
 Preset chips
+Start AI DJ button
 ```
 
-Preset behavior:
+Important decision:
 
 ```text
-Clicking a preset fills the prompt.
-It does not generate immediately.
+Preset chips fill the prompt, but do not start the session immediately.
 ```
 
-This is intentional because the user can see and edit the prompt before generating.
+This lets the user see and edit the generated prompt before clicking **Start AI DJ**.
+
+The old duration selector was removed because the app now plays continuously until stopped.
 
 ---
 
-### `MixTimeline.svelte`
+### `DJPlayerCard.svelte`
 
-Shows the generated mix structure.
+Main user-facing music player.
 
-It displays:
-
-```text
-Segment cards
-Transition cards between segments
-Segment roles
-Segment scores
-Start/end times inside original songs
-```
-
-This is one of the most important demo components because it proves the system selected song parts, not just full songs.
-
----
-
-### `SegmentDetails.svelte`
-
-Explains the currently selected segment.
-
-It shows:
+Shows:
 
 ```text
-Song
+Current vibe
+Cover image
+Song title
 Artist
-Role
-Original time range
-Segment score
-Reason for selection
+Album/source
+Play / pause button
+Stop AI DJ button
+Startup progress
+Stopped state
+Error state
 ```
 
-This makes the model explainable to the user and lecturer.
+It intentionally does **not** show:
+
+```text
+mix score
+segment score
+transition score
+start_sec
+end_sec
+graph edge details
+```
+
+Those details are useful for the model and debugging, but not for the normal listener.
 
 ---
 
 ### `FeedbackButtons.svelte`
 
-Simple feedback UI.
+Simple user feedback controls.
 
-Current feedback buttons:
+Current feedback examples:
 
 ```text
-Good mix
+Good vibe
 More energy
-Too much vocals
-Bad transition
-Too slow
-Save this style
+Less vocals
+Smoother
+Surprise me
+Stop this style
 ```
 
-For now, these are visual only. Later, they should call a backend endpoint like:
+For the MVP, feedback is stored visually/mock-only. Later it should be sent to the backend and used as a learning signal.
+
+---
+
+### `AIReasoningPanel.svelte`
+
+Optional explanation panel.
+
+Hidden by default.
+
+Purpose:
 
 ```text
-POST /api/feedback
+Let the lecturer/demo user inspect why the AI DJ chose the current song moment.
+```
+
+It uses human-readable explanations, not raw ML scores.
+
+Example explanation style:
+
+```text
+The AI DJ selected this moment because it matches the emotional vocal vibe and gives a smooth entry.
 ```
 
 ---
 
-## 7. Running locally in development mode
+## 7. Constants
 
-Use this while actively editing the frontend:
+### `src/lib/constants/appStates.js`
+
+Defines legal UI states:
+
+```text
+idle
+starting
+playing
+buffering_next
+stopped
+error
+```
+
+Why this exists:
+
+```text
+State names should be centralized.
+Components should not invent random state strings.
+```
+
+The old state `completed` was removed because the app is not generating a finished fixed-length mix anymore. It is running an AI DJ session.
+
+---
+
+### `src/lib/constants/presets.js`
+
+Defines quick prompt presets.
+
+Examples:
+
+```text
+Gym Energy
+Tarab
+Chill
+Party
+Focus
+Classic Arabic
+Late Night
+```
+
+Each preset has:
+
+```text
+label: short visible chip text
+prompt: full prompt inserted into the composer
+```
+
+---
+
+## 8. Mock Data and Services
+
+### `src/lib/data/mockSession.js`
+
+Contains fake session data used before the real backend exists.
+
+It includes:
+
+```text
+session id
+vibe label
+current song title
+artist
+album/source
+cover image
+audio url placeholder
+AI reasoning text
+```
+
+This lets the frontend be built and tested without waiting for the model/backend.
+
+---
+
+### `src/lib/services/sessionApi.js`
+
+Mock API layer.
+
+Current functions:
+
+```text
+startSessionMock()
+sendFeedbackMock()
+stopSessionMock()
+```
+
+These functions simulate backend behavior with small delays.
+
+Later this file should be changed to real API calls such as:
+
+```text
+POST /sessions/start
+POST /sessions/{session_id}/feedback
+POST /sessions/{session_id}/stop
+POST /sessions/{session_id}/next
+```
+
+Engineering rule:
+
+```text
+Components should not call fetch directly.
+Backend communication should be isolated in services.
+```
+
+This makes backend changes safer.
+
+---
+
+## 9. Store
+
+### `src/lib/stores/sessionStore.js`
+
+Central state manager for the frontend.
+
+It stores:
+
+```text
+status
+prompt
+progress
+currentStep
+session
+isPlaying
+feedbackMessage
+reasoningOpen
+error
+```
+
+It exposes actions:
+
+```text
+setPrompt()
+start()
+togglePlay()
+stop()
+sendFeedback()
+toggleReasoning()
+reset()
+```
+
+Engineering reason:
+
+```text
+The store is the single source of truth.
+```
+
+Without a store, many components would each manage their own state, which becomes hard to debug.
+
+Important safety rule in the store:
+
+```text
+togglePlay() only works while the session is playing.
+```
+
+This prevents impossible states like:
+
+```text
+status = stopped
+isPlaying = true
+```
+
+---
+
+## 10. Types
+
+### `src/lib/types.js`
+
+Shared frontend data contracts written with JSDoc.
+
+Defines:
+
+```text
+AppStatus
+Preset
+NowPlaying
+AIReasoning
+Session
+SessionState
+```
+
+Why this matters:
+
+```text
+The frontend and backend need to agree on object shapes.
+VS Code can catch wrong property names.
+Future backend integration becomes easier.
+```
+
+Example:
+
+```text
+A Session has id, vibeLabel, nowPlaying, audioUrl, and reasoning.
+```
+
+---
+
+## 11. Development Commands
+
+From the `frontend` folder:
 
 ```powershell
-cd frontend
 npm install
 npm run dev
 ```
 
-Then open:
+Open:
 
 ```text
 http://localhost:5173
 ```
 
-Development mode uses Vite and supports hot reload.
-
-That means when you edit a file, the browser updates quickly.
+Use this mode while designing because Vite gives hot reload.
 
 ---
 
-## 8. Running with Docker
-
-The frontend also has a production-style Docker setup.
+## 12. Docker / Production Check
 
 From the project root, run:
 
@@ -413,234 +543,145 @@ From the project root, run:
 docker compose up --build
 ```
 
-Then open:
+Open:
 
 ```text
 http://localhost:8080
 ```
 
-The Docker version works like this:
+Use Docker to verify the course-style production container.
+
+Important difference:
 
 ```text
-Svelte source code
-→ npm run build
-→ dist/ static files
-→ Nginx serves the files
-→ browser opens localhost:8080
-```
-
-### Development vs Docker
-
-```text
-Development:
-  npm run dev
-  localhost:5173
-  hot reload
-
-Production Docker:
-  docker compose up --build
-  localhost:8080
-  no hot reload
-```
-
-Use development mode while coding. Use Docker mode to verify the final course/container version.
-
----
-
-## 9. Current mock generation flow
-
-When the user clicks **Generate Mix**:
-
-1. `PromptComposer.svelte` calls `mixStore.generate()`.
-2. `mixStore.js` switches status to `generating`.
-3. Progress steps are shown one by one.
-4. `mixApi.js` returns `mockMix` after a delay.
-5. Store status becomes `completed`.
-6. Player, timeline, details, and feedback appear.
-
-Current mock progress steps:
-
-```text
-Parsing your prompt
-Finding matching segments
-Building transition graph
-Planning the mix
-Rendering audio
-Finalizing
-```
-
-These steps mirror the real backend/model pipeline planned for the project.
-
----
-
-## 10. How to connect real backend later
-
-The frontend should not be rewritten when the backend is ready.
-
-The main file to change will be:
-
-```text
-src/lib/services/mixApi.js
-```
-
-Current mock function:
-
-```js
-export async function generateMixMock({ prompt, durationSec }) {
-  // returns mockMix
-}
-```
-
-Future real version could do:
-
-```js
-export async function generateMix({ prompt, durationSec }) {
-  const response = await fetch('/api/mixes/generate', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ prompt, durationSec })
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to generate mix');
-  }
-
-  return await response.json();
-}
-```
-
-If the backend uses background jobs, the future flow may become:
-
-```text
-POST /api/mixes/generate → returns job_id
-GET /api/jobs/{job_id} → returns progress
-GET /api/mixes/{mix_id} → returns final mix
-```
-
----
-
-## 11. Recommended next steps
-
-Recommended build order:
-
-```text
-1. Finish static homepage and responsive layout
-2. Improve player card visual design
-3. Improve timeline and transition explanations
-4. Make feedback buttons update local state
-5. Add demo audio file to public/demo_mix.mp3
-6. Add error simulation for testing the error UI
-7. Connect frontend to backend API
-8. Add catalog/admin pages later
-```
-
----
-
-## 12. Useful commands
-
-Install dependencies:
-
-```powershell
-npm install
-```
-
-Run frontend dev server:
-
-```powershell
 npm run dev
-```
+→ Vite development server
+→ localhost:5173
+→ hot reload
 
-Build frontend locally:
-
-```powershell
-npm run build
-```
-
-Preview production build locally:
-
-```powershell
-npm run preview
-```
-
-Run Docker production version:
-
-```powershell
 docker compose up --build
-```
-
-Stop Docker Compose:
-
-```powershell
-docker compose down
+→ production build served by Nginx
+→ localhost:8080
+→ no hot reload
 ```
 
 ---
 
-## 13. Notes for teammates
+## 13. Current MVP Decisions
 
-Important rules when editing this frontend:
+### Keep
 
 ```text
-Do not put all logic in App.svelte.
-Do not hardcode app states in many files.
-Do not call the backend directly from visual components.
-Do not change mock data shape without updating types.js.
-Do not remove JSDoc comments unless replacing them with TypeScript.
+No-login home page
+Prompt composer
+Preset chips
+Start AI DJ button
+Current song player
+Cover image
+Artist / album details
+Play / pause
+Stop AI DJ
+Simple feedback
+Optional AI reasoning
 ```
 
-Healthy edit locations:
+### Removed from main user UI
 
 ```text
-Change UI layout/design:
-  components/*.svelte
-  app.css
+Duration selector
+Mix score
+Segment score
+Transition score
+Segment timeline by default
+Raw start/end timestamps
+Technical graph details
+```
 
-Change prompts/presets:
-  constants/presets.js
+### Postpone
 
-Change mock backend result:
-  data/mockMix.js
-
-Change API/backend connection:
-  services/mixApi.js
-
-Change shared state logic:
-  stores/mixStore.js
-
-Change data contract:
-  types.js
+```text
+Login
+Save mix
+History
+Share
+Catalog page
+Admin page
+Collaborative party mode
+Real infinite queue
+Real backend audio chunking
 ```
 
 ---
 
-## 14. Summary
+## 14. Future Backend Integration Plan
 
-This frontend is designed to be simple now and scalable later.
+The frontend is designed around session APIs.
 
-Current version:
+Future endpoints may be:
 
-```text
-No-login homepage
-Prompt-first experience
-Mock generation state
-Generated player
-Segment timeline
-Transition explanations
-Feedback buttons
-Docker/Nginx production container
+```http
+POST /sessions/start
+POST /sessions/{session_id}/next
+POST /sessions/{session_id}/feedback
+POST /sessions/{session_id}/stop
 ```
 
-Future version:
+Expected future behavior:
 
 ```text
-Real backend API
-Real generated audio
-Job progress polling
-Save mixes after login
-User history
-Personalized feedback
-Catalog/admin pages
+Start session
+→ backend returns first audio chunk and now-playing metadata
+→ frontend plays it
+→ before it ends, frontend requests next chunk
+→ backend returns next continuation
+→ session continues until user stops
 ```
 
+For now, this is mocked.
+
+---
+
+## 15. Team Development Rules
+
+To keep the frontend clean:
+
+1. Do not put all code inside `App.svelte`.
+2. Add visual UI in `components/`.
+3. Add fixed values in `constants/`.
+4. Add mock data in `data/`.
+5. Add backend calls only in `services/`.
+6. Add shared state only in `stores/`.
+7. Update `types.js` when backend JSON shapes change.
+8. Keep ML/debug details out of the main user UI.
+9. Use optional reasoning panels for explainability.
+10. Run Docker before submission to verify the production container.
+
+---
+
+## 16. Quick Test Checklist
+
+After running the app:
+
+```text
+1. Open the page.
+2. Click a preset.
+3. Confirm the prompt fills.
+4. Click Start AI DJ.
+5. Confirm startup progress appears.
+6. Confirm player appears with song details.
+7. Click pause/play.
+8. Click feedback.
+9. Open AI reasoning.
+10. Click Stop AI DJ.
+11. Confirm feedback disappears and stopped state appears.
+```
+
+If all steps pass, the frontend MVP is working.
+
+---
+
+## 17. Current Product Sentence
+
+```text
+Tell the AI DJ your vibe, and it keeps mixing the best song moments until you stop.
+```
