@@ -1,0 +1,9 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    container_name: smart-dj-frontend
+    ports:
+      - "8080:80"
+    command: >
+      /bin/sh -c "echo 'Frontend running at http://localhost:8080' && nginx -g 'daemon off;'"
