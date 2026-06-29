@@ -1,24 +1,20 @@
 import { mockSession } from "../data/mockSession.js";
 
 /**
- * Purpose:
- * Isolates communication with the future backend API.
+ * Backend communication boundary.
  *
- * How this connects to the project:
- * Today this file returns mock data. Later, this is where we replace mocks with
- * real endpoints such as POST /sessions/start, POST /sessions/{id}/feedback,
- * and POST /sessions/{id}/stop.
+ * Current MVP:
+ * Returns mock Zonix data.
  *
- * Engineering decision:
- * UI components should not call fetch directly. Components call store actions;
- * the store calls this service. This keeps backend changes from breaking visual
- * components.
+ * Future backend:
+ * Replace the mock with FastAPI/Flask calls such as:
+ * - POST /sessions/start
+ * - POST /sessions/{id}/feedback
+ * - POST /sessions/{id}/stop
  */
 
 /**
- * Simulates backend/model delay.
- *
- * @param {number} ms - Number of milliseconds to wait.
+ * @param {number} ms
  * @returns {Promise<void>}
  */
 function wait(ms) {
@@ -26,15 +22,8 @@ function wait(ms) {
 }
 
 /**
- * Starts a mock AI DJ session.
- *
- * Future real version:
- * POST /sessions/start
- * Body: { prompt }
- * Response: { session_id, now_playing, reasoning, first_audio_url, ... }
- *
  * @param {{ prompt: string }} params
- * @returns {Promise<import("../types.js").DJSession>}
+ * @returns {Promise<import("../types.js").Session>}
  */
 export async function startSessionMock({ prompt }) {
   await wait(500);
@@ -46,31 +35,21 @@ export async function startSessionMock({ prompt }) {
 }
 
 /**
- * Sends user feedback in mock mode.
- *
- * Future real version:
- * POST /sessions/{session_id}/feedback
- *
  * @param {{ sessionId: string | null, feedback: string }} params
  * @returns {Promise<{ ok: true }>}
  */
 export async function sendFeedbackMock({ sessionId, feedback }) {
-  console.info("Mock feedback sent", { sessionId, feedback });
+  console.info("Mock Zonix feedback sent", { sessionId, feedback });
   await wait(150);
   return { ok: true };
 }
 
 /**
- * Stops a mock AI DJ session.
- *
- * Future real version:
- * POST /sessions/{session_id}/stop
- *
  * @param {{ sessionId: string | null }} params
  * @returns {Promise<{ ok: true }>}
  */
 export async function stopSessionMock({ sessionId }) {
-  console.info("Mock session stopped", { sessionId });
+  console.info("Mock Zonix session stopped", { sessionId });
   await wait(150);
   return { ok: true };
 }

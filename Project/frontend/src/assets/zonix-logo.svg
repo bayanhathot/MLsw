@@ -1,0 +1,25 @@
+<svg width="220" height="64" viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Zonix logo</title>
+  <desc id="desc">Zonix wordmark with a compact ZX mark</desc>
+  <defs>
+    <linearGradient id="mark" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DB7FF"/>
+      <stop offset="0.5" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#6F7CFF"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.23 0 0 0 0 0.51 0 0 0 0 0.96 0 0 0 0.32 0" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#softGlow)">
+    <rect x="0" y="8" width="48" height="48" rx="14" fill="url(#mark)"/>
+    <path d="M11 20H31L23 29H34L18 44H11L22 33H11L19 24H11V20Z" fill="white" fill-opacity="0.96"/>
+    <path d="M34 20H41L31 31L42 44H34L26 35L18 44H11L23 31L13 20H21L27 28L34 20Z" fill="#DDF0FF" fill-opacity="0.95"/>
+  </g>
+  <text x="66" y="42" fill="#F7FBFF" font-family="Outfit, Inter, Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="9">ZONIX</text>
+</svg>

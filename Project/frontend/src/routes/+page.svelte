@@ -1,23 +1,85 @@
 <script>
-  /*
-    Home page route: /
-
-    Final MVP behavior:
-    - Before playing: show prompt composer.
-    - While playing: hide prompt composer and show feedback controls.
-    - AI reasoning is removed from the main UI.
-  */
+  /**
+   * Zonix home route.
+   *
+   * Behavior:
+   * - Before starting: show the full prompt composer.
+   * - After starting: hide the composer so the listening experience feels clean.
+   * - While playing: show a small "Change vibe" strip. Clicking it opens the
+   *   prompt composer as a compact overlay so the user can retune the session.
+   * - After stopping: show the full prompt composer again.
+   */
 
   import { APP_STATES } from "$lib/constants/appStates.js";
   import { sessionStore } from "$lib/stores/sessionStore.js";
 
   import HeroSection from "$lib/components/HeroSection.svelte";
-  import DJPlayerCard from "$lib/components/DJPlayerCard.svelte";
   import PromptComposer from "$lib/components/PromptComposer.svelte";
-  import FeedbackButtons from "$lib/components/FeedbackButtons.svelte";
+  import DJPlayerCard from "$lib/components/DJPlayerCard.svelte";
+
+  let promptPanelOpen = $state(false);
+
+  let isSessionActive = $derived(
+    $sessionStore.status === APP_STATES.PLAYING ||
+      $sessionStore.status === APP_STATES.BUFFERING_NEXT ||
+      $sessionStore.status === APP_STATES.STARTING
+  );
+
+  let canChangeVibe = $derived(
+    $sessionStore.status === APP_STATES.PLAYING || $sessionStore.status === APP_STATES.BUFFERING_NEXT
+  );
+
+  let shouldShowPrompt = $derived(!isSessionActive || promptPanelOpen);
+
+  function startVibe() {
+    promptPanelOpen = false;
+    sessionStore.start();
+  }
+
+  function openPromptPanel() {
+    promptPanelOpen = true;
+  }
+
+  function closePromptPanel() {
+    promptPanelOpen = false;
+  }
 </script>
 
-<HeroSection />
+<div class="home-stage">
+  <HeroSection />
+
+  {#if shouldShowPrompt}
+    <div class={isSessionActive ? "prompt-overlay" : ""}>
+      <PromptComposer
+        prompt={$sessionStore.prompt}
+        isStarting={$sessionStore.status === APP_STATES.STARTING}
+        isOverlay={isSessionActive}
+        showCancel={isSessionActive}
+        startLabel={isSessionActive ? "Update vibe" : "▶ Start AI DJ"}
+        onPromptChange={sessionStore.setPrompt}
+        onStart={startVibe}
+        onCancel={closePromptPanel}
+      />
+    </div>
+  {:else if canChangeVibe}
+    <section class="active-vibe-strip card" aria-label="Current Zonix prompt">
+      <div>
+        <p class="eyebrow">Current vibe</p>
+        <p class="prompt-preview">{$sessionStore.prompt}</p>
+      </div>
+
+      <button class="secondary-button" onclick={openPromptPanel}>Change vibe</button>
+    </section>
+  {/if}
+
+  {#if $sessionStore.status === APP_STATES.ERROR}
+    <section class="error-box card">
+      <h3>Signal interrupted</h3>
+      <p>{$sessionStore.error}</p>
+      <button class="secondary-button" onclick={sessionStore.reset}>Try again</button>
+    </section>
+  {/if}
+</div>
 
 <DJPlayerCard
   status={$sessionStore.status}
@@ -25,43 +87,97 @@
   progress={$sessionStore.progress}
   session={$sessionStore.session}
   isPlaying={$sessionStore.isPlaying}
+  selectedFeedback={$sessionStore.selectedFeedback}
   onTogglePlay={sessionStore.togglePlay}
   onStop={sessionStore.stop}
+  onFeedback={sessionStore.sendFeedback}
 />
 
-{#if $sessionStore.status !== APP_STATES.PLAYING}
-  <PromptComposer
-    prompt={$sessionStore.prompt}
-    isStarting={$sessionStore.status === APP_STATES.STARTING}
-    onPromptChange={sessionStore.setPrompt}
-    onStart={sessionStore.start}
-  />
-{/if}
-
-{#if $sessionStore.status === APP_STATES.PLAYING}
-  <FeedbackButtons
-    selectedFeedback={$sessionStore.selectedFeedback}
-    onFeedback={sessionStore.sendFeedback}
-  />
-{/if}
-
-{#if $sessionStore.status === APP_STATES.ERROR}
-  <section class="error-box card">
-    <h3>Something went wrong</h3>
-    <p>{$sessionStore.error}</p>
-    <button class="secondary-button" onclick={sessionStore.reset}>
-      Try again
-    </button>
-  </section>
-{/if}
-
 <style>
+  .home-stage {
+    width: min(1500px, 100%);
+    margin: 0 auto;
+  }
+
+  .prompt-overlay {
+    width: min(1080px, 100%);
+    margin: -18px auto 30px;
+    animation: promptIn 0.2s ease-out;
+  }
+
+  .active-vibe-strip {
+    width: min(1080px, 100%);
+    margin: -18px auto 30px;
+    padding: 18px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .active-vibe-strip > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .eyebrow {
+    margin: 0 0 5px;
+    color: var(--accent-2);
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .prompt-preview {
+    max-width: 760px;
+    overflow: hidden;
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 15px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .error-box {
-    padding: 24px;
-    margin-bottom: 24px;
+    width: min(900px, 100%);
+    margin: 0 auto 24px;
+    padding: 22px;
+  }
+
+  .error-box > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .error-box h3 {
+    margin: 0 0 8px;
   }
 
   .error-box p {
     color: var(--text-muted);
+  }
+
+  @keyframes promptIn {
+    from {
+      transform: translateY(8px);
+      opacity: 0;
+    }
+
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .active-vibe-strip {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .prompt-preview {
+      white-space: normal;
+    }
   }
 </style>

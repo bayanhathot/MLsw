@@ -1,41 +1,30 @@
 import coverUrl from "../../assets/hero.png";
 
 /**
- * Purpose:
- * Provides one realistic mock AI DJ session for frontend development.
+ * Mock Zonix session for frontend development.
+ * Later this object should come from POST /sessions/start.
  *
- * How this connects to the project:
- * The backend/model is not connected yet, but the UI still needs realistic data
- * to render the player, now-playing metadata, and optional AI reasoning panel.
- *
- * Engineering decision:
- * The mock follows the same DJSession type expected from the future backend.
- * This lets us replace this file with API responses later without rewriting the
- * visual components.
- *
- * Note about the cover image:
- * We import an image from src/assets so Vite bundles it correctly. This avoids a
- * broken /demo-cover.jpg path when no public image exists yet.
- *
- * @type {import("../types.js").DJSession}
+ * @type {import("../types.js").Session}
  */
 export const mockSession = {
-  id: "session_001",
-  prompt: "Start an emotional tarab-style Arabic vibe with strong vocal peaks and smooth transitions.",
+  id: "zonix_session_001",
+  prompt: "Create an emotional Arabic vocal flow with warm vocals, nostalgic moments, and smooth transitions.",
+  vibeLabel: "Smooth emotional flow",
+  audioUrl: "/audio/mock-mix.mp3",
   nowPlaying: {
-    title: "Demo Song 1",
-    artist: "Demo Artist",
-    album: "Smart DJ Demo Catalog",
+    title: "Midnight Whispers",
+    artist: "Hassan Al-Shafei",
+    album: "Zonix Demo Catalog",
     coverUrl,
-    vibeLabel: "Emotional Tarab Flow",
-    role: "Warm intro"
+    vibeLabel: "Smooth emotional flow",
+    role: "Building your mix"
   },
   reasoning: {
-    selectedBecause:
-      "The AI DJ chose this song moment because it has a clean emotional opening and matches the requested vocal tarab vibe.",
+    selectedMoment:
+      "Zonix selected this moment because the vocal energy is warm, the entry is clean, and it fits the requested emotional flow.",
     transitionPlan:
-      "The next transition will stay smooth and avoid sudden energy jumps, so the vibe feels continuous.",
+      "The next transition keeps the mood stable instead of abruptly switching songs.",
     nextDirection:
-      "The session will gradually move toward a stronger emotional vocal peak."
+      "The mix will stay smooth while slowly increasing momentum if the user asks for more energy."
   }
 };

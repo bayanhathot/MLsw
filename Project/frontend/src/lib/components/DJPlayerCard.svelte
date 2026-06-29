@@ -1,14 +1,15 @@
 <script>
-  /*
-    Main AI DJ player card.
-
-    Design goal:
-    - Compact horizontal music-player style.
-    - Similar to the older version.
-    - Shows cover, title, artist, album, play/pause, progress bar, and stop button.
-  */
+  /**
+   * Fixed AI DJ control deck.
+   *
+   * This is not a normal Spotify-style track switcher. Zonix plays a continuous
+   * AI-planned flow, so the controls focus on play/pause, stopping the session,
+   * and coaching the next moments of the vibe.
+   */
 
   import { APP_STATES } from "$lib/constants/appStates.js";
+
+  const COACH_OPTIONS = ["Good vibe", "More energy", "Less vocals", "Smoother"];
 
   /**
    * @typedef {import("$lib/types.js").AppStatus} AppStatus
@@ -22,8 +23,10 @@
    *   progress?: number,
    *   session?: Session | null,
    *   isPlaying?: boolean,
+   *   selectedFeedback?: string | null,
    *   onTogglePlay?: () => void,
-   *   onStop?: () => void
+   *   onStop?: () => void,
+   *   onFeedback?: (feedback: string) => void
    * }}
    */
   let {
@@ -32,167 +35,221 @@
     progress = 0,
     session = null,
     isPlaying = false,
+    selectedFeedback = null,
     onTogglePlay = () => {},
-    onStop = () => {}
+    onStop = () => {},
+    onFeedback = () => {}
   } = $props();
 
   let nowPlaying = $derived(session?.nowPlaying);
+  let canControl = $derived(status === APP_STATES.PLAYING || status === APP_STATES.BUFFERING_NEXT);
+  let isStarting = $derived(status === APP_STATES.STARTING);
+  let volume = $state(72);
+
+  /** @param {Event} event */
+  function handleVolumeInput(event) {
+    const target = /** @type {HTMLInputElement} */ (event.currentTarget);
+    volume = Number(target.value);
+  }
 </script>
 
-<section class="player-card card">
-  {#if status === APP_STATES.IDLE}
-    <div class="empty-player">
-      <div class="cover-placeholder">DJ</div>
+<section class="player-deck" aria-label="Zonix AI DJ player">
+  <div class="track-block">
+    {#if nowPlaying}
+      <img class="cover" src={nowPlaying.coverUrl} alt={`Cover for ${nowPlaying.title}`} />
+      <div class="track-copy">
+        <h2>{nowPlaying.title}</h2>
+        <p>{nowPlaying.artist}</p>
+      </div>
+      <button class="icon-button" aria-label="Save vibe">♡</button>
+    {:else}
+      <div class="cover placeholder">ZX</div>
+      <div class="track-copy">
+        <h2>Zonix is ready</h2>
+        <p>Start a vibe to begin the flow.</p>
+      </div>
+    {/if}
+  </div>
 
+  <div class="flow-block">
+    <div class="flow-status">
+      <span class="signal" aria-hidden="true"></span>
       <div>
-        <p class="eyebrow">Ready when you are</p>
-        <h2>Your AI DJ is waiting.</h2>
-        <p>Describe the vibe below and start the session.</p>
+        <p class="eyebrow">
+          {#if isStarting}
+            Starting AI DJ
+          {:else if canControl}
+            AI DJ is playing...
+          {:else if status === APP_STATES.STOPPED}
+            Session stopped
+          {:else}
+            Waiting for a vibe
+          {/if}
+        </p>
+        <p class="flow-line">
+          {#if isStarting}
+            {currentStep || "Preparing the first flow"}
+          {:else if canControl}
+            Building your mix · Smooth and emotional
+          {:else if status === APP_STATES.ERROR}
+            Signal interrupted
+          {:else}
+            Describe your vibe above.
+          {/if}
+        </p>
       </div>
     </div>
-  {:else if status === APP_STATES.STARTING}
-    <div class="loading-player">
-      <div>
-        <p class="eyebrow">Starting AI DJ</p>
-        <h2>{currentStep}</h2>
-      </div>
 
-      <div class="progress-area">
-        <div class="progress-track">
-          <div class="progress-fill" style={`width: ${progress}%`}></div>
-        </div>
-        <span>{progress}%</span>
-      </div>
+    <div class="deck-controls">
+      <button class="play-button" onclick={onTogglePlay} disabled={!canControl} aria-label="Play or pause AI DJ">
+        {isPlaying ? "Ⅱ" : "▶"}
+      </button>
+      <button class="stop-button" onclick={onStop} disabled={!canControl}>Stop AI DJ</button>
     </div>
-  {:else if status === APP_STATES.PLAYING && nowPlaying}
-    <div class="playing-player">
-      <div class="track-left">
-        <img
-          class="cover"
-          src={nowPlaying.coverUrl}
-          alt={`Cover for ${nowPlaying.title}`}
-        />
 
-        <div>
-          <p class="eyebrow">{nowPlaying.vibeLabel}</p>
-          <h2>{nowPlaying.title}</h2>
-          <p class="artist">{nowPlaying.artist}</p>
-          <p class="album">{nowPlaying.album}</p>
-        </div>
+    <div class="progress-line" aria-label="Current flow progress">
+      <span>1:24</span>
+      <div class="progress-track">
+        <div class="progress-fill" style={`width: ${isStarting ? progress : 46}%`}></div>
       </div>
+      <span>3:45</span>
+    </div>
+  </div>
 
-      <div class="center-controls">
-        <button class="play-button" onclick={onTogglePlay}>
-          {isPlaying ? "Ⅱ" : "▶"}
+  <div class="coach-block">
+    <p class="eyebrow">Coach the DJ</p>
+    <div class="coach-row">
+      {#each COACH_OPTIONS as option}
+        <button
+          class:active={selectedFeedback === option}
+          onclick={() => onFeedback(option)}
+          disabled={!canControl}
+        >
+          {option}
         </button>
-
-        <div class="mini-timeline">
-          <span>0:35</span>
-
-          <div class="timeline-track">
-            <div class="timeline-fill"></div>
-          </div>
-
-          <span>2:56</span>
-        </div>
-      </div>
-
-      <div class="right-controls">
-        <span class="mood-chip">Warm intro</span>
-
-        <button class="secondary-button" onclick={onStop}>
-          Stop AI DJ
-        </button>
-      </div>
+      {/each}
     </div>
-  {:else if status === APP_STATES.STOPPED && nowPlaying}
-    <div class="stopped-player">
-      <div class="track-left">
-        <img
-          class="cover"
-          src={nowPlaying.coverUrl}
-          alt={`Cover for ${nowPlaying.title}`}
-        />
 
-        <div>
-          <p class="eyebrow">Session stopped</p>
-          <h2>{nowPlaying.title}</h2>
-          <p class="artist">{nowPlaying.artist}</p>
-          <p>Start a new vibe below when you are ready.</p>
-        </div>
-      </div>
-
-      <p class="stopped-note">
-        The AI DJ is stopped. For MVP we do not resume stopped sessions; start a
-        new prompt to begin another vibe.
-      </p>
+    <div class="volume-control" aria-label="Volume control">
+      <span aria-hidden="true">🔊</span>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={volume}
+        oninput={handleVolumeInput}
+        aria-label="Volume"
+      />
+      <span class="volume-value">{volume}%</span>
     </div>
-  {:else if status === APP_STATES.ERROR}
-    <div class="empty-player">
-      <div class="cover-placeholder">!</div>
 
-      <div>
-        <p class="eyebrow">Error</p>
-        <h2>The player could not start.</h2>
-        <p>Please try again.</p>
-      </div>
-    </div>
-  {/if}
+    <p class="coach-note">The more you guide, the better your flow.</p>
+  </div>
 </section>
 
 <style>
-  .player-card {
-    padding: 24px;
-    margin: 34px 0 22px;
-  }
-
-  .empty-player,
-  .loading-player,
-  .playing-player,
-  .stopped-player {
+  .player-deck {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    z-index: 40;
+    width: min(1500px, calc(100% - 32px));
+    transform: translateX(-50%);
     display: grid;
-    gap: 24px;
+    grid-template-columns: 330px 1fr 570px;
+    gap: 26px;
     align-items: center;
+    padding: 18px 24px;
+    border: 1px solid rgba(125, 183, 255, 0.2);
+    border-radius: 24px;
+    background:
+      linear-gradient(180deg, rgba(8, 16, 31, 0.94), rgba(4, 9, 18, 0.94)),
+      rgba(3, 8, 16, 0.96);
+    box-shadow: 0 22px 90px rgba(0, 0, 0, 0.62), 0 0 70px rgba(59, 130, 246, 0.12);
+    backdrop-filter: blur(18px);
   }
 
-  .playing-player {
-    grid-template-columns: 1.4fr 1fr auto;
-  }
-
-  .stopped-player {
-    grid-template-columns: 1fr 1.1fr;
-  }
-
-  .track-left {
+  .track-block,
+  .flow-status,
+  .deck-controls,
+  .progress-line,
+  .coach-row {
     display: flex;
     align-items: center;
-    gap: 18px;
+  }
+
+  .track-block {
+    gap: 16px;
     min-width: 0;
   }
 
-  .cover,
-  .cover-placeholder {
-    width: 88px;
-    height: 88px;
-    flex: 0 0 auto;
-    border-radius: 22px;
-  }
-
   .cover {
+    width: 70px;
+    height: 70px;
+    flex: 0 0 auto;
+    border-radius: 14px;
     object-fit: cover;
-    box-shadow: var(--shadow-soft);
+    border: 1px solid rgba(125, 183, 255, 0.2);
   }
 
-  .cover-placeholder {
+  .placeholder {
     display: grid;
     place-items: center;
-    font-weight: 900;
     color: white;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    background: linear-gradient(135deg, #264984, #6ea9ff);
+    font-weight: 1000;
+    letter-spacing: 0.08em;
+  }
+
+  .track-copy {
+    min-width: 0;
+  }
+
+  .track-copy h2 {
+    overflow: hidden;
+    margin: 0 0 5px;
+    color: var(--text-main);
+    font-size: 18px;
+    font-weight: 900;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .track-copy p,
+  .flow-line,
+  .coach-note {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+
+  .icon-button {
+    margin-left: auto;
+    border: none;
+    color: var(--text-soft);
+    background: transparent;
+    font-size: 28px;
+  }
+
+  .flow-block {
+    display: grid;
+    gap: 14px;
+  }
+
+  .flow-status {
+    gap: 12px;
+  }
+
+  .signal {
+    width: 26px;
+    height: 18px;
+    background:
+      linear-gradient(90deg, transparent 0 3px, var(--accent-2) 3px 5px, transparent 5px 9px, var(--accent-2) 9px 11px, transparent 11px 16px, var(--accent-2) 16px 18px, transparent 18px);
+    opacity: 0.85;
   }
 
   .eyebrow {
-    margin: 0 0 6px;
+    margin: 0 0 4px;
     color: var(--accent-2);
     font-size: 12px;
     font-weight: 900;
@@ -200,133 +257,134 @@
     text-transform: uppercase;
   }
 
-  h2 {
-    margin: 0;
-    font-size: clamp(26px, 3vw, 38px);
-    line-height: 1.05;
-  }
-
-  .artist {
-    margin: 8px 0 0;
-    color: var(--text-main);
-    font-weight: 800;
-  }
-
-  .album,
-  p {
-    margin: 6px 0 0;
-    color: var(--text-muted);
-  }
-
-  .center-controls {
-    display: grid;
-    gap: 14px;
-    justify-items: center;
+  .deck-controls {
+    justify-content: center;
+    gap: 18px;
   }
 
   .play-button {
-    width: 58px;
-    height: 58px;
-    border: none;
+    width: 68px;
+    height: 68px;
+    border: 1px solid rgba(125, 183, 255, 0.28);
     border-radius: 999px;
     display: grid;
     place-items: center;
-    color: #111827;
-    background: white;
-    font-size: 24px;
+    color: white;
+    background: linear-gradient(135deg, #1f5edb, #74adff);
+    box-shadow: var(--shadow-blue);
+    font-size: 26px;
     font-weight: 900;
-    cursor: pointer;
   }
 
-  .mini-timeline {
-    width: 100%;
-    display: grid;
-    grid-template-columns: auto 1fr auto;
+  .stop-button {
+    border: 1px solid rgba(125, 183, 255, 0.2);
+    border-radius: 999px;
+    padding: 10px 15px;
+    color: var(--text-soft);
+    background: rgba(125, 183, 255, 0.04);
+    font-size: 13px;
+    font-weight: 850;
+  }
+
+  .progress-line {
     gap: 12px;
-    align-items: center;
     color: var(--text-muted);
     font-size: 13px;
   }
 
-  .timeline-track,
   .progress-track {
-    height: 7px;
+    height: 6px;
+    flex: 1;
     overflow: hidden;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.12);
-  }
-
-  .timeline-fill {
-    width: 36%;
-    height: 100%;
-    border-radius: inherit;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  }
-
-  .progress-area {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 14px;
-    align-items: center;
+    background: rgba(125, 183, 255, 0.1);
   }
 
   .progress-fill {
     height: 100%;
     border-radius: inherit;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
-    transition: width 0.25s ease;
+    background: linear-gradient(90deg, #4b8cff, #7db7ff);
+    transition: width 0.28s ease;
   }
 
-  .right-controls {
-    display: flex;
+  .coach-block {
+    display: grid;
+    gap: 10px;
+  }
+
+  .coach-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .volume-control {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
     align-items: center;
-    gap: 12px;
-  }
-
-  .mood-chip {
-    border-radius: 999px;
-    padding: 9px 12px;
-    color: var(--text-muted);
-    background: rgba(255, 255, 255, 0.08);
+    margin-top: 2px;
+    color: var(--text-soft);
     font-size: 13px;
-    font-weight: 800;
   }
 
-  .stopped-note {
-    max-width: 580px;
-    line-height: 1.7;
+  .volume-control input[type="range"] {
+    width: 100%;
+    height: 5px;
+    accent-color: var(--accent-2);
+    cursor: pointer;
   }
 
-  @media (max-width: 980px) {
-    .playing-player,
-    .stopped-player {
+  .volume-value {
+    min-width: 38px;
+    color: var(--text-muted);
+    text-align: right;
+  }
+
+  .coach-row button {
+    border: 1px solid var(--border-muted);
+    border-radius: 999px;
+    padding: 10px 14px;
+    color: var(--text-soft);
+    background: rgba(255, 255, 255, 0.025);
+    font-size: 13px;
+    font-weight: 850;
+  }
+
+  .coach-row button.active,
+  .coach-row button:hover:not(:disabled) {
+    border-color: var(--accent-2);
+    color: white;
+    background: rgba(59, 130, 246, 0.16);
+  }
+
+  button:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+
+  @media (max-width: 1180px) {
+    .player-deck {
       grid-template-columns: 1fr;
-    }
-
-    .center-controls {
-      justify-items: stretch;
-    }
-
-    .right-controls {
-      justify-content: space-between;
+      gap: 18px;
+      position: static;
+      width: 100%;
+      transform: none;
+      margin-top: 24px;
     }
   }
 
-  @media (max-width: 640px) {
-    .track-left {
-      align-items: flex-start;
+  @media (max-width: 620px) {
+    .player-deck {
+      padding: 16px;
     }
 
-    .cover,
-    .cover-placeholder {
-      width: 72px;
-      height: 72px;
-      border-radius: 18px;
+    .deck-controls {
+      justify-content: flex-start;
     }
 
-    .right-controls {
-      flex-direction: column;
-      align-items: stretch;
+    .coach-row button,
+    .stop-button {
+      flex: 1;
     }
   }
 </style>

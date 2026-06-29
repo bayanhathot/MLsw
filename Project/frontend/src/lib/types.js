@@ -1,37 +1,17 @@
+// cSpell:ignore Zonix explainability
+
 /**
- * Legal frontend session states.
- *
- * idle:
- * User has not started the AI DJ yet.
- *
- * starting:
- * The app is preparing the first session.
- *
- * playing:
- * AI DJ session is active.
- *
- * buffering_next:
- * Future state for preparing the next audio chunk.
- *
- * stopped:
- * User stopped the AI DJ session.
- *
- * error:
- * Something failed.
- *
  * @typedef {"idle" | "starting" | "playing" | "buffering_next" | "stopped" | "error"} AppStatus
  */
 
 /**
- * Preset chip shown in the prompt composer.
- *
  * @typedef {Object} Preset
  * @property {string} label
  * @property {string} prompt
  */
 
 /**
- * User-facing metadata for the currently playing song moment.
+ * User-facing metadata for the current Zonix moment.
  *
  * @typedef {Object} NowPlaying
  * @property {string} title
@@ -39,13 +19,12 @@
  * @property {string} album
  * @property {string} coverUrl
  * @property {string} vibeLabel
+ * @property {string} role
  */
 
 /**
- * Human-readable AI explanation.
- *
- * This is for demo/explainability only.
- * It should not expose raw model scores in the normal UI.
+ * Optional human-readable explanation for demos and lecturer Q&A.
+ * Keep raw model scores out of the main user interface.
  *
  * @typedef {Object} AIReasoning
  * @property {string} selectedMoment
@@ -54,10 +33,11 @@
  */
 
 /**
- * Active AI DJ session returned by the backend/mock API.
+ * Active Zonix session returned by the backend/mock API.
  *
  * @typedef {Object} Session
  * @property {string} id
+ * @property {string} prompt
  * @property {string} vibeLabel
  * @property {NowPlaying} nowPlaying
  * @property {string} audioUrl
@@ -65,7 +45,7 @@
  */
 
 /**
- * Central frontend state for the AI DJ session.
+ * Central frontend state for the Zonix session.
  *
  * @typedef {Object} SessionState
  * @property {AppStatus} status

@@ -2,14 +2,9 @@
   /*
     Login page route: /login
 
-    Current MVP:
-    - Frontend-only form.
-    - No backend auth yet.
-
-    Future:
-    - Call POST /auth/login.
-    - Store returned session/token.
-    - Redirect user after login.
+    MVP status:
+    Frontend-only placeholder. Later this connects to the account system
+    for saved sessions, history, and personalization.
   */
 
   let email = $state("");
@@ -20,20 +15,20 @@
     error = "";
 
     if (!email.trim() || !password.trim()) {
-      error = "Please enter both email and password.";
+      error = "Enter your email and password to open the vault.";
       return;
     }
 
-    console.log("Login placeholder:", { email });
+    console.log("Zonix login placeholder:", { email });
   }
 </script>
 
 <section class="auth-page">
   <div class="auth-card card">
-    <p class="eyebrow">Welcome back</p>
-    <h1>Sign in</h1>
+    <p class="eyebrow">Account</p>
+    <h1>Sign in.</h1>
     <p class="muted">
-      Sign in later to save sessions, view history, and personalize your AI DJ.
+      Save sessions, view history, and personalize Zonix when accounts are connected.
     </p>
 
     <label for="email">Email</label>
@@ -46,10 +41,10 @@
       <p class="error">{error}</p>
     {/if}
 
-    <button class="primary-button" onclick={handleLogin}>Sign in</button>
+    <button class="primary-button" onclick={handleLogin}>Open vault</button>
 
     <p class="switch">
-      No account yet? <a href="/register">Create one</a>
+      New to Zonix? <a href="/register">Create account</a>
     </p>
   </div>
 </section>
@@ -62,21 +57,27 @@
   }
 
   .auth-card {
-    width: min(440px, 100%);
-    padding: 28px;
+    width: min(460px, 100%);
+    padding: 30px;
+  }
+
+  .auth-card > * {
+    position: relative;
+    z-index: 1;
   }
 
   .eyebrow {
     color: var(--accent-2);
-    font-weight: 800;
+    font-weight: 1000;
     text-transform: uppercase;
     font-size: 12px;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.16em;
   }
 
   h1 {
     margin: 8px 0;
-    font-size: 38px;
+    font-size: 42px;
+    letter-spacing: -0.05em;
   }
 
   .muted,
@@ -87,16 +88,16 @@
   label {
     display: block;
     margin: 18px 0 8px;
-    font-weight: 700;
+    font-weight: 900;
   }
 
   input {
     width: 100%;
     border: 1px solid var(--border-soft);
-    border-radius: 14px;
+    border-radius: 16px;
     padding: 13px 14px;
     color: var(--text-main);
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(0, 229, 255, 0.045);
     outline: none;
   }
 
@@ -112,6 +113,6 @@
   a {
     color: var(--accent-2);
     text-decoration: none;
-    font-weight: 700;
+    font-weight: 900;
   }
 </style>

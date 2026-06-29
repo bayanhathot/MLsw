@@ -13,7 +13,7 @@
 
 <style>
   .app-shell {
-    width: min(1180px, calc(100% - 32px));
+    width: min(1500px, calc(100% - 32px));
     margin: 0 auto;
   }
 </style>

@@ -1,45 +1,33 @@
 /**
- * Purpose:
- * Stores the quick vibe presets shown under the prompt box.
- *
- * How this connects to the project:
- * Not every user knows how to write a good AI DJ prompt. Presets help users
- * start quickly, while still filling the prompt box so they can edit before
- * starting the AI DJ.
- *
- * Engineering decision:
- * Preset content is separated from UI logic. Designers/product teammates can
- * change labels and prompt wording here without editing PromptComposer.svelte.
+ * Prompt shortcuts for the MVP.
+ * They are intentionally text-only so this section can later become recent
+ * prompts, saved vibes, or personalized suggestions.
  *
  * @type {import("../types.js").Preset[]}
  */
 export const PRESETS = [
   {
-    label: "Gym Energy",
-    prompt: "Start a high-energy gym vibe with strong beats, clean transitions, and motivating momentum."
+    label: "deep work focus",
+    prompt: "Create a deep work focus mix with clean, steady, low-distraction flow and smooth transitions."
   },
   {
-    label: "Tarab",
-    prompt: "Start an emotional tarab-style Arabic vibe with strong vocal peaks and smooth transitions."
+    label: "late night coding",
+    prompt: "Create a late night coding mix with lo-fi calm, smooth transitions, and low vocal distraction."
   },
   {
-    label: "Chill",
-    prompt: "Start a calm chill vibe with soft energy, warm sound, and relaxed transitions."
+    label: "emotional Arabic vocals",
+    prompt: "Create an emotional Arabic vocal flow with warm vocals, nostalgic moments, and smooth transitions."
   },
   {
-    label: "Party",
-    prompt: "Start a party vibe with high energy, catchy moments, and smooth exciting transitions."
+    label: "gym energy",
+    prompt: "Create a gym energy mix with driving rhythm, momentum, and no sudden drops."
   },
   {
-    label: "Focus",
-    prompt: "Start a focus vibe with steady energy, fewer vocals, and a smooth continuous flow."
+    label: "chill and relax",
+    prompt: "Create a chill relaxing flow with soft slower energy and easy listening transitions."
   },
   {
-    label: "Classic Arabic",
-    prompt: "Start a classic Arabic vibe with emotional vocals, elegant build ups, and smooth musical flow."
-  },
-  {
-    label: "Late Night",
-    prompt: "Start a late-night smooth vibe with warm sound, emotional flow, and gentle transitions."
+    label: "party warmup",
+    prompt: "Create a party warmup mix that is upbeat but not too intense, with clean energy build-up."
   }
 ];

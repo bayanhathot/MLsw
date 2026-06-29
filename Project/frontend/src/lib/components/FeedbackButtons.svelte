@@ -1,9 +1,9 @@
 <script>
   /*
-    Simple user feedback.
+    Zonix feedback controls.
 
-    The user should not need to understand ML scores.
-    These buttons describe musical preference changes.
+    The buttons use brand language instead of ML terms. The user guides the
+    feeling of the next moments without seeing raw model scores.
   */
 
   const FEEDBACK_OPTIONS = [
@@ -11,8 +11,8 @@
     "More energy",
     "Less vocals",
     "Smoother",
-    "Surprise me",
-    "Stop this style"
+    "More focus",
+    "Change energy"
   ];
 
   /**
@@ -29,8 +29,8 @@
 
 <section class="feedback card">
   <div>
-    <p class="eyebrow">Guide the DJ</p>
-    <h3>How should the next moments feel?</h3>
+    <p class="eyebrow">Guide the AI DJ</p>
+    <h3>Shape the next moments.</h3>
   </div>
 
   <div class="feedback-row">
@@ -53,17 +53,23 @@
     margin-bottom: 24px;
   }
 
+  .feedback > * {
+    position: relative;
+    z-index: 1;
+  }
+
   .eyebrow {
     color: var(--accent-2);
     font-size: 12px;
-    font-weight: 800;
-    letter-spacing: 0.14em;
+    font-weight: 1000;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
   }
 
   h3 {
     margin: 6px 0 0;
     font-size: 24px;
+    letter-spacing: -0.035em;
   }
 
   .feedback-row {
@@ -73,17 +79,21 @@
   }
 
   button {
-    border: 1px solid var(--border-soft);
+    border: 1px solid var(--border-muted);
     border-radius: 999px;
     padding: 10px 14px;
     color: var(--text-main);
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.035);
     cursor: pointer;
+    font-size: 13px;
+    font-weight: 900;
   }
 
   button.active,
   button:hover {
-    border-color: var(--accent-2);
-    background: rgba(125, 211, 252, 0.14);
+    border-color: var(--accent);
+    color: #001015;
+    background: var(--accent);
+    box-shadow: var(--shadow-cyan);
   }
 </style>
