@@ -321,15 +321,33 @@ function handleAudioEnded() {
       </div>
     </div>
 
-    <div class="deck-controls">
-      <button class="play-button" onclick={onTogglePlay} disabled={!canControl} aria-label="Play or pause AI DJ">
-        {isPlaying ? "Ⅱ" : "▶"}
-      </button>
+      <div class="deck-controls">
+    <button
+      class="segment-button"
+      disabled
+      aria-label="Previous segment"
+      title="Previous segment will be available when real segments are added"
+    >
+      ⏮
+    </button>
 
-      <button class="stop-button" onclick={onStop} disabled={!canControl}>
-        Stop AI DJ
-      </button>
-    </div>
+    <button class="play-button" onclick={onTogglePlay} disabled={!canControl} aria-label="Play or pause AI DJ">
+      {isPlaying ? "Ⅱ" : "▶"}
+    </button>
+
+    <button
+      class="segment-button"
+      disabled
+      aria-label="Next segment"
+      title="Next segment will be available when real segments are added"
+    >
+      ⏭
+    </button>
+
+    <button class="stop-button" onclick={onStop} disabled={!canControl}>
+      Stop AI DJ
+    </button>
+  </div>
 
     <div class="progress-line" aria-label="Current audio progress">
   <span>{formatTime(currentTime)}</span>
@@ -642,4 +660,22 @@ function handleAudioEnded() {
       flex: 1;
     }
   }
+
+  .segment-button {
+  width: 46px;
+  height: 46px;
+  border: 1px solid rgba(125, 183, 255, 0.24);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: var(--text-soft);
+  background: rgba(125, 183, 255, 0.05);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.segment-button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
 </style>
