@@ -1,29 +1,45 @@
 <!--
   File: src/lib/components/DJPlayerCard.svelte
-  Purpose: Fixed bottom AI DJ control deck.
-  What it does:
-  - Shows the current AI DJ moment: cover image, title, and artist.
-  - Lets the user play/pause the continuous session.
+
+  Purpose:
+  Fixed bottom AI DJ control deck for the Zonix frontend.
+
+  What this component does:
+  - Shows the currently selected AI DJ moment: cover image, title, and artist.
+  - Shows the current AI DJ status: waiting, starting, playing, stopped, or error.
+  - Lets the user play or pause the active session.
   - Lets the user stop the AI DJ session.
-  - Shows a simple flow/progress bar for the current rendered audio chunk.
-  - Provides Coach the DJ buttons such as Good vibe, More energy, Less vocals, and Smoother.
-  - Provides a volume slider UI using Svelte local state.
+  - Shows Coach the DJ feedback buttons:
+    Good vibe, More energy, Less vocals, Smoother.
+  - Shows a volume slider.
+  - Plays the real demo MP3 returned from the backend through session.audioUrl.
+
   Important product decision:
-  - This is NOT just a Spotify-style song player. Zonix is an AI DJ that plans a continuous flow,
-    so the controls focus on guiding the next musical moments rather than only skipping songs.
+  This is not only a Spotify-style song player.
+  Zonix is an AI DJ system, so this player focuses on guiding the music flow,
+  not only controlling a single song.
 -->
 
 <script>
   /**
    * Fixed AI DJ control deck.
    *
-   * This is not a normal Spotify-style track switcher. Zonix plays a continuous
-   * AI-planned flow, so the controls focus on play/pause, stopping the session,
-   * and coaching the next moments of the vibe.
+   * This component receives all important session data from the parent page/store.
+   * It does not create sessions by itself.
+   * It only displays the active session and triggers callbacks such as:
+   * - onTogglePlay()
+   * - onStop()
+   * - onFeedback()
    */
 
   import { APP_STATES } from "$lib/constants/appStates.js";
 
+  /**
+   * Feedback options shown in the Coach the DJ section.
+   *
+   * These options are sent to the backend when clicked.
+   * Later, the backend can use them to choose better next segments.
+   */
   const COACH_OPTIONS = ["Good vibe", "More energy", "Less vocals", "Smoother"];
 
   /**
@@ -32,6 +48,36 @@
    */
 
   /**
+   * Props passed from the parent page/store.
+   *
+   * status:
+   *   Current state of the AI DJ session.
+   *
+   * currentStep:
+   *   Human-readable message about what the app is doing now.
+   *
+   * progress:
+   *   Simple UI progress value used while starting/loading.
+   *
+   * session:
+   *   Current backend session object.
+   *   This contains nowPlaying metadata and audioUrl.
+   *
+   * isPlaying:
+   *   Whether the frontend considers the session currently playing.
+   *
+   * selectedFeedback:
+   *   The feedback option most recently selected by the user.
+   *
+   * onTogglePlay:
+   *   Callback for play/pause button.
+   *
+   * onStop:
+   *   Callback for Stop AI DJ button.
+   *
+   * onFeedback:
+   *   Callback for Coach the DJ feedback buttons.
+   *
    * @type {{
    *   status?: AppStatus,
    *   currentStep?: string,
@@ -56,16 +102,175 @@
     onFeedback = () => {}
   } = $props();
 
+  /**
+   * Current track/segment information returned from the backend.
+   *
+   * Example:
+   * session.nowPlaying.title
+   * session.nowPlaying.artist
+   * session.nowPlaying.coverUrl
+   */
   let nowPlaying = $derived(session?.nowPlaying);
+
+  /**
+   * The backend audio URL.
+   *
+   * For the current demo, this should be:
+   * http://localhost:5000/static/audio/demo.mp3
+   */
+  let audioUrl = $derived(session?.audioUrl || "");
+
+  /**
+   * The user can control the player only while the session is playing
+   * or preparing the next segment.
+   */
   let canControl = $derived(status === APP_STATES.PLAYING || status === APP_STATES.BUFFERING_NEXT);
+
+  /**
+   * True while the backend is creating the session or preparing the first moment.
+   */
   let isStarting = $derived(status === APP_STATES.STARTING);
+
+  /**
+   * Frontend volume state.
+   *
+   * The slider value is 0-100, but the real HTMLAudioElement volume expects 0-1.
+   */
   let volume = $state(72);
 
-  /** @param {Event} event */
+  /**
+   * Reference to the real <audio> element.
+   *
+   * bind:this={audioElement} connects this variable to the DOM audio player.
+   */
+  /** @type {HTMLAudioElement | null} */
+  let audioElement = $state(null);
+
+
+  let currentTime = $state(0);
+  let duration = $state(0);
+
+  let progressPercent = $derived(
+    duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
+  );
+  /**
+   * Apply the volume slider value to the real audio element.
+   *
+   * Example:
+   * volume = 72
+   * audioElement.volume = 0.72
+   */
+  $effect(() => {
+    if (!audioElement) {
+      return;
+    }
+
+    audioElement.volume = volume / 100;
+  });
+
+  /**
+   * Play or pause the real audio according to frontend state.
+   *
+   * When:
+   * - session has audioUrl
+   * - app is in playing state
+   * - isPlaying is true
+   *
+   * Then:
+   * - try to play the audio.
+   *
+   * Some browsers block autoplay.
+   * That is why native audio controls are shown too.
+   */
+  $effect(() => {
+    if (!audioElement || !audioUrl) {
+      return;
+    }
+
+    if (canControl && isPlaying) {
+      audioElement.play().catch(() => {
+        /**
+         * Browser may block autoplay until the user clicks play.
+         * This is normal browser behavior.
+         */
+      });
+    } else {
+      audioElement.pause();
+    }
+  });
+
+  /**
+   * Handle the volume slider.
+   *
+   * @param {Event} event
+   */
   function handleVolumeInput(event) {
     const target = /** @type {HTMLInputElement} */ (event.currentTarget);
     volume = Number(target.value);
+
+    if (audioElement) {
+      audioElement.volume = volume / 100;
+    }
   }
+
+  /**
+ * Convert seconds into a readable audio time format.
+ *
+ * Example:
+ * 84 seconds becomes "1:24"
+ *
+ * @param {number} seconds
+ * @returns {string}
+ */
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "0:00";
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, "0");
+
+  return `${minutes}:${remainingSeconds}`;
+}
+
+function handleLoadedMetadata() {
+  if (!audioElement) {
+    return;
+  }
+
+  duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
+}
+
+function handleTimeUpdate() {
+  if (!audioElement) {
+    return;
+  }
+
+  currentTime = audioElement.currentTime;
+  duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
+}
+
+
+/** @param {Event} event */
+function handleSeekInput(event) {
+  const target = /** @type {HTMLInputElement} */ (event.currentTarget);
+
+  if (!audioElement || duration <= 0) {
+    return;
+  }
+
+  const percentage = Number(target.value);
+  const nextTime = (percentage / 100) * duration;
+
+  audioElement.currentTime = nextTime;
+  currentTime = nextTime;
+}
+
+function handleAudioEnded() {
+  currentTime = duration;
+}
+
+  
 </script>
 
 <section class="player-deck" aria-label="Zonix AI DJ player">
@@ -101,6 +306,7 @@
             Waiting for a vibe
           {/if}
         </p>
+
         <p class="flow-line">
           {#if isStarting}
             {currentStep || "Preparing the first flow"}
@@ -119,20 +325,53 @@
       <button class="play-button" onclick={onTogglePlay} disabled={!canControl} aria-label="Play or pause AI DJ">
         {isPlaying ? "Ⅱ" : "▶"}
       </button>
-      <button class="stop-button" onclick={onStop} disabled={!canControl}>Stop AI DJ</button>
+
+      <button class="stop-button" onclick={onStop} disabled={!canControl}>
+        Stop AI DJ
+      </button>
     </div>
 
-    <div class="progress-line" aria-label="Current flow progress">
-      <span>1:24</span>
-      <div class="progress-track">
-        <div class="progress-fill" style={`width: ${isStarting ? progress : 46}%`}></div>
-      </div>
-      <span>3:45</span>
-    </div>
+    <div class="progress-line" aria-label="Current audio progress">
+  <span>{formatTime(currentTime)}</span>
+
+  <input
+    class="progress-slider"
+    type="range"
+    min="0"
+    max="100"
+    step="0.1"
+    value={isStarting ? progress : progressPercent}
+    oninput={handleSeekInput}
+    disabled={!audioUrl || duration <= 0}
+    aria-label="Seek audio position"
+  />
+
+  <span>{formatTime(duration)}</span>
+</div>
+
+    {#if audioUrl}
+  <!--
+    Hidden real audio element.
+
+    The user does not control this directly.
+    The custom Zonix play/pause button above controls this audio element.
+  -->
+  <!-- svelte-ignore a11y_media_has_caption -->
+  <audio
+  class="hidden-audio"
+  bind:this={audioElement}
+  src={audioUrl}
+  preload="auto"
+  onloadedmetadata={handleLoadedMetadata}
+  ontimeupdate={handleTimeUpdate}
+  onended={handleAudioEnded}
+></audio>
+{/if}
   </div>
 
   <div class="coach-block">
     <p class="eyebrow">Coach the DJ</p>
+
     <div class="coach-row">
       {#each COACH_OPTIONS as option}
         <button
@@ -307,20 +546,21 @@
     font-size: 13px;
   }
 
-  .progress-track {
-    height: 6px;
-    flex: 1;
-    overflow: hidden;
-    border-radius: 999px;
-    background: rgba(125, 183, 255, 0.1);
+  .progress-slider {
+  flex: 1;
+  height: 6px;
+  accent-color: var(--accent-2);
+  cursor: pointer;
+}
+
+  .progress-slider:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
-  .progress-fill {
-    height: 100%;
-    border-radius: inherit;
-    background: linear-gradient(90deg, #4b8cff, #7db7ff);
-    transition: width 0.28s ease;
-  }
+  .hidden-audio {
+  display: none;
+}
 
   .coach-block {
     display: grid;

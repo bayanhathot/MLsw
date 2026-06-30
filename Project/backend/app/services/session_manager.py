@@ -137,7 +137,7 @@ def create_session(prompt: str) -> dict:
         "status": "playing",
         "vibeLabel": track_data["vibeLabel"],
         "nowPlaying": track_data["nowPlaying"],
-        "audioUrl": "",
+        "audioUrl": "http://localhost:5000/static/audio/demo.mp3",
         "reasoning": track_data["reasoning"],
         "selectedFeedback": None,
     }

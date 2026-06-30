@@ -18,6 +18,7 @@ The frontend becomes the client. This FastAPI app becomes the server.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .schemas import (
     FeedbackRequest,
@@ -37,6 +38,8 @@ app = FastAPI(
     description="Backend API for Zonix AI DJ sessions.",
     version="0.1.0",
 )
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 # CORS allows the SvelteKit frontend to call this backend.
