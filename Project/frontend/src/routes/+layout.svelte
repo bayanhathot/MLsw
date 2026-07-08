@@ -11,10 +11,17 @@
 -->
 
 <script>
+  import { onMount } from "svelte";
+
   import "../app.css";
   import Navbar from "$lib/components/Navbar.svelte";
+  import { authStore } from "$lib/stores/authStore.js";
 
   let { children } = $props();
+
+  onMount(() => {
+    authStore.checkAuth();
+  });
 </script>
 
 <div class="app-shell">

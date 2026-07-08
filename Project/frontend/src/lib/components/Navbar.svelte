@@ -10,12 +10,12 @@
 -->
 
 <script>
-  /**
-   * Minimal Zonix navigation for the guest/MVP version.
-   * Uses the actual Zonix logo asset instead of text-only branding.
-   */
-
   import zonixLogo from "../../assets/zonix-logo.svg";
+  import { authStore } from "$lib/stores/authStore.js";
+
+  async function handleLogout() {
+    await authStore.logout();
+  }
 </script>
 
 <nav class="navbar">
@@ -23,10 +23,18 @@
     <img src={zonixLogo} alt="Zonix" />
   </a>
 
-  <div class="links">
-    <button class="theme-button" aria-label="Theme toggle placeholder">☼</button>
+    <div class="links">
+  <button class="theme-button" aria-label="Theme toggle placeholder">☼</button>
+
+  {#if $authStore.status === "authenticated" && $authStore.user}
+    <span class="user-chip">{$authStore.user.username}</span>
+    <button class="secondary-button" type="button" onclick={handleLogout}>Logout</button>
+  {:else if $authStore.status === "checking"}
+    <span class="user-chip">Checking...</span>
+  {:else}
     <a class="secondary-button" href="/login">Sign in</a>
-  </div>
+  {/if}
+</div>
 </nav>
 
 <style>
@@ -78,4 +86,13 @@
       display: none;
     }
   }
+  .user-chip {
+  border: 1px solid var(--border-muted);
+  border-radius: 999px;
+  padding: 10px 14px;
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 14px;
+  font-weight: 900;
+}
 </style>

@@ -9,20 +9,35 @@
   - This page should call a backend auth endpoint and store a session/token.
 -->
 
-<script>
-  /*
-    Login page route: /login
-
-    MVP status:
-    Frontend-only placeholder. Later this connects to the account system
-    for saved sessions, history, and personalization.
-  */
+  <script>
+  import { goto } from "$app/navigation";
+  import { authStore } from "$lib/stores/authStore.js";
 
   let email = $state("");
   let password = $state("");
   let error = $state("");
+  let isSubmitting = $state(false);
 
-  function handleLogin() {
+  /**
+   * Convert unknown caught errors into a readable message.
+   *
+   * @param {unknown} err
+   * @param {string} fallback
+   */
+  function getErrorMessage(err, fallback) {
+    if (err instanceof Error) {
+      return err.message;
+    }
+
+    return fallback;
+  }
+
+  /**
+   * @param {SubmitEvent} event
+   */
+  async function handleLogin(event) {
+    event.preventDefault();
+
     error = "";
 
     if (!email.trim() || !password.trim()) {
@@ -30,7 +45,20 @@
       return;
     }
 
-    console.log("Zonix login placeholder:", { email });
+    isSubmitting = true;
+
+    try {
+      await authStore.login({
+        email: email.trim(),
+        password
+      });
+
+      await goto("/");
+    } catch (err) {
+      error = getErrorMessage(err, "Login failed.");
+    } finally {
+      isSubmitting = false;
+    }
   }
 </script>
 
@@ -42,17 +70,21 @@
       Save sessions, view history, and personalize Zonix when accounts are connected.
     </p>
 
-    <label for="email">Email</label>
-    <input id="email" bind:value={email} type="email" placeholder="you@example.com" />
+      <form onsubmit={handleLogin}>
+  <label for="email">Email</label>
+  <input id="email" bind:value={email} type="email" placeholder="you@example.com" />
 
-    <label for="password">Password</label>
-    <input id="password" bind:value={password} type="password" placeholder="Your password" />
+  <label for="password">Password</label>
+  <input id="password" bind:value={password} type="password" placeholder="Your password" />
 
-    {#if error}
-      <p class="error">{error}</p>
-    {/if}
+  {#if error}
+    <p class="error">{error}</p>
+  {/if}
 
-    <button class="primary-button" onclick={handleLogin}>Sign in</button>
+  <button class="primary-button" type="submit" disabled={isSubmitting}>
+    {isSubmitting ? "Signing in..." : "Sign in"}
+  </button>
+</form>
 
     <p class="switch">
       New to Zonix? <a href="/register">Create account</a>

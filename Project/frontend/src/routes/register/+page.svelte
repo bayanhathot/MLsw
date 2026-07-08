@@ -9,25 +9,38 @@
   - This page should call a backend register endpoint, then redirect to login or home.
 -->
 
-<script>
-  /*
-    Register page route: /register
+  <script>
+  import { goto } from "$app/navigation";
+  import { authStore } from "$lib/stores/authStore.js";
 
-    MVP status:
-    Frontend-only placeholder. Later this creates a profile for
-    saved sessions and personalization.
-  */
-
-  let name = $state("");
+  let username = $state("");
   let email = $state("");
   let password = $state("");
   let confirmPassword = $state("");
   let error = $state("");
+  let isSubmitting = $state(false);
 
-  function handleRegister() {
+  /**
+   * @param {unknown} err
+   * @param {string} fallback
+   */
+  function getErrorMessage(err, fallback) {
+    if (err instanceof Error) {
+      return err.message;
+    }
+
+    return fallback;
+  }
+
+  /**
+   * @param {SubmitEvent} event
+   */
+  async function handleRegister(event) {
+    event.preventDefault();
+
     error = "";
 
-    if (!name.trim() || !email.trim() || !password.trim()) {
+    if (!username.trim() || !email.trim() || !password.trim()) {
       error = "Please fill all required fields.";
       return;
     }
@@ -37,9 +50,29 @@
       return;
     }
 
-    console.log("Zonix register placeholder:", { name, email });
+    isSubmitting = true;
+
+    try {
+      await authStore.register({
+        username: username.trim(),
+        email: email.trim(),
+        password
+      });
+
+      await authStore.login({
+        email: email.trim(),
+        password
+      });
+
+      await goto("/");
+    } catch (err) {
+      error = getErrorMessage(err, "Registration failed.");
+    } finally {
+      isSubmitting = false;
+    }
   }
 </script>
+
 
 <section class="auth-page">
   <div class="auth-card card">
@@ -49,30 +82,32 @@
       Accounts will unlock saved sessions, listening history, and personal settings.
     </p>
 
-    <label for="name">Name</label>
-    <input id="name" bind:value={name} type="text" placeholder="Your name" />
+    <form onsubmit={handleRegister}>
+  <label for="username">Username</label>
+  <input id="username" bind:value={username} type="text" placeholder="Your username" />
 
-    <label for="email">Email</label>
-    <input id="email" bind:value={email} type="email" placeholder="you@example.com" />
+  <label for="email">Email</label>
+  <input id="email" bind:value={email} type="email" placeholder="you@example.com" />
 
-    <label for="password">Password</label>
-    <input id="password" bind:value={password} type="password" placeholder="Create password" />
+  <label for="password">Password</label>
+  <input id="password" bind:value={password} type="password" placeholder="Create password" />
 
-    <label for="confirmPassword">Confirm password</label>
-    <input
-      id="confirmPassword"
-      bind:value={confirmPassword}
-      type="password"
-      placeholder="Repeat password"
-    />
+  <label for="confirmPassword">Confirm password</label>
+  <input
+    id="confirmPassword"
+    bind:value={confirmPassword}
+    type="password"
+    placeholder="Repeat password"
+  />
 
-    {#if error}
-      <p class="error">{error}</p>
-    {/if}
+  {#if error}
+    <p class="error">{error}</p>
+  {/if}
 
-    <button class="primary-button" onclick={handleRegister}>
-      Create account
-    </button>
+  <button class="primary-button" type="submit" disabled={isSubmitting}>
+    {isSubmitting ? "Creating account..." : "Create account"}
+  </button>
+</form>
 
     <p class="switch">
       Already have an account? <a href="/login">Sign in</a>

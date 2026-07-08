@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.database.database import get_db
 from app.routers.auth import router as auth_router
+from fastapi.middleware.cors import CORSMiddleware
 
 
 # ---------------------------------------------------------
@@ -42,6 +43,19 @@ app = FastAPI(
     version="0.1.0",
 )
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------------------------------------------------
 # Register routers

@@ -3,49 +3,58 @@ auth.py
 
 FastAPI routes for authentication.
 
-Endpoints:
-1. POST /auth/register
-2. POST /auth/login
-3. GET /auth/me
+Current auth design:
+- Register creates a user.
+- Login verifies credentials and stores JWT in an HTTP-only cookie.
+- /me reads the JWT from the cookie and returns the current user.
+- Logout deletes the cookie.
+
+Why HTTP-only cookie?
+The frontend JavaScript cannot read an HTTP-only cookie.
+This is safer than storing the JWT in localStorage.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token
 from app.database.database import get_db
 from app.database.models.user import User
-from app.schemas import Token, UserCreate, UserLogin, UserRead
+from app.schemas import UserCreate, UserLogin, UserRead
 from app.services.auth_service import register_user, login_user
 
-# Creates a router with prefix /auth.
-# All endpoints here start with /auth.
+
 router = APIRouter(
     prefix="/auth",
     tags=["auth"],
 )
 
-# This tells FastAPI where the token is expected to come from.
-# The frontend sends:
-# Authorization: Bearer <token>
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# Cookie name used by the backend and browser.
+ACCESS_TOKEN_COOKIE_NAME = "zonix_access_token"
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    request: Request,
     db: Session = Depends(get_db),
 ) -> User:
     """
     Dependency that returns the currently authenticated user.
 
-    Steps:
-    1. Read token from Authorization header.
-    2. Decode token.
-    3. Extract user id from token.
-    4. Load user from database.
-    5. Return User object.
+    With HTTP-only cookie auth:
+    1. Browser sends the cookie automatically.
+    2. Backend reads the cookie from request.cookies.
+    3. Backend decodes the JWT.
+    4. Backend loads the user from PostgreSQL.
     """
+
+    token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated.",
+        )
 
     user_id = decode_access_token(token)
 
@@ -80,47 +89,65 @@ def register(
     """
     Register a new Zonix user.
 
-    Request body:
-    {
-      "username": "mrisatmo",
-      "email": "mrisatmo@example.com",
-      "password": "strongpassword"
-    }
-
-    Response:
-    User data without password.
+    This endpoint only creates the user.
+    It does not automatically log the user in.
     """
 
     return register_user(db=db, user_data=user_data)
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login")
 def login(
     login_data: UserLogin,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     """
-    Login an existing user.
+    Login user and store JWT in an HTTP-only cookie.
 
-    Request body:
-    {
-      "email": "mrisatmo@example.com",
-      "password": "strongpassword"
-    }
+    Old design:
+        Return JWT in JSON.
 
-    Response:
-    {
-      "access_token": "...",
-      "token_type": "bearer"
-    }
+    New design:
+        Set JWT in HTTP-only cookie.
+
+    This means the frontend does not need to store the token manually.
     """
 
     access_token = login_user(db=db, login_data=login_data)
 
-    return Token(
-        access_token=access_token,
-        token_type="bearer",
+    response.set_cookie(
+        key=ACCESS_TOKEN_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        secure=False,          # Development: False because we use http://localhost
+        samesite="lax",        # Good default for local same-site development
+        max_age=60 * 60,       # 1 hour
+        path="/",
     )
+
+    return {
+        "message": "Login successful",
+    }
+
+
+@router.post("/logout")
+def logout(response: Response):
+    """
+    Logout user by deleting the auth cookie.
+
+    Since the JWT is stored in the browser cookie,
+    deleting the cookie logs the user out from the browser side.
+    """
+
+    response.delete_cookie(
+        key=ACCESS_TOKEN_COOKIE_NAME,
+        path="/",
+    )
+
+    return {
+        "message": "Logout successful",
+    }
 
 
 @router.get("/me", response_model=UserRead)
@@ -130,9 +157,7 @@ def read_me(
     """
     Protected endpoint.
 
-    Returns the user connected to the provided JWT token.
-
-    This proves auth works.
+    Returns the user connected to the HTTP-only cookie JWT.
     """
 
     return current_user
