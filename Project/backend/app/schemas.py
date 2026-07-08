@@ -1,100 +1,70 @@
 """
-File: app/schemas.py
+schemas.py
 
-Purpose:
-This file defines the data shapes used by the Zonix backend API.
+Pydantic schemas define the shape of request and response data.
 
-Why this file exists:
-FastAPI uses Pydantic models to validate incoming JSON requests and to document
-the API response structure. Instead of passing random dictionaries everywhere,
-we define clear request and response models here.
-
-Main models:
-- StartSessionRequest: what the frontend sends when the user starts the AI DJ.
-- FeedbackRequest: what the frontend sends when the user coaches the DJ.
-- SessionResponse: what the backend returns to describe the active AI DJ session.
+Important:
+SQLAlchemy models define database tables.
+Pydantic schemas define API input/output.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 
 
-class StartSessionRequest(BaseModel):
+class UserCreate(BaseModel):
     """
-    Request body for POST /sessions/start.
+    Request body for registering a new user.
 
-    Example JSON from frontend:
-    {
-        "prompt": "emotional Arabic vocals with smooth transitions"
-    }
-    """
+    The frontend sends this data to POST /auth/register.
 
-    prompt: str
-
-
-class FeedbackRequest(BaseModel):
-    """
-    Request body for POST /sessions/{session_id}/feedback.
-
-    Example JSON from frontend:
-    {
-        "feedback": "More energy"
-    }
+    Password note:
+    bcrypt has a 72-byte password input limit.
+    For this learning project, we limit passwords to 72 characters.
     """
 
-    feedback: str
+    username: str = Field(min_length=3, max_length=50)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=72)
 
 
-class NowPlaying(BaseModel):
+class UserLogin(BaseModel):
     """
-    User-facing information about the current song moment.
+    Request body for logging in.
 
-    Important:
-    This is not only a full song. In the real system, this will represent
-    the currently selected segment/moment from a song.
-    """
-
-    title: str
-    artist: str
-    album: str
-    coverUrl: str
-    vibeLabel: str
-
-
-class AIReasoning(BaseModel):
-    """
-    Human-readable explanation of the AI DJ decision.
-
-    This should stay simple and user-friendly.
-    Do not expose raw model scores in the normal UI.
+    The frontend sends this data to POST /auth/login.
     """
 
-    selectedMoment: str
-    transitionPlan: str
-    nextDirection: str
+    email: EmailStr
+    password: str
 
 
-class SessionResponse(BaseModel):
+class UserRead(BaseModel):
     """
-    Response body returned when an AI DJ session is created or updated.
+    Response shape for returning user data.
 
-    This is the main contract between frontend and backend for the MVP.
-    """
-
-    id: str
-    prompt: str
-    status: str
-    vibeLabel: str
-    nowPlaying: NowPlaying
-    audioUrl: str
-    reasoning: AIReasoning
-    selectedFeedback: str | None = None
-
-
-class StopSessionResponse(BaseModel):
-    """
-    Response body returned when the user stops the AI DJ session.
+    Notice:
+    We do NOT return hashed_password.
     """
 
-    session_id: str
-    status: str
-    message: str
+    id: int
+    username: str
+    email: EmailStr
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class Token(BaseModel):
+    """
+    Response shape for login.
+
+    access_token:
+        JWT token the frontend stores and sends with future requests.
+
+    token_type:
+        Usually "bearer".
+    """
+
+    access_token: str
+    token_type: str = "bearer"

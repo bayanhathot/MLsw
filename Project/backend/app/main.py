@@ -1,154 +1,115 @@
 """
-File: app/main.py
+main.py
 
-Purpose:
-This is the entry point of the Zonix FastAPI backend.
+Entry point of the FastAPI backend.
 
-What this backend does in the MVP:
-- Exposes a health endpoint so we can check if the server is alive.
-- Accepts a vibe prompt from the frontend.
-- Creates a mock AI DJ session.
-- Accepts feedback buttons from the frontend.
-- Stops an active AI DJ session.
+This file is responsible for:
+1. Creating the FastAPI app object.
+2. Registering routers, such as the auth router.
+3. Defining basic health-check endpoints.
+4. Defining the database health-check endpoint.
 
-Why this matters:
-This turns Zonix from a frontend mockup into a real client/server app.
-The frontend becomes the client. This FastAPI app becomes the server.
+Current backend routes:
+- GET  /
+- GET  /db-health
+- POST /auth/register
+- POST /auth/login
+- GET  /auth/me
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi import Depends, FastAPI
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from .schemas import (
-    FeedbackRequest,
-    SessionResponse,
-    StartSessionRequest,
-    StopSessionResponse,
-)
-from .services.session_manager import (
-    apply_feedback,
-    create_session,
-    stop_session,
-)
+from app.database.database import get_db
+from app.routers.auth import router as auth_router
 
 
+# ---------------------------------------------------------
+# Create FastAPI app
+# ---------------------------------------------------------
+# This object is what Uvicorn runs from the Dockerfile.
+#
+# In the Dockerfile, we run:
+# uvicorn app.main:app --host 0.0.0.0 --port 5000
+#
+# Meaning:
+# app.main -> this file: backend/app/main.py
+# app      -> this FastAPI object below
 app = FastAPI(
-    title="Zonix API",
-    description="Backend API for Zonix AI DJ sessions.",
+    title="Zonix Backend",
+    description="Backend API for the Zonix Smart AI DJ Mixer project.",
     version="0.1.0",
 )
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-
-# CORS allows the SvelteKit frontend to call this backend.
-# During development:
-# - frontend dev server runs on localhost:5173
-# - frontend Docker/Nginx runs on localhost:8080
-# - backend runs on localhost:5000
+# ---------------------------------------------------------
+# Register routers
+# ---------------------------------------------------------
+# Routers let us split endpoints into separate files.
 #
-# Without CORS, the browser may block requests between these ports.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Instead of putting register/login/me directly inside main.py,
+# we keep them in:
+# backend/app/routers/auth.py
+#
+# This keeps main.py clean and makes the project easier to grow.
+app.include_router(auth_router)
 
 
-@app.get("/health")
-def health_check() -> dict:
+# ---------------------------------------------------------
+# Basic backend health endpoint
+# ---------------------------------------------------------
+@app.get("/")
+def root():
     """
-    Health endpoint.
+    Simple backend health endpoint.
 
-    Used to verify that the backend is running.
+    Purpose:
+    Check that the FastAPI server itself is running.
+
+    Important:
+    This endpoint does NOT test PostgreSQL.
+    It only proves that the backend container/app is alive.
     """
 
     return {
-        "status": "ok",
         "service": "zonix-backend",
-        "version": "0.1.0",
+        "status": "running",
+        "message": "Zonix backend is running",
     }
 
 
-@app.post("/sessions/start", response_model=SessionResponse)
-def start_session(request: StartSessionRequest) -> dict:
+# ---------------------------------------------------------
+# Database health endpoint
+# ---------------------------------------------------------
+@app.get("/db-health")
+def db_health(db: Session = Depends(get_db)):
     """
-    Start a new AI DJ session.
+    Database health-check endpoint.
 
-    Frontend sends:
-    {
-        "prompt": "deep work focus with smooth transitions"
+    Purpose:
+    Check that FastAPI can connect to PostgreSQL.
+
+    How it works:
+    1. A client sends GET /db-health.
+    2. FastAPI sees db: Session = Depends(get_db).
+    3. FastAPI calls get_db().
+    4. get_db() opens a SQLAlchemy database session.
+    5. This endpoint sends SELECT 1 to PostgreSQL.
+    6. PostgreSQL returns 1.
+    7. FastAPI returns a JSON response.
+    8. get_db() closes the database session.
+
+    Why SELECT 1?
+    SELECT 1 is a tiny SQL query.
+    It does not require any tables.
+    This lets us test the database connection before creating real tables
+    like users, artists, songs, and song_segments.
+    """
+
+    result = db.execute(text("SELECT 1")).scalar()
+
+    return {
+        "database": "connected",
+        "result": result,
     }
-
-    Backend returns:
-    - session ID
-    - now-playing metadata
-    - vibe label
-    - simple reasoning text
-    """
-
-    prompt = request.prompt.strip()
-
-    if not prompt:
-        raise HTTPException(
-            status_code=400,
-            detail="Prompt cannot be empty.",
-        )
-
-    return create_session(prompt)
-
-
-@app.post("/sessions/{session_id}/feedback", response_model=SessionResponse)
-def send_feedback(session_id: str, request: FeedbackRequest) -> dict:
-    """
-    Apply user feedback to an active AI DJ session.
-
-    Example feedback:
-    - Good vibe
-    - More energy
-    - Less vocals
-    - Smoother
-    """
-
-    feedback = request.feedback.strip()
-
-    if not feedback:
-        raise HTTPException(
-            status_code=400,
-            detail="Feedback cannot be empty.",
-        )
-
-    updated_session = apply_feedback(session_id, feedback)
-
-    if updated_session is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found.",
-        )
-
-    return updated_session
-
-
-@app.post("/sessions/{session_id}/stop", response_model=StopSessionResponse)
-def stop_ai_dj_session(session_id: str) -> dict:
-    """
-    Stop an active AI DJ session.
-    """
-
-    result = stop_session(session_id)
-
-    if result is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found.",
-        )
-
-    return result
