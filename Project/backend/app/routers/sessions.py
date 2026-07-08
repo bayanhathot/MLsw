@@ -1,26 +1,23 @@
 """
 sessions.py
 
-Temporary demo session router.
+Temporary public demo session router.
 
-For now:
-- User writes any prompt.
+Current demo behavior:
+- Anyone can write a prompt.
+- User does NOT need to be logged in.
 - Backend receives the prompt.
-- Backend ignores real AI mixing.
-- Backend returns the hardcoded demo.mp3 URL.
-- Frontend plays that MP3.
+- Backend ignores real AI mixing for now.
+- Backend returns the hardcoded demo.mp3 file.
+- Frontend plays the MP3.
 
-Later this file will call the real:
-- segment selection model
-- transition model
-- audio renderer
+Later:
+- Public users can still try the demo.
+- Logged-in users can save mixes, like segments, view history, etc.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
-
-from app.database.models.user import User
-from app.routers.auth import get_current_user
 
 
 router = APIRouter(
@@ -42,7 +39,7 @@ class StartSessionRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=1000)
 
 
-def build_demo_session(prompt: str, user_id: int):
+def build_demo_session(prompt: str):
     """
     Build a frontend-compatible demo session.
 
@@ -55,11 +52,11 @@ def build_demo_session(prompt: str, user_id: int):
     - audioUrl
     - reasoning
 
-    So we return exactly that shape.
+    Because this is public demo mode, there is no user_id.
     """
 
     return {
-        "id": f"demo-session-user-{user_id}",
+        "id": "public-demo-session",
         "prompt": prompt,
         "vibeLabel": "Demo hardcoded MP3",
         "audioUrl": "http://localhost:5000/static/audio/demo.mp3",
@@ -80,58 +77,43 @@ def build_demo_session(prompt: str, user_id: int):
 
 
 @router.post("/start")
-def start_session(
-    request: StartSessionRequest,
-    #current_user: User = Depends(get_current_user),  #KEEP only if you want to require authentication for stopping a session
-):
+def start_session(request: StartSessionRequest):
     """
-    Start a demo session.
+    Start a public demo session.
 
-    The user must be logged in because get_current_user reads
-    the HTTP-only cookie.
+    No login required.
 
-    For now, every prompt returns the same demo MP3.
+    Anyone can enter a prompt and receive the hardcoded demo MP3.
     """
 
-    return build_demo_session(
-        prompt=request.prompt,
-        user_id=current_user.id,
-    )
+    return build_demo_session(prompt=request.prompt)
 
 
 @router.post("/{session_id}/feedback")
-def send_feedback(
-    session_id: str,
-    # current_user: User = Depends(get_current_user), #KEEP only if you want to require authentication for stopping a session
-):
+def send_feedback(session_id: str):
     """
-    Temporary feedback endpoint.
+    Temporary public feedback endpoint.
 
-    The current frontend expects feedback to return a session object.
-    So for demo mode, we return a simple demo session again.
+    For now, this does not store feedback in the database.
+    Later, feedback storage should require login.
     """
 
     return build_demo_session(
-        prompt="Feedback received in demo mode.",
-        user_id=current_user.id,
+        prompt="Feedback received in public demo mode."
     )
 
 
 @router.post("/{session_id}/stop")
-def stop_session(
-    session_id: str,
-    # current_user: User = Depends(get_current_user), #KEEP only if you want to require authentication for stopping a session
-):
+def stop_session(session_id: str):
     """
-    Temporary stop endpoint.
+    Temporary public stop endpoint.
 
-    The frontend can pause/stop locally.
+    The frontend can pause/stop the audio locally.
     This endpoint only confirms the stop request.
     """
 
     return {
         "session_id": session_id,
-        "user_id": current_user.id,
         "status": "stopped",
         "message": "Demo session stopped.",
     }
