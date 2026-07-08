@@ -18,13 +18,14 @@ Current backend routes:
 """
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
 from app.routers.auth import router as auth_router
-from fastapi.middleware.cors import CORSMiddleware
-
+from app.routers.sessions import router as sessions_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -41,6 +42,12 @@ app = FastAPI(
     title="Zonix Backend",
     description="Backend API for the Zonix Smart AI DJ Mixer project.",
     version="0.1.0",
+)
+
+app.mount(
+    "/static",
+    StaticFiles(directory="app/static"),
+    name="static",
 )
 
 
@@ -68,7 +75,7 @@ app.add_middleware(
 #
 # This keeps main.py clean and makes the project easier to grow.
 app.include_router(auth_router)
-
+app.include_router(sessions_router)
 
 # ---------------------------------------------------------
 # Basic backend health endpoint
