@@ -24,7 +24,6 @@
   </a>
 
     <div class="links">
-  <button class="theme-button" aria-label="Theme toggle placeholder">☼</button>
 
   {#if $authStore.status === "authenticated" && $authStore.user}
     <span class="user-chip">{$authStore.user.username}</span>
@@ -65,26 +64,13 @@
     gap: 18px;
   }
 
-  .theme-button {
-    width: 42px;
-    height: 42px;
-    display: grid;
-    place-items: center;
-    border: none;
-    color: var(--text-soft);
-    background: transparent;
-    font-size: 30px;
-    line-height: 1;
-  }
-
+ 
   @media (max-width: 560px) {
     .logo {
       width: 150px;
     }
 
-    .theme-button {
-      display: none;
-    }
+    
   }
   .user-chip {
   border: 1px solid var(--border-muted);
