@@ -1,0 +1,13 @@
+# Real environment variables.
+# This may contain passwords and secrets, so do not commit it.
+.env
+
+# Python virtual environment inside backend.
+backend/.venv/
+
+# Python cache files.
+__pycache__/
+*.pyc
+
+# Pytest cache files.
+.pytest_cache/
