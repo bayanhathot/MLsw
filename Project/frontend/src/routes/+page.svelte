@@ -116,12 +116,13 @@
   status={$sessionStore.status}
   currentStep={$sessionStore.currentStep}
   progress={$sessionStore.progress}
-  session={$sessionStore.session}
+  mix={$sessionStore.mix}
   isPlaying={$sessionStore.isPlaying}
   selectedFeedback={$sessionStore.selectedFeedback}
   onTogglePlay={sessionStore.togglePlay}
   onStop={sessionStore.stop}
   onFeedback={sessionStore.sendFeedback}
+  onPlaybackEnded={sessionStore.playbackEnded}
 />
 
 <style>

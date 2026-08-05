@@ -68,3 +68,72 @@ class Token(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+####################################################################
+########################################################################
+
+######################################mixes schemas
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class MixSegmentRead(BaseModel):
+    id: int
+    position: int
+    title: str
+    artist: str
+    audio_url: str
+    cover_url: str | None
+    start_second: int
+    end_second: int
+    transition_to_next: str
+    source: str
+    source_track_id: str
+
+    class Config:
+        from_attributes = True
+
+
+class MixOwnerRead(BaseModel):
+    id: int
+    username: str
+
+    class Config:
+        from_attributes = True
+
+
+class MixUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    cover_url: str | None = None
+
+
+class MixRead(BaseModel):
+    id: int
+    title: str
+    prompt: str
+    description: str | None
+    cover_url: str | None
+    status: str
+    created_at: datetime
+    published_at: datetime | None
+    segments: list[MixSegmentRead]
+
+    class Config:
+        from_attributes = True
+
+class MixFeedItem(BaseModel):
+    id: int
+    title: str
+    prompt: str
+    description: str | None
+    cover_url: str | None
+    owner: MixOwnerRead
+    like_count: int
+    is_liked: bool
+    is_saved: bool
+    published_at: datetime
+    segments: list[MixSegmentRead]

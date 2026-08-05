@@ -54,6 +54,38 @@
  */
 
 /**
+ * One playable moment stored as part of a generated mix.
+ *
+ * @typedef {Object} MixSegment
+ * @property {number} id
+ * @property {number} position
+ * @property {string} title
+ * @property {string} artist
+ * @property {string} audio_url
+ * @property {string | null} cover_url
+ * @property {number} start_second
+ * @property {number} end_second
+ * @property {string} transition_to_next
+ * @property {string} source
+ * @property {string} source_track_id
+ */
+
+/**
+ * Persistent draft or published mix returned by POST /mixes/start.
+ *
+ * @typedef {Object} Mix
+ * @property {number} id
+ * @property {string} title
+ * @property {string} prompt
+ * @property {string | null} description
+ * @property {string | null} cover_url
+ * @property {"draft" | "published"} status
+ * @property {string} created_at
+ * @property {string | null} published_at
+ * @property {MixSegment[]} segments
+ */
+
+/**
  * Central frontend state for the Zonix session.
  *
  * @typedef {Object} SessionState
@@ -61,7 +93,7 @@
  * @property {string} prompt
  * @property {number} progress
  * @property {string} currentStep
- * @property {Session | null} session
+ * @property {Mix | null} mix
  * @property {boolean} isPlaying
  * @property {string | null} selectedFeedback
  * @property {boolean} reasoningOpen

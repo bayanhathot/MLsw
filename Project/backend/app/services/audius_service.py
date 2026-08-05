@@ -27,7 +27,7 @@ It only fetches candidate tracks. The mix router later converts each track
 into a simple 45-second segment for the MVP.
 
 Future improvements:
-- Add better prompt-to-tag mapping.
+- Replace the temporary keyword fallback with LLM-based intent extraction.
 - Filter by genre, mood, or duration.
 - Handle Audius provider failures more gracefully.
 - Save fetched tracks into PostgreSQL.
@@ -40,6 +40,37 @@ import httpx
 # We use it to search for tracks and build playable stream URLs.
 AUDIUS_API_BASE = "https://discoveryprovider.audius.co/v1"
 APP_NAME = "Zonix"
+
+
+# Audius search works best with short music-oriented queries. These rules are
+# an MVP bridge between a natural-language DJ request and Audius search. They
+# will be replaced by an LLM intent extractor later.
+FALLBACK_QUERY_RULES = (
+    ({"gym", "workout", "energy", "energetic"}, "workout electronic"),
+    ({"coding", "focus", "work", "study"}, "chill electronic"),
+    ({"arabic", "vocals", "vocal"}, "arabic"),
+    ({"chill", "relax", "relaxing", "calm"}, "chill electronic"),
+)
+
+
+def build_search_queries(prompt: str) -> list[str]:
+    """Build ordered Audius queries from a natural-language DJ prompt.
+
+    The original prompt is always attempted first. If it produces no tracks,
+    a short keyword-based query is attempted next. Returning an ordered list
+    keeps the fallback behavior explicit and easy to replace with an LLM later.
+    """
+
+    normalized_prompt = prompt.casefold()
+    queries = [prompt]
+
+    for keywords, fallback_query in FALLBACK_QUERY_RULES:
+        if any(keyword in normalized_prompt for keyword in keywords):
+            if fallback_query not in queries:
+                queries.append(fallback_query)
+            break
+
+    return queries
 
 
 def get_artwork_url(artwork: dict | None) -> str | None:
@@ -72,21 +103,22 @@ def search_tracks(prompt: str, limit: int = 5) -> list[dict]:
     Later, we will save these tracks into PostgreSQL.
     """
 
-    params = {
-        "query": prompt,
-        "limit": limit,
-        "app_name": APP_NAME,
-    }
-
+    tracks = []
     with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        response = client.get(
-            f"{AUDIUS_API_BASE}/tracks/search",
-            params=params,
-        )
-        response.raise_for_status()
+        for query in build_search_queries(prompt):
+            response = client.get(
+                f"{AUDIUS_API_BASE}/tracks/search",
+                params={
+                    "query": query,
+                    "limit": limit,
+                    "app_name": APP_NAME,
+                },
+            )
+            response.raise_for_status()
 
-    data = response.json()
-    tracks = data.get("data", [])
+            tracks = response.json().get("data", [])
+            if tracks:
+                break
 
     results = []
 

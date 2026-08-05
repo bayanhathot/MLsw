@@ -2,10 +2,10 @@
  * File: src/lib/stores/sessionStore.js
  * Purpose: Central frontend state manager for the Zonix AI DJ session.
  * What it does:
- * - Stores the current prompt, session status, progress, current session data, play/pause state, feedback, and errors.
+ * - Stores the current prompt, session status, progress, generated mix, play/pause state, feedback, and errors.
  * - Exposes methods used by components: setPrompt, start, togglePlay, stop, sendFeedback, toggleReasoning, and reset.
  * - Runs a short start-up progress sequence before calling the FastAPI backend.
- * - Sends prompt, feedback, and stop requests to the backend through sessionApi.js.
+ * - Generates and persists a draft through the social mix API.
  * Why this file is important:
  * - Components stay simple because they read state from the store and call store methods.
  * - Backend integration stays isolated inside the services/store instead of being spread through UI components.
@@ -13,16 +13,12 @@
 
 import { writable } from "svelte/store";
 import { APP_STATES } from "../constants/appStates.js";
-import {
-  sendFeedback as apiSendFeedback,
-  startSession as apiStartSession,
-  stopSession as apiStopSession
-} from "../services/sessionApi.js";
+import { generateMix } from "../services/mixApi.js";
 
 /**
  * Zonix session store.
  *
- * Owns the prompt, player state, current session, and feedback. Components stay
+ * Owns the prompt, player state, current mix, and feedback. Components stay
  * visual; this store owns product behavior.
  */
 
@@ -39,7 +35,7 @@ const initialState = {
   prompt: "",
   currentStep: "",
   progress: 0,
-  session: null,
+  mix: null,
   isPlaying: false,
   reasoningOpen: false,
   selectedFeedback: null,
@@ -81,7 +77,7 @@ function createSessionStore() {
         status: APP_STATES.STARTING,
         currentStep: startupSteps[0],
         progress: 0,
-        session: null,
+        mix: null,
         isPlaying: false,
         reasoningOpen: false,
         selectedFeedback: null,
@@ -99,23 +95,25 @@ function createSessionStore() {
           await new Promise((resolve) => setTimeout(resolve, 550));
         }
 
-        const session = await apiStartSession({ prompt });
+        const mix = await generateMix(prompt);
 
         update((state) => ({
           ...state,
           status: APP_STATES.PLAYING,
           currentStep: "Zone active",
           progress: 100,
-          session,
+          mix,
           isPlaying: true
         }));
-      } catch {
+      } catch (error) {
         update((state) => ({
           ...state,
           status: APP_STATES.ERROR,
           isPlaying: false,
           error:
-            "Zonix could not start the session. Try another prompt or choose a preset."
+            error instanceof Error
+              ? error.message
+              : "Zonix could not create the mix. Try another prompt."
         }));
       }
     },
@@ -139,11 +137,6 @@ function createSessionStore() {
         return;
       }
 
-      const sessionId = latestState.session?.id ?? null;
-      if (sessionId) {
-        await apiStopSession({ sessionId });
-      }
-
       update((state) => ({
         ...state,
         status: APP_STATES.STOPPED,
@@ -157,35 +150,33 @@ function createSessionStore() {
     /**
      * @param {string} feedback
      */
-    async sendFeedback(feedback) {
+    sendFeedback(feedback) {
       if (latestState.status !== APP_STATES.PLAYING) {
         return;
       }
 
-      const sessionId = latestState.session?.id ?? null;
-      if (!sessionId) {
+      if (!latestState.mix) {
         return;
       }
 
-      try {
-        const updatedSession = await apiSendFeedback({ sessionId, feedback });
+      // Mix feedback is UI-only until the backend exposes a mix feedback API.
+      update((state) => ({
+        ...state,
+        selectedFeedback: feedback,
+        error: null
+      }));
+    },
 
-        update((state) => ({
-          ...state,
-          session: updatedSession,
-          selectedFeedback: feedback,
-          error: null
-        }));
-      } catch {
-        update((state) => ({
-          ...state,
-          error: "Zonix could not send the feedback to the backend."
-        }));
-      }
+    playbackEnded() {
+      update((state) => ({
+        ...state,
+        isPlaying: false,
+        currentStep: "First segment finished"
+      }));
     },
 
     toggleReasoning() {
-      if (!latestState.session) {
+      if (!latestState.mix) {
         return;
       }
 

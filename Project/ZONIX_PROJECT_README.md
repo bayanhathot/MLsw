@@ -249,6 +249,26 @@ Next AI step:
 Replace keyword rules with a segment catalog + scoring function.
 ```
 
+### Temporary prompt-to-search fallback
+
+The current Audius integration works best with short music keywords, while
+users naturally write longer DJ instructions. For the current MVP, Zonix first
+tries the original prompt and then uses a small keyword fallback when Audius
+returns no results. Examples include:
+
+```text
+gym / workout / energy -> workout electronic
+coding / focus / work  -> chill electronic
+Arabic / vocals        -> Arabic
+chill / relax          -> chill electronic
+```
+
+This is temporary rule-based behavior, not an LLM. A future version will
+replace it with an LLM intent extractor that converts the prompt into validated
+structured fields such as search queries, mood, energy, vocal preference, and
+transition style. Audius will still provide real track candidates; the LLM
+will interpret the request rather than invent songs or audio URLs.
+
 ---
 
 ### Database/catalog module

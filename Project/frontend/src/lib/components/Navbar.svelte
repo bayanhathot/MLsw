@@ -3,6 +3,7 @@
   Purpose: Top navigation bar for the MVP frontend.
   What it does:
   - Displays the Zonix logo asset and links it to the home route.
+  - Connects the home, community feed, and personal library routes.
   - Shows a placeholder theme button for future light/dark or appearance switching.
   - Shows a clear Sign in link to the /login route.
   Important design decision:
@@ -24,6 +25,15 @@
   </a>
 
     <div class="links">
+  <div class="navigation" aria-label="Main navigation">
+    <a class="nav-link" href="/">Home</a>
+
+    {#if $authStore.status === "authenticated"}
+      <a class="nav-link" href="/feed">Community</a>
+      <a class="nav-link" href="/library">Library</a>
+    {/if}
+  </div>
+
   <button class="theme-button" aria-label="Theme toggle placeholder">☼</button>
 
   {#if $authStore.status === "authenticated" && $authStore.user}
@@ -63,6 +73,29 @@
     display: flex;
     align-items: center;
     gap: 18px;
+    margin-left: auto;
+  }
+
+  .navigation {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .nav-link {
+    padding: 10px 12px;
+    border-radius: 999px;
+    color: var(--text-soft);
+    font-size: 14px;
+    font-weight: 850;
+    text-decoration: none;
+    transition: color 160ms ease, background 160ms ease;
+  }
+
+  .nav-link:hover,
+  .nav-link:focus-visible {
+    color: white;
+    background: rgba(59, 130, 246, 0.14);
   }
 
   .theme-button {
@@ -78,6 +111,17 @@
   }
 
   @media (max-width: 560px) {
+    .navbar,
+    .links,
+    .navigation {
+      flex-wrap: wrap;
+    }
+
+    .links {
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
     .logo {
       width: 150px;
     }

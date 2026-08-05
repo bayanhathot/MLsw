@@ -12,7 +12,7 @@
   - Shows Coach the DJ feedback buttons:
     Good vibe, More energy, Less vocals, Smoother.
   - Shows a volume slider.
-  - Plays the real demo MP3 returned from the backend through session.audioUrl.
+  - Plays the first stored segment returned by the persistent mix API.
 
   Important product decision:
   This is not only a Spotify-style song player.
@@ -24,9 +24,9 @@
   /**
    * Fixed AI DJ control deck.
    *
-   * This component receives all important session data from the parent page/store.
-   * It does not create sessions by itself.
-   * It only displays the active session and triggers callbacks such as:
+   * This component receives all important mix data from the parent page/store.
+   * It does not create mixes by itself.
+   * It only displays the active mix and triggers callbacks such as:
    * - onTogglePlay()
    * - onStop()
    * - onFeedback()
@@ -44,7 +44,7 @@
 
   /**
    * @typedef {import("$lib/types.js").AppStatus} AppStatus
-   * @typedef {import("$lib/types.js").Session} Session
+   * @typedef {import("$lib/types.js").Mix} Mix
    */
 
   /**
@@ -59,9 +59,8 @@
    * progress:
    *   Simple UI progress value used while starting/loading.
    *
-   * session:
-   *   Current backend session object.
-   *   This contains nowPlaying metadata and audioUrl.
+   * mix:
+   *   Current persistent backend mix and its ordered segments.
    *
    * isPlaying:
    *   Whether the frontend considers the session currently playing.
@@ -78,47 +77,49 @@
    * onFeedback:
    *   Callback for Coach the DJ feedback buttons.
    *
+   * onPlaybackEnded:
+   *   Callback used to synchronize the store when the first segment finishes.
+   *
    * @type {{
    *   status?: AppStatus,
    *   currentStep?: string,
    *   progress?: number,
-   *   session?: Session | null,
+   *   mix?: Mix | null,
    *   isPlaying?: boolean,
    *   selectedFeedback?: string | null,
    *   onTogglePlay?: () => void,
    *   onStop?: () => void,
-   *   onFeedback?: (feedback: string) => void
+   *   onFeedback?: (feedback: string) => void,
+   *   onPlaybackEnded?: () => void
    * }}
    */
   let {
     status = APP_STATES.IDLE,
     currentStep = "",
     progress = 0,
-    session = null,
+    mix = null,
     isPlaying = false,
     selectedFeedback = null,
     onTogglePlay = () => {},
     onStop = () => {},
-    onFeedback = () => {}
+    onFeedback = () => {},
+    onPlaybackEnded = () => {}
   } = $props();
 
   /**
-   * Current track/segment information returned from the backend.
-   *
-   * Example:
-   * session.nowPlaying.title
-   * session.nowPlaying.artist
-   * session.nowPlaying.coverUrl
+   * The first integration milestone intentionally plays only segment zero.
+   * Queue advancement and crossfading will be added separately.
    */
-  let nowPlaying = $derived(session?.nowPlaying);
+  let nowPlaying = $derived(mix?.segments?.[0] ?? null);
 
   /**
    * The backend audio URL.
    *
-   * For the current demo, this should be:
-   * http://localhost:5000/static/audio/demo.mp3
+   * Audius playback URL stored with the first generated segment.
    */
-  let audioUrl = $derived(session?.audioUrl || "");
+  let audioUrl = $derived(nowPlaying?.audio_url || "");
+  let segmentStart = $derived(Math.max(0, Number(nowPlaying?.start_second ?? 0)));
+  let requestedSegmentEnd = $derived(Number(nowPlaying?.end_second ?? 0));
 
   /**
    * The user can control the player only while the session is playing
@@ -149,6 +150,8 @@
 
   let currentTime = $state(0);
   let duration = $state(0);
+  let segmentFinished = $state(false);
+  let loadedAudioUrl = $state("");
 
   let progressPercent = $derived(
     duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
@@ -188,6 +191,12 @@
     }
 
     if (canControl && isPlaying) {
+      if (segmentFinished) {
+        audioElement.currentTime = segmentStart;
+        currentTime = 0;
+        segmentFinished = false;
+      }
+
       audioElement.play().catch(() => {
         /**
          * Browser may block autoplay until the user clicks play.
@@ -196,6 +205,15 @@
       });
     } else {
       audioElement.pause();
+    }
+  });
+
+  $effect(() => {
+    if (audioUrl !== loadedAudioUrl) {
+      loadedAudioUrl = audioUrl;
+      currentTime = 0;
+      duration = 0;
+      segmentFinished = false;
     }
   });
 
@@ -238,7 +256,19 @@ function handleLoadedMetadata() {
     return;
   }
 
-  duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
+  const mediaDuration = Number.isFinite(audioElement.duration)
+    ? audioElement.duration
+    : 0;
+  const safeStart = Math.min(segmentStart, mediaDuration);
+  const requestedEnd = requestedSegmentEnd > safeStart
+    ? requestedSegmentEnd
+    : mediaDuration;
+  const safeEnd = Math.min(requestedEnd, mediaDuration);
+
+  audioElement.currentTime = safeStart;
+  currentTime = 0;
+  duration = Math.max(0, safeEnd - safeStart);
+  segmentFinished = false;
 }
 
 function handleTimeUpdate() {
@@ -246,8 +276,21 @@ function handleTimeUpdate() {
     return;
   }
 
-  currentTime = audioElement.currentTime;
-  duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
+  currentTime = Math.max(
+    0,
+    Math.min(duration, audioElement.currentTime - segmentStart)
+  );
+
+  if (
+    duration > 0 &&
+    audioElement.currentTime >= segmentStart + duration &&
+    !segmentFinished
+  ) {
+    audioElement.pause();
+    currentTime = duration;
+    segmentFinished = true;
+    onPlaybackEnded();
+  }
 }
 
 
@@ -260,14 +303,17 @@ function handleSeekInput(event) {
   }
 
   const percentage = Number(target.value);
-  const nextTime = (percentage / 100) * duration;
+  const nextTime = segmentStart + (percentage / 100) * duration;
 
   audioElement.currentTime = nextTime;
-  currentTime = nextTime;
+  currentTime = nextTime - segmentStart;
+  segmentFinished = false;
 }
 
 function handleAudioEnded() {
   currentTime = duration;
+  segmentFinished = true;
+  onPlaybackEnded();
 }
 
   
@@ -276,7 +322,11 @@ function handleAudioEnded() {
 <section class="player-deck" aria-label="Zonix AI DJ player">
   <div class="track-block">
     {#if nowPlaying}
-      <img class="cover" src={nowPlaying.coverUrl} alt={`Cover for ${nowPlaying.title}`} />
+      {#if nowPlaying.cover_url}
+        <img class="cover" src={nowPlaying.cover_url} alt={`Cover for ${nowPlaying.title}`} />
+      {:else}
+        <div class="cover placeholder">ZX</div>
+      {/if}
       <div class="track-copy">
         <h2>{nowPlaying.title}</h2>
         <p>{nowPlaying.artist}</p>
