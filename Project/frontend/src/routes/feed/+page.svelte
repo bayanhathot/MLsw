@@ -4,10 +4,12 @@
   import MixCard from "$lib/components/MixCard.svelte";
   import {
     getFeed,
+    followUser,
     likeMix,
     unlikeMix,
     saveMix,
-    unsaveMix
+    unsaveMix,
+    unfollowUser
   } from "$lib/services/mixApi.js";
 
   let mixes = $state([]);
@@ -15,16 +17,37 @@
   let error = $state("");
   let activeMix = $state(null);
   let activeAudioUrl = $state("");
+  let activeScope = $state("friends");
 
   onMount(async () => {
+    await loadFeed();
+  });
+
+  async function loadFeed() {
+    loading = true;
+    error = "";
+
     try {
-      mixes = await getFeed({ limit: 20, offset: 0 });
+      mixes = await getFeed({
+        limit: 20,
+        offset: 0,
+        scope: activeScope
+      });
     } catch (requestError) {
       error = requestError.message;
     } finally {
       loading = false;
     }
-  });
+  }
+
+  async function selectScope(scope) {
+    if (scope === activeScope) {
+      return;
+    }
+
+    activeScope = scope;
+    await loadFeed();
+  }
 
   function handlePlay(mix) {
     if (!mix.segments?.length) {
@@ -83,6 +106,53 @@
     }
   }
 
+  async function handleFollow(mix) {
+    const ownerId = mix.owner.id;
+    const previousFollowing = mix.is_following;
+    const nextFollowing = !previousFollowing;
+
+    mixes = mixes.map((item) =>
+      item.owner.id === ownerId
+        ? {
+            ...item,
+            is_following: nextFollowing,
+            is_friend: nextFollowing && item.follows_you
+          }
+        : item
+    );
+
+    try {
+      const result = nextFollowing
+        ? await followUser(ownerId)
+        : await unfollowUser(ownerId);
+
+      if (activeScope === "friends" && !result.is_following) {
+        mixes = mixes.filter((item) => item.owner.id !== ownerId);
+      } else {
+        mixes = mixes.map((item) =>
+          item.owner.id === ownerId
+            ? {
+                ...item,
+                is_following: result.is_following,
+                is_friend: result.is_following && item.follows_you
+              }
+            : item
+        );
+      }
+    } catch (requestError) {
+      mixes = mixes.map((item) =>
+        item.owner.id === ownerId
+          ? {
+              ...item,
+              is_following: previousFollowing,
+              is_friend: previousFollowing && item.follows_you
+            }
+          : item
+      );
+      error = requestError.message;
+    }
+  }
+
   function closePlayer() {
     activeMix = null;
     activeAudioUrl = "";
@@ -96,9 +166,36 @@
 <section class="feed-page">
   <header class="feed-header">
     <p class="eyebrow">Zonix community</p>
-    <h1>Discover mixes</h1>
-    <p>Listen to mixes created by other Zonix users.</p>
+    <h1>
+      {activeScope === "friends"
+        ? "Friends"
+        : "Discover mixes"}
+    </h1>
+    <p>
+      {activeScope === "friends"
+        ? "New mixes from creators who follow you back."
+        : "Find creators and mixes from across Zonix."}
+    </p>
   </header>
+
+  <div class="feed-tabs" aria-label="Community feed type">
+    <button
+      type="button"
+      class:active={activeScope === "friends"}
+      aria-pressed={activeScope === "friends"}
+      onclick={() => selectScope("friends")}
+    >
+      Friends
+    </button>
+    <button
+      type="button"
+      class:active={activeScope === "discover"}
+      aria-pressed={activeScope === "discover"}
+      onclick={() => selectScope("discover")}
+    >
+      Discover
+    </button>
+  </div>
 
   {#if error}
     <div class="error-message" role="alert">
@@ -110,7 +207,16 @@
   {#if loading}
     <p class="status-message">Loading mixes...</p>
   {:else if mixes.length === 0}
-    <p class="status-message">No published mixes yet.</p>
+    <div class="empty-feed">
+      <p class="status-message">
+        {activeScope === "friends"
+          ? "Friends appear when you and another creator follow each other."
+          : "No published mixes yet."}
+      </p>
+      {#if activeScope === "friends"}
+        <button type="button" onclick={() => selectScope("discover")}>Explore Discover</button>
+      {/if}
+    </div>
   {:else}
     <div class="mix-grid">
       {#each mixes as mix (mix.id)}
@@ -119,6 +225,7 @@
           onPlay={handlePlay}
           onLike={handleLike}
           onSave={handleSave}
+          onFollow={handleFollow}
         />
       {/each}
     </div>
@@ -151,6 +258,30 @@
     margin-bottom: 2rem;
   }
 
+  .feed-tabs {
+    display: flex;
+    gap: 0.65rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .feed-tabs button,
+  .empty-feed button {
+    padding: 0.7rem 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    background: transparent;
+    color: #dbeafe;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .feed-tabs button.active,
+  .empty-feed button {
+    border-color: #22d3ee;
+    background: rgba(34, 211, 238, 0.12);
+    color: #67e8f9;
+  }
+
   .eyebrow {
     margin: 0;
     color: #67e8f9;
@@ -166,6 +297,16 @@
   .feed-header > p:last-child,
   .status-message {
     color: #a8b3c7;
+  }
+
+  .empty-feed {
+    display: grid;
+    justify-items: center;
+    padding: 2rem 0;
+  }
+
+  .empty-feed .status-message {
+    padding: 1rem 0;
   }
 
   .mix-grid {

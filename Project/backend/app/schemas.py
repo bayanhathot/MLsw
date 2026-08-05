@@ -55,6 +55,21 @@ class UserRead(BaseModel):
         from_attributes = True
 
 
+class UserSummary(BaseModel):
+    """Safe public user fields used by social endpoints."""
+
+    id: int
+    username: str
+
+    class Config:
+        from_attributes = True
+
+
+class FollowState(BaseModel):
+    user_id: int
+    is_following: bool
+
+
 class Token(BaseModel):
     """
     Response shape for login.
@@ -135,5 +150,9 @@ class MixFeedItem(BaseModel):
     like_count: int
     is_liked: bool
     is_saved: bool
+    is_following: bool
+    follows_you: bool
+    is_friend: bool
+    is_own: bool
     published_at: datetime
     segments: list[MixSegmentRead]

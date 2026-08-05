@@ -15,6 +15,9 @@ The new feature lets registered users:
 - Like and unlike published mixes.
 - Save and unsave published mixes as private bookmarks.
 - View saved mixes in their personal library.
+- Follow other creators from Discover.
+- Become friends automatically when two users follow each other.
+- Browse either a friends-only feed or the full Discover feed.
 
 The intended flow is:
 
@@ -29,29 +32,21 @@ Generate mix
 
 Authentication already existed before this feature. The social endpoints reuse the existing HTTP-only JWT cookie and `get_current_user` FastAPI dependency.
 
-## 2. Important current limitation
+## 2. Current homepage integration and limitation
 
-The homepage still uses the older demo session flow:
-
-```http
-POST /sessions/start
-```
-
-That endpoint plays the hardcoded demo MP3 and does **not** create a database mix.
-
-The new persistent social flow uses:
+The homepage now uses the persistent mix flow:
 
 ```http
 POST /mixes/start
 ```
 
-Until the homepage/player is migrated to `/mixes/start`, create test mixes through FastAPI Swagger at `http://localhost:5000/docs`. The draft will then appear under `/library`.
+Starting the AI DJ creates a database-backed draft, returns its segments, starts the first segment in the homepage player, and makes the draft available in Library.
 
-Do not call both start endpoints for one user action. They currently produce unrelated results: the sessions endpoint returns the demo file, while the mixes endpoint creates an Audius segment plan.
+The current player still plays only the first segment. Automatic segment advancement, exact segment boundaries, beat matching, crossfades, and final audio rendering remain future work. Track selection currently uses Audius search with rule-based prompt fallbacks. The planned version will use an LLM to extract structured intent and an ML/ranking layer to select and order compatible segments.
 
 ## 3. Database design
 
-The social feature adds four PostgreSQL tables.
+The social feature adds five PostgreSQL tables.
 
 ### `mixes`
 
@@ -122,7 +117,28 @@ UNIQUE(user_id, mix_id)
 
 A save is different from a like: saves are private library bookmarks and do not affect the public like count.
 
-Foreign keys use `ON DELETE CASCADE`, so deleting a user or mix removes dependent segments, likes, and saves.
+### `user_follows`
+
+Stores one directional follow relationship.
+
+```text
+id
+follower_id         -> users.id
+following_id        -> users.id
+created_at
+UNIQUE(follower_id, following_id)
+CHECK(follower_id <> following_id)
+```
+
+One row means that the follower follows the other user. A friendship is not stored as a separate row or table. It is derived when both directional rows exist:
+
+```text
+A follows B + B follows A = A and B are friends
+```
+
+Unfollowing removes only the current user's directional row. Therefore it ends the friendship but preserves the other user's follow.
+
+Foreign keys use `ON DELETE CASCADE`, so deleting a user or mix removes dependent segments, likes, saves, and follow relationships.
 
 ## 4. Database and model files
 
@@ -133,6 +149,7 @@ backend/app/database/models/mix.py
 backend/app/database/models/mix_segment.py
 backend/app/database/models/mix_like.py
 backend/app/database/models/saved_mix.py
+backend/app/database/models/user_follow.py
 ```
 
 Updated:
@@ -153,10 +170,11 @@ The model package imports every model so Alembic can discover all tables.
 
 ## 5. Alembic migration
 
-The generated migration is:
+The generated migrations are:
 
 ```text
 backend/alembic/versions/f3dc072dcac2_add_social_mixes.py
+backend/alembic/versions/7b84d8a1c2f0_add_user_follows.py
 ```
 
 It follows the original users migration:
@@ -166,7 +184,7 @@ It follows the original users migration:
 → f3dc072dcac2_add_social_mixes.py
 ```
 
-The migration creates all four social tables, their indexes, foreign keys, and unique constraints.
+The first social migration creates the mix, segment, like, and save tables. The second follows it and creates `user_follows`, its indexes, foreign keys, uniqueness rule, and self-follow check.
 
 ### Running Alembic through Docker
 
@@ -220,6 +238,8 @@ Added schemas:
 - `MixUpdate`: editable mix metadata.
 - `MixRead`: a complete stored mix with segments.
 - `MixFeedItem`: a community feed item with owner and social state.
+- `UserSummary`: safe public user information.
+- `FollowState`: the result of following or unfollowing a user.
 
 `MixFeedItem` includes:
 
@@ -233,11 +253,15 @@ owner
 like_count
 is_liked
 is_saved
+is_following
+follows_you
+is_friend
+is_own
 published_at
 segments
 ```
 
-`is_liked` and `is_saved` are calculated for the currently logged-in user. `like_count` is calculated from `mix_likes`; it is not stored as a counter on `mixes`.
+The social flags are calculated for the currently logged-in user. `is_friend` is true only when `is_following` and `follows_you` are both true. `like_count` is calculated from `mix_likes`; it is not stored as a counter on `mixes`.
 
 ## 7. Backend routes
 
@@ -292,7 +316,8 @@ Only the owner may publish. It changes the status to `published` and sets `publi
 ### Community feed
 
 ```http
-GET /mixes/feed?limit=20&offset=0
+GET /mixes/feed?scope=friends&limit=20&offset=0
+GET /mixes/feed?scope=discover&limit=20&offset=0
 ```
 
 Requires authentication in the current MVP. It returns published mixes newest first, including:
@@ -301,7 +326,17 @@ Requires authentication in the current MVP. It returns published mixes newest fi
 - Total like count.
 - Whether the current user liked the mix.
 - Whether the current user saved the mix.
+- Whether the current user follows the creator.
+- Whether the creator follows the current user.
+- Whether the two users are mutual friends.
 - Stored segments for playback.
+
+The frontend exposes only two feed views:
+
+- `friends`: published mixes from users who follow the current user back.
+- `discover`: all published mixes.
+
+The backend still accepts `scope=following` as an internal/API capability, but there is intentionally no Following tab in the current interface.
 
 Pagination validation:
 
@@ -338,6 +373,20 @@ GET /mixes/saved
 
 Returns the logged-in user's saved published mixes, ordered by the time they were saved.
 
+### Follow and friendship endpoints
+
+Implemented in `backend/app/routers/users.py`:
+
+```http
+PUT    /users/{user_id}/follow
+DELETE /users/{user_id}/follow
+GET    /users/me/following
+GET    /users/me/followers
+GET    /users/me/friends
+```
+
+Follow and unfollow are idempotent. A user cannot follow themselves. The friends endpoint returns only users who have reciprocal follow rows with the current user.
+
 ## 8. Frontend API service
 
 Added:
@@ -354,13 +403,15 @@ Exported functions:
 generateMix(prompt)
 updateMix(mixId, data)
 publishMix(mixId)
-getFeed({ limit, offset })
+getFeed({ limit, offset, scope })
 getMyMixes()
 likeMix(mixId)
 unlikeMix(mixId)
 saveMix(mixId)
 unsaveMix(mixId)
 getSavedMixes()
+followUser(userId)
+unfollowUser(userId)
 ```
 
 ## 9. Community feed frontend
@@ -380,14 +431,18 @@ frontend/src/routes/feed/+page.svelte
 - Play button.
 - Like/unlike button and count.
 - Save/unsave button.
+- Follow, Follow back, Following, or Friends relationship label.
 
 The feed page:
 
-- Loads `/mixes/feed` on mount.
+- Defaults to the Friends view.
+- Provides only Friends and Discover tabs.
+- Loads `/mixes/feed` with the selected scope.
 - Shows loading, empty, and error states.
 - Renders a `MixCard` for each result.
 - Plays the first stored segment in a fixed audio player.
 - Uses optimistic UI for likes and saves.
+- Uses optimistic UI for follow and unfollow actions.
 
 Optimistic UI updates the button immediately. If the API request fails, the previous state is restored. Like counts use `Math.max(0, ...)` so the displayed value cannot become negative.
 
@@ -439,25 +494,15 @@ Adminer connection values come from `.env`. When connecting from Adminer, use `p
 
 ## 12. Manual end-to-end test
 
-Because the homepage still uses the old session endpoint, use Swagger for mix generation.
-
 ### User A: create and publish
 
 1. Register and log in as User A through the frontend.
-2. Open `http://localhost:5000/docs` in the same browser.
-3. Call `POST /mixes/start` with:
-
-   ```json
-   {
-     "prompt": "chill electronic focus"
-   }
-   ```
-
-4. Open `http://localhost:8080/library`.
-5. Confirm the mix appears in My mixes as Draft.
-6. Optionally edit its title, description, or cover.
-7. Click Post mix.
-8. Open `http://localhost:8080/feed` and confirm it appears.
+2. Start a mix from the homepage with a prompt such as `chill electronic focus`.
+3. Open `http://localhost:8080/library`.
+4. Confirm the mix appears in My mixes as Draft.
+5. Optionally edit its title, description, or cover.
+6. Click Post mix.
+7. Open `http://localhost:8080/feed` and confirm it appears in Discover.
 
 ### User B: like and save
 
@@ -470,6 +515,16 @@ Because the homepage still uses the old session endpoint, use Swagger for mix ge
 7. Unlike it and confirm the count decreases.
 8. Remove it from Saved mixes and confirm the bookmark disappears.
 
+### Mutual friendship
+
+1. While logged in as User B, open Discover and follow User A.
+2. Return to User A's browser session and open Discover.
+3. User B's relationship button should say **Follow back**.
+4. Follow User B. The relationship should now say **Friends**.
+5. Publish a mix from either account.
+6. Open the Friends tab from the other account and confirm the mix appears.
+7. Unfollow the friend and confirm their mixes disappear from the Friends view.
+
 ### Security cases
 
 Verify that:
@@ -480,6 +535,9 @@ Verify that:
 - Repeating Like does not create duplicate rows.
 - Repeating Save does not create duplicate rows.
 - Unliking or unsaving an already-absent relationship succeeds safely.
+- A user cannot follow themselves.
+- Repeating Follow does not create duplicate rows.
+- Friendship exists only when both directional follows exist.
 
 ## 13. Files changed or added
 
@@ -490,11 +548,14 @@ backend/app/database/models/mix.py                         added
 backend/app/database/models/mix_segment.py                 added
 backend/app/database/models/mix_like.py                    added
 backend/app/database/models/saved_mix.py                   added
+backend/app/database/models/user_follow.py                 added
 backend/app/database/models/user.py                        updated
 backend/app/database/models/__init__.py                    updated
 backend/app/schemas.py                                     updated
 backend/app/routers/mixes.py                               expanded
+backend/app/routers/users.py                               added
 backend/alembic/versions/f3dc072dcac2_add_social_mixes.py  added
+backend/alembic/versions/7b84d8a1c2f0_add_user_follows.py added
 ```
 
 ### Frontend
@@ -504,15 +565,10 @@ frontend/src/lib/services/mixApi.js              added
 frontend/src/lib/components/MixCard.svelte       added
 frontend/src/routes/feed/+page.svelte            added
 frontend/src/routes/library/+page.svelte         added
+frontend/src/lib/components/Navbar.svelte        updated
 ```
 
 ## 14. Remaining work
-
-### Required integration
-
-- Migrate the homepage from `/sessions/start` to `/mixes/start`.
-- Adapt `sessionStore.js` and `DJPlayerCard.svelte` to the mix response shape.
-- Decide whether the homepage requires login or supports anonymous temporary mixes.
 
 ### Audio/player work
 
@@ -526,7 +582,6 @@ frontend/src/routes/library/+page.svelte         added
 
 - Add a dedicated `GET /mixes/{mix_id}` endpoint if feed payloads should become smaller.
 - Decide whether guests may view the feed using optional authentication.
-- Add Community and Library links to the navbar if they are not present.
 - Add delete/unpublish behavior if needed.
 - Confirm music-source licensing and attribution requirements for public sharing.
 
@@ -536,17 +591,17 @@ frontend/src/routes/library/+page.svelte         added
 - Add frontend tests for optimistic UI rollback.
 - Optimize feed social queries when data volume grows.
 - Add consistent API response schemas for like/save operations.
-- Update the older project README, which still describes sessions as in-memory and authentication as unfinished.
+- Optimize friendship and feed relationship queries when data volume grows.
 
 ## 15. Recommended next milestone
 
 The next milestone should be:
 
 ```text
-Logged-in user starts a mix from the homepage
-→ /mixes/start stores it as a draft
-→ the player plays the generated segment queue
-→ the same mix appears automatically in My mixes
+LLM extracts structured intent from the user's prompt
+-> ranking logic chooses compatible real tracks and segments
+-> the player advances through the complete segment queue
+-> transitions are matched and rendered smoothly
 ```
 
-Until that integration is implemented, the backend social system, feed, and library can be tested independently using Swagger-generated mixes.
+The persistent homepage, Library, publishing, Friends/Discover feed, likes, saves, follows, and mutual friendships are now integrated. The major remaining product work is intelligent selection and continuous multi-segment playback.

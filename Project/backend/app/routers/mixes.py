@@ -29,6 +29,7 @@ Future improvements:
 """
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -40,6 +41,7 @@ from app.database.models.mix_like import MixLike
 from app.database.models.mix_segment import MixSegment as MixSegmentModel
 from app.database.models.saved_mix import SavedMix
 from app.database.models.user import User
+from app.database.models.user_follow import UserFollow
 from app.routers.auth import get_current_user
 from app.schemas import MixRead, MixUpdate
 from app.schemas import MixFeedItem
@@ -351,6 +353,7 @@ def publish_mix(
 
 @router.get("/feed", response_model=list[MixFeedItem])
 def get_feed(
+    scope: Literal["discover", "following", "friends"] = Query(default="discover"),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -364,10 +367,36 @@ def get_feed(
     Authentication is required in the current MVP so the backend can calculate
     the current user's social state.
     """
+    mix_query = db.query(Mix).filter(Mix.status == "published")
+
+    if scope == "following":
+        followed_user_ids = (
+            db.query(UserFollow.following_id)
+            .filter(UserFollow.follower_id == current_user.id)
+            .scalar_subquery()
+        )
+        mix_query = mix_query.filter(
+            (Mix.owner_id.in_(followed_user_ids))
+            | (Mix.owner_id == current_user.id)
+        )
+    elif scope == "friends":
+        followed_user_ids = (
+            db.query(UserFollow.following_id)
+            .filter(UserFollow.follower_id == current_user.id)
+            .scalar_subquery()
+        )
+        follower_user_ids = (
+            db.query(UserFollow.follower_id)
+            .filter(UserFollow.following_id == current_user.id)
+            .scalar_subquery()
+        )
+        mix_query = mix_query.filter(
+            Mix.owner_id.in_(followed_user_ids),
+            Mix.owner_id.in_(follower_user_ids),
+        )
+
     mixes = (
-        db.query(Mix)
-        .filter(Mix.status == "published")
-        .order_by(Mix.published_at.desc())
+        mix_query.order_by(Mix.published_at.desc())
         .offset(offset)
         .limit(limit)
         .all()
@@ -405,6 +434,32 @@ def get_feed(
             is not None
         )
 
+        is_own = mix.owner_id == current_user.id
+        is_following = False
+        follows_you = False
+
+        if not is_own:
+            is_following = (
+                db.query(UserFollow)
+                .filter(
+                    UserFollow.follower_id == current_user.id,
+                    UserFollow.following_id == mix.owner_id,
+                )
+                .first()
+                is not None
+            )
+            follows_you = (
+                db.query(UserFollow)
+                .filter(
+                    UserFollow.follower_id == mix.owner_id,
+                    UserFollow.following_id == current_user.id,
+                )
+                .first()
+                is not None
+            )
+
+        is_friend = is_following and follows_you
+
         feed_items.append(
             {
                 "id": mix.id,
@@ -419,6 +474,10 @@ def get_feed(
                 "like_count": like_count,
                 "is_liked": is_liked,
                 "is_saved": is_saved,
+                "is_following": is_following,
+                "follows_you": follows_you,
+                "is_friend": is_friend,
+                "is_own": is_own,
                 "published_at": mix.published_at,
                 "segments": mix.segments,
             }

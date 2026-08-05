@@ -10,6 +10,28 @@ The important idea is that Zonix is not meant to be only a normal music player. 
 
 The purpose of this project is to build a working client/server MLOps-style application around an AI music mixing idea.
 
+### Current social product flow
+
+The current application also supports persistent and social mixes:
+
+```text
+User starts a mix from the homepage
+-> POST /mixes/start creates a private draft in PostgreSQL
+-> the first stored segment starts playing
+-> the draft appears in Library
+-> the owner publishes it
+-> other users discover, play, like, and save it
+-> two users who follow each other become friends
+-> friends' published mixes appear in the Friends feed
+```
+
+The Community interface intentionally has only two views:
+
+- **Friends**: published mixes from mutual friends.
+- **Discover**: all published community mixes.
+
+Following is still the action used to form a friendship, but there is no separate Following feed tab.
+
 The current project proves these things:
 
 - A frontend can collect a user music/vibe prompt.
@@ -82,7 +104,7 @@ Nginx for Docker production serving
 
 Purpose:
 
-The frontend is the user-facing part of Zonix. It displays the landing page, prompt input, AI DJ player, feedback buttons, and login/register placeholder pages.
+The frontend is the user-facing part of Zonix. It displays the landing page, prompt input, AI DJ player, authentication pages, Community feed, personal Library, and social mix controls.
 
 Main responsibilities:
 
@@ -92,6 +114,8 @@ Main responsibilities:
 - Display the current AI DJ session.
 - Let the user send coaching feedback.
 - Let the user stop the AI DJ session.
+- Let authenticated users publish, like, save, and play mixes.
+- Let users follow each other and browse Friends or Discover.
 
 Important frontend files:
 
@@ -140,15 +164,24 @@ Python
 
 Purpose:
 
-The backend is the server-side logic of Zonix. It receives requests from the frontend, creates AI DJ sessions, stores temporary session state, accepts user feedback, and stops sessions.
+The backend is the server-side logic of Zonix. It authenticates users, creates persistent mix drafts, stores segments and social relationships in PostgreSQL, and serves the Community and Library APIs.
 
 Current backend endpoints:
 
 ```text
-GET  /health
-POST /sessions/start
-POST /sessions/{session_id}/feedback
-POST /sessions/{session_id}/stop
+POST   /auth/register
+POST   /auth/login
+GET    /auth/me
+POST   /mixes/start
+GET    /mixes/mine
+GET    /mixes/saved
+GET    /mixes/feed?scope=friends|discover
+POST   /mixes/{mix_id}/publish
+PUT    /mixes/{mix_id}/like
+PUT    /mixes/{mix_id}/save
+PUT    /users/{user_id}/follow
+DELETE /users/{user_id}/follow
+GET    /users/me/friends
 ```
 
 Important backend files:
@@ -169,7 +202,7 @@ Defines request and response data shapes using Pydantic models.
 backend/app/services/session_manager.py
 ```
 
-Contains the current MVP session logic. It creates sessions, chooses mock tracks based on prompt keywords, stores sessions in memory, applies feedback, and stops sessions.
+The older session manager remains for the original session endpoints. The active homepage flow uses `backend/app/routers/mixes.py`, Audius search, and persistent database models.
 
 ---
 
@@ -177,10 +210,11 @@ Contains the current MVP session logic. It creates sessions, chooses mock tracks
 
 The frontend and backend communicate using HTTP requests.
 
-The frontend API file is:
+The main frontend API files are:
 
 ```text
 frontend/src/lib/services/sessionApi.js
+frontend/src/lib/services/mixApi.js
 ```
 
 It sends requests to:
@@ -193,23 +227,24 @@ Current API flow:
 
 ```text
 Start AI DJ button
-→ POST /sessions/start
-→ backend returns session
-→ frontend updates player
+→ POST /mixes/start
+→ backend stores a draft and its segments
+→ frontend starts the first segment
+→ draft appears in Library
 ```
 
 ```text
-Feedback button
-→ POST /sessions/{session_id}/feedback
-→ backend updates selected feedback
-→ frontend updates session state
+Post mix
+→ POST /mixes/{mix_id}/publish
+→ mix appears in Discover
+→ friends can also see it in Friends
 ```
 
 ```text
-Stop AI DJ button
-→ POST /sessions/{session_id}/stop
-→ backend marks session as stopped
-→ frontend returns to stopped state
+Follow another creator
+→ PUT /users/{user_id}/follow
+→ reciprocal follows become a friendship
+→ friends' mixes appear in the Friends feed
 ```
 
 ---
@@ -275,56 +310,30 @@ will interpret the request rather than invent songs or audio URLs.
 
 Current state:
 
-There is no real database yet.
-
-The backend currently stores sessions in memory:
-
-```python
-SESSIONS = {}
-```
-
-This means sessions disappear when the backend restarts. This is acceptable for the MVP.
-
-Next planned step:
-
-Create a catalog file:
-
-```text
-backend/app/data/catalog.json
-```
-
-The catalog will store song segments with fields such as:
-
-```text
-segment id
-title
-artist
-mood tags
-energy
-vocal level
-start second
-end second
-audio URL
-cover URL
-```
-
-Later database options:
-
-```text
-SQLite       simple local database
-PostgreSQL   production-ready relational database
-Redis        temporary cache/session storage
-```
-
-Future database tables may include:
+Zonix uses PostgreSQL with SQLAlchemy models and Alembic migrations. Current persistent tables include:
 
 ```text
 users
-songs
-segments
-sessions
-feedback
+mixes
+mix_segments
+mix_likes
 saved_mixes
+user_follows
+alembic_version
+```
+
+Persistent data includes user accounts, generated draft/published mixes, ordered segment plans, likes, saves, and directional follows. Friendship is derived from two reciprocal follow rows rather than stored in a separate table.
+
+The remaining catalog work is to enrich tracks and segments with machine-learning features such as:
+
+```text
+mood
+energy
+BPM
+musical key
+vocal level
+embedding/vector features
+transition compatibility
 ```
 
 ---
@@ -424,25 +433,25 @@ Expected backend health response:
 
 1. Run Docker Compose.
 2. Open the frontend at `http://localhost:8080`.
-3. Write a prompt such as:
-
-```text
-emotional Arabic vocals with smooth transitions
-```
-
-4. Click **Start AI DJ**.
-5. Confirm the player changes to a playing session.
-6. Click **More energy** or **Good vibe**.
-7. Confirm the feedback is accepted.
-8. Click **Stop AI DJ**.
-9. Check backend logs for successful API requests.
+3. Register or log in.
+4. Enter a prompt such as `emotional Arabic vocals with smooth transitions`.
+5. Click **Start AI DJ** and confirm the first returned segment plays.
+6. Open Library and confirm the generated mix appears as a draft.
+7. Publish the draft and confirm it appears under Community → Discover.
+8. Log in with a second account in another browser profile.
+9. Like and save the first account's mix.
+10. Follow the first account.
+11. From the first account, follow the second account back.
+12. Confirm both accounts now show **Friends** and published mixes appear in the Friends view.
 
 Expected backend logs:
 
 ```text
-POST /sessions/start 200 OK
-POST /sessions/{session_id}/feedback 200 OK
-POST /sessions/{session_id}/stop 200 OK
+POST /mixes/start 200 OK
+POST /mixes/{mix_id}/publish 200 OK
+GET  /mixes/feed?scope=discover 200 OK
+PUT  /users/{user_id}/follow 200 OK
+GET  /mixes/feed?scope=friends 200 OK
 ```
 
 ---
@@ -458,16 +467,22 @@ Completed:
 - Added AI DJ player card.
 - Added feedback/coach buttons.
 - Added Stop AI DJ behavior.
-- Added login/register placeholder pages.
+- Added PostgreSQL-backed registration, login, logout, and authenticated user state.
 - Added frontend state store.
 - Added frontend API service layer.
 - Built FastAPI backend.
 - Added backend health endpoint.
-- Added start session endpoint.
+- Added persistent mix generation through `/mixes/start`.
 - Added feedback endpoint.
 - Added stop session endpoint.
 - Added request/response schemas.
-- Added in-memory session storage.
+- Added PostgreSQL models and Alembic migrations.
+- Added draft editing and publishing.
+- Added Community and Library pages.
+- Added likes and private saved-mix bookmarks.
+- Added directional follows and mutual friendship detection.
+- Added Friends and Discover feed views.
+- Connected the homepage player to the first generated mix segment.
 - Connected frontend to backend.
 - Added Dockerfile for frontend.
 - Added Dockerfile for backend.
@@ -482,10 +497,8 @@ The current project is a working MVP, but it is not the final full AI DJ system 
 
 Current limitations:
 
-- No real user authentication yet.
-- No real database yet.
-- No real music catalog yet.
-- No real audio playback or audio files yet.
+- Track selection is still Audius search plus rule-based prompt fallback, not the planned LLM/ML ranking system.
+- The player currently plays only the first stored segment.
 - No real ML model yet.
 - No real segment extraction yet.
 - No real transition/crossfade engine yet.
@@ -497,21 +510,19 @@ Current limitations:
 
 Recommended next steps:
 
-1. Add `backend/app/data/catalog.json`.
-2. Add a catalog loader service.
-3. Add a segment scoring service.
-4. Replace hardcoded keyword logic with catalog-based scoring.
-5. Make feedback affect the next selected segment.
-6. Add `POST /sessions/{session_id}/next` endpoint.
-7. Add backend tests with pytest.
-8. Add real audio files or demo audio URLs.
-9. Add basic audio playback in the frontend.
-10. Later, add real ML/audio processing.
+1. Add an LLM intent extractor that returns validated mood, energy, vocal, genre, and transition preferences.
+2. Add audio/metadata features such as BPM, key, energy, and embeddings.
+3. Rank real track and segment candidates against the structured prompt.
+4. Score adjacent segment compatibility and choose a coherent sequence.
+5. Make the player advance through every segment with correct boundaries.
+6. Add beat-aware crossfades and transition rendering.
+7. Make coaching feedback affect later selections.
+8. Add backend and frontend automated tests.
 
 The next important milestone is:
 
 ```text
-Backend chooses from a real segment catalog using a scoring function.
+LLM intent extraction + ML segment ranking + continuous matched playback.
 ```
 
 ---
@@ -524,8 +535,13 @@ Zonix currently works as a full-stack MVP:
 Frontend UI
 + FastAPI backend
 + API connection
++ PostgreSQL persistence and Alembic migrations
++ authenticated accounts
++ persistent drafts and publishing
++ Community Friends/Discover feed
++ likes, saves, follows, and mutual friendships
 + Docker Compose
-+ mock AI DJ session logic
++ Audius-backed track candidates
 ```
 
-The purpose of the current version is to prove the product pipeline before adding real music processing and machine learning.
+The current version proves the full product and social pipeline. The next phase is improving music intelligence and multi-segment audio transitions.

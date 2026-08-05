@@ -27,6 +27,7 @@ from app.database.database import get_db
 from app.routers.auth import router as auth_router
 from app.routers.sessions import router as sessions_router
 from app.routers.mixes import router as mixes_router
+from app.routers.users import router as users_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -81,6 +82,7 @@ app.include_router(sessions_router)
 # Register mix generation endpoints.
 # POST /mixes/start creates a new mix queue from Audius search results.
 app.include_router(mixes_router)
+app.include_router(users_router)
 
 
 # ---------------------------------------------------------

@@ -1,6 +1,6 @@
 <script>
   /** Display one published mix and report its actions to the feed page. */
-  let { mix, onPlay, onLike, onSave } = $props();
+  let { mix, onPlay, onLike, onSave, onFollow } = $props();
 </script>
 
 <article class="mix-card">
@@ -13,7 +13,27 @@
   </div>
 
   <div class="mix-content">
-    <div class="mix-owner">by @{mix.owner.username}</div>
+    <div class="owner-row">
+      <div class="mix-owner">by @{mix.owner.username}</div>
+
+      {#if !mix.is_own}
+        <button
+          class="follow-button"
+          class:active={mix.is_following}
+          type="button"
+          aria-pressed={mix.is_following}
+          onclick={() => onFollow(mix)}
+        >
+          {mix.is_friend
+            ? "Friends"
+            : mix.is_following
+              ? "Following"
+              : mix.follows_you
+                ? "Follow back"
+                : "Follow"}
+        </button>
+      {/if}
+    </div>
     <h2>{mix.title}</h2>
     <p class="prompt">{mix.prompt}</p>
 
@@ -97,6 +117,13 @@
     font-size: 0.85rem;
   }
 
+  .owner-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
   h2 {
     margin: 0.4rem 0;
     color: #f8fafc;
@@ -148,6 +175,22 @@
     border-color: #22d3ee;
     color: #67e8f9;
     background: rgba(34, 211, 238, 0.1);
+  }
+
+  .follow-button {
+    min-height: auto;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    border-radius: 999px;
+    background: transparent;
+    color: #67e8f9;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+
+  .follow-button.active {
+    border-color: rgba(255, 255, 255, 0.15);
+    color: #cbd5e1;
   }
 
   button:focus-visible {

@@ -46,10 +46,30 @@ export function publishMix(mixId) {
 /**
  * Get one page of published mixes.
  *
- * @param {{limit?: number, offset?: number}} options
+ * @param {{limit?: number, offset?: number, scope?: "discover"|"following"|"friends"}} options
  */
-export function getFeed({ limit = 20, offset = 0 } = {}) {
-  return apiRequest(`/mixes/feed?limit=${limit}&offset=${offset}`);
+export function getFeed({ limit = 20, offset = 0, scope = "discover" } = {}) {
+  const query = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    scope
+  });
+
+  return apiRequest(`/mixes/feed?${query.toString()}`);
+}
+
+/** Follow a creator whose mixes should appear in the Following feed. */
+export function followUser(userId) {
+  return apiRequest(`/users/${userId}/follow`, {
+    method: "PUT"
+  });
+}
+
+/** Remove a creator from the current user's Following feed. */
+export function unfollowUser(userId) {
+  return apiRequest(`/users/${userId}/follow`, {
+    method: "DELETE"
+  });
 }
 
 /** Get mixes created by the logged-in user. */
