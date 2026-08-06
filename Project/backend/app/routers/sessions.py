@@ -16,6 +16,8 @@ Later:
 - Logged-in users can save mixes, like segments, view history, etc.
 """
 
+import os
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,11 @@ router = APIRouter(
     prefix="/sessions",
     tags=["sessions"],
 )
+
+BACKEND_PUBLIC_URL = os.getenv(
+    "BACKEND_PUBLIC_URL",
+    "http://localhost:5000",
+).rstrip("/")
 
 
 class StartSessionRequest(BaseModel):
@@ -59,7 +66,7 @@ def build_demo_session(prompt: str):
         "id": "public-demo-session",
         "prompt": prompt,
         "vibeLabel": "Demo hardcoded MP3",
-        "audioUrl": "http://localhost:5000/static/audio/demo.mp3",
+        "audioUrl": f"{BACKEND_PUBLIC_URL}/static/audio/demo.mp3",
         "nowPlaying": {
             "title": "Zonix Demo Track",
             "artist": "Hardcoded Demo Catalog",

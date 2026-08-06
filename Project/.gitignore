@@ -1,13 +1,37 @@
-# Real environment variables.
-# This may contain passwords and secrets, so do not commit it.
+# Secrets and local environment files.
 .env
+.env.*
+!.env.example
+!**/.env.example
+!**/.env.*.example
 
-# Python virtual environment inside backend.
+# Python environments, caches, coverage, and build output.
+.venv/
+venv/
 backend/.venv/
-
-# Python cache files.
+backend/.venv.zip
 __pycache__/
-*.pyc
-
-# Pytest cache files.
+*.py[cod]
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# JavaScript dependencies and Svelte build output.
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+frontend/.svelte-kit/
+frontend/build/
+
+# IDE and operating-system files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files.
+*.log
+*.tmp

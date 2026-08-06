@@ -13,32 +13,7 @@
  * credentials: "include" is required.
  */
 
-const API_BASE_URL = "http://localhost:5000";
-
-/**
- * Helper for backend requests.
- *
- * @param {string} path
- * @param {RequestInit} options
- */
-async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-
-  const data = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    throw new Error(data?.detail || data?.message || "Backend request failed.");
-  }
-
-  return data;
-}
+import { apiRequest } from "./api.js";
 
 /**
  * Start a new AI DJ demo session.

@@ -32,7 +32,10 @@
    * - onFeedback()
    */
 
+  import { onDestroy, onMount } from "svelte";
+
   import { APP_STATES } from "$lib/constants/appStates.js";
+  import EqualizerBars from "$lib/components/EqualizerBars.svelte";
 
   /**
    * Feedback options shown in the Coach the DJ section.
@@ -153,6 +156,33 @@
   let progressPercent = $derived(
     duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
   );
+
+  /**
+   * Drive currentTime from a requestAnimationFrame loop instead of only
+   * the native `timeupdate` event, which the browser fires only a
+   * handful of times per second - too coarse for a smooth-looking
+   * progress bar. This runs continuously and simply no-ops while paused.
+   */
+  let progressFrameId = null;
+
+  function stepProgressFrame() {
+    if (audioElement && !audioElement.paused) {
+      currentTime = audioElement.currentTime;
+    }
+
+    progressFrameId = requestAnimationFrame(stepProgressFrame);
+  }
+
+  onMount(() => {
+    progressFrameId = requestAnimationFrame(stepProgressFrame);
+  });
+
+  onDestroy(() => {
+    if (progressFrameId) {
+      cancelAnimationFrame(progressFrameId);
+    }
+  });
+
   /**
    * Apply the volume slider value to the real audio element.
    *
@@ -242,11 +272,12 @@ function handleLoadedMetadata() {
 }
 
 function handleTimeUpdate() {
+  // currentTime itself is kept smooth by the requestAnimationFrame loop
+  // above; this just keeps duration in sync as metadata resolves.
   if (!audioElement) {
     return;
   }
 
-  currentTime = audioElement.currentTime;
   duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
 }
 
@@ -293,7 +324,7 @@ function handleAudioEnded() {
 
   <div class="flow-block">
     <div class="flow-status">
-      <span class="signal" aria-hidden="true"></span>
+      <EqualizerBars active={canControl && isPlaying} />
       <div>
         <p class="eyebrow">
           {#if isStarting}
@@ -512,14 +543,6 @@ function handleAudioEnded() {
     gap: 12px;
   }
 
-  .signal {
-    width: 26px;
-    height: 18px;
-    background:
-      linear-gradient(90deg, transparent 0 3px, var(--accent-2) 3px 5px, transparent 5px 9px, var(--accent-2) 9px 11px, transparent 11px 16px, var(--accent-2) 16px 18px, transparent 18px);
-    opacity: 0.85;
-  }
-
   .eyebrow {
     margin: 0 0 4px;
     color: var(--accent-2);
@@ -548,6 +571,10 @@ function handleAudioEnded() {
     font-weight: 900;
   }
 
+  .play-button:hover:not(:disabled) {
+    box-shadow: var(--shadow-blue), 0 0 28px rgba(59, 130, 246, 0.4);
+  }
+
   .stop-button {
     border: 1px solid rgba(125, 183, 255, 0.2);
     border-radius: 999px;
@@ -556,6 +583,12 @@ function handleAudioEnded() {
     background: rgba(125, 183, 255, 0.04);
     font-size: 13px;
     font-weight: 850;
+  }
+
+  .stop-button:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: rgba(255, 107, 134, 0.08);
   }
 
   .progress-line {

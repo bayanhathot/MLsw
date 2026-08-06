@@ -14,7 +14,35 @@
  * The frontend never reads the JWT directly.
  */
 
-const API_BASE_URL = "http://localhost:5000";
+const API_BASE_URL = "/api";
+
+/**
+ * Turn a FastAPI error body into a readable string.
+ *
+ * Our own HTTPException(detail="...") raises send `detail` as a plain
+ * string, but FastAPI's automatic Pydantic validation errors (422s) send
+ * `detail` as a LIST of {msg, loc, type} objects instead. Without this,
+ * `new Error(data.detail)` on a list silently stringifies to
+ * "[object Object]".
+ *
+ * @param {unknown} data
+ * @returns {string}
+ */
+function extractErrorMessage(data) {
+  const detail = /** @type {any} */ (data)?.detail;
+
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => item?.msg || String(item))
+      .join(" ");
+  }
+
+  return /** @type {any} */ (data)?.message || "Request failed.";
+}
 
 /**
  * Send an HTTP request to the backend.
@@ -39,7 +67,7 @@ export async function apiRequest(path, options = {}) {
     : await response.text().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(data?.detail || data?.message || "Request failed.");
+    throw new Error(extractErrorMessage(data));
   }
 
   return data;

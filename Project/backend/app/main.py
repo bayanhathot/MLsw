@@ -15,7 +15,34 @@ Current backend routes:
 - POST /auth/register
 - POST /auth/login
 - GET  /auth/me
+- GET  /users/search
+- GET  /users/{username}
+- POST /friends/requests
+- GET  /friends/requests/incoming
+- GET  /friends/requests/outgoing
+- POST /friends/requests/{id}/accept
+- POST /friends/requests/{id}/decline
+- DELETE /friends/requests/{id}
+- GET  /friends
+- DELETE /friends/{username}
+- POST /posts
+- GET  /posts/feed
+- GET  /posts/{id}
+- DELETE /posts/{id}
+- POST /posts/{id}/like
+- DELETE /posts/{id}/like
+- GET  /posts/{id}/comments
+- POST /posts/{id}/comments
+- DELETE /posts/{id}/comments/{comment_id}
+- POST /posts/{id}/share
+- GET  /users/{username}/posts
+- GET  /users/me/profile
+- PATCH /users/me/profile
+- GET  /users/{username}/stats
+- POST /play-events
 """
+
+import os
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +54,11 @@ from app.database.database import get_db
 from app.routers.auth import router as auth_router
 from app.routers.sessions import router as sessions_router
 from app.routers.mixes import router as mixes_router
+from app.routers.posts import router as posts_router
+from app.routers.users import router as users_router
+from app.routers.friends import router as friends_router
+from app.routers.profiles import router as profiles_router
+from app.routers.play_events import router as play_events_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -43,6 +75,7 @@ app = FastAPI(
     title="Zonix Backend",
     description="Backend API for the Zonix Smart AI DJ Mixer project.",
     version="0.1.0",
+    root_path=os.getenv("ROOT_PATH", ""),
 )
 
 app.mount(
@@ -81,6 +114,17 @@ app.include_router(sessions_router)
 # Register mix generation endpoints.
 # POST /mixes/start creates a new mix queue from Audius search results.
 app.include_router(mixes_router)
+
+# Register user lookup and friend request endpoints.
+app.include_router(users_router)
+app.include_router(friends_router)
+
+# Register post (feed entry) endpoints.
+app.include_router(posts_router)
+
+# Register profile customization/stats and play-event tracking endpoints.
+app.include_router(profiles_router)
+app.include_router(play_events_router)
 
 
 # ---------------------------------------------------------

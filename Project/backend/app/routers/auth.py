@@ -14,10 +14,12 @@ The frontend JavaScript cannot read an HTTP-only cookie.
 This is safer than storing the JWT in localStorage.
 """
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_access_token
+from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES, decode_access_token
 from app.database.database import get_db
 from app.database.models.user import User
 from app.schemas import UserCreate, UserLogin, UserRead
@@ -32,6 +34,19 @@ router = APIRouter(
 
 # Cookie name used by the backend and browser.
 ACCESS_TOKEN_COOKIE_NAME = "zonix_access_token"
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax").lower()
+
+if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    raise RuntimeError("COOKIE_SAMESITE must be lax, strict, or none.")
+
+if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
+    raise RuntimeError("COOKIE_SECURE must be true when COOKIE_SAMESITE is none.")
 
 
 def get_current_user(
@@ -120,9 +135,9 @@ def login(
         key=ACCESS_TOKEN_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        secure=False,          # Development: False because we use http://localhost
-        samesite="lax",        # Good default for local same-site development
-        max_age=60 * 60,       # 1 hour
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
 
@@ -143,6 +158,8 @@ def logout(response: Response):
     response.delete_cookie(
         key=ACCESS_TOKEN_COOKIE_NAME,
         path="/",
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
     )
 
     return {

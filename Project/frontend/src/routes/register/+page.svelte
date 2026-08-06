@@ -45,6 +45,11 @@
       return;
     }
 
+    if (password.length < 6) {
+      error = "Password must be at least 6 characters.";
+      return;
+    }
+
     if (password !== confirmPassword) {
       error = "Passwords do not match.";
       return;
