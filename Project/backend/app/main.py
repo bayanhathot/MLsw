@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.database.database import get_db
 from app.routers.auth import router as auth_router
 from app.routers.sessions import router as sessions_router
+from app.routers.mixes import router as mixes_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -76,6 +77,11 @@ app.add_middleware(
 # This keeps main.py clean and makes the project easier to grow.
 app.include_router(auth_router)
 app.include_router(sessions_router)
+
+# Register mix generation endpoints.
+# POST /mixes/start creates a new mix queue from Audius search results.
+app.include_router(mixes_router)
+
 
 # ---------------------------------------------------------
 # Basic backend health endpoint
