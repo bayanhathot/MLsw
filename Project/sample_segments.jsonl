@@ -1,0 +1,8 @@
+{"segment_id":"seg-001","track_id":"track-a","tags":["high","energy","coding","electronic"],"silence_probability":0.02,"transition_score":0.91,"relevant":true}
+{"segment_id":"seg-002","track_id":"track-b","tags":["focus","coding","instrumental"],"silence_probability":0.01,"transition_score":0.88,"relevant":true}
+{"segment_id":"seg-003","track_id":"track-c","tags":["energy","workout","bass"],"silence_probability":0.04,"transition_score":0.72,"relevant":true}
+{"segment_id":"seg-004","track_id":"track-d","tags":["relax","ambient","sleep"],"silence_probability":0.06,"transition_score":0.83,"relevant":false}
+{"segment_id":"seg-005","track_id":"track-e","tags":["coding","focus","lofi"],"silence_probability":0.09,"transition_score":0.79,"relevant":true}
+{"segment_id":"seg-006","track_id":"track-f","tags":["acoustic","vocals","calm"],"silence_probability":0.03,"transition_score":0.66,"relevant":false}
+{"segment_id":"seg-007","track_id":"track-g","tags":["high","energy","focus"],"silence_probability":0.12,"transition_score":0.94,"relevant":true}
+{"segment_id":"seg-008","track_id":"track-h","tags":["coding","silence"],"silence_probability":0.92,"transition_score":0.90,"relevant":false}

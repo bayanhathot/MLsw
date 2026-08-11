@@ -1,681 +1,632 @@
-<!--
-  File: src/lib/components/DJPlayerCard.svelte
-
-  Purpose:
-  Fixed bottom AI DJ control deck for the Zonix frontend.
-
-  What this component does:
-  - Shows the currently selected AI DJ moment: cover image, title, and artist.
-  - Shows the current AI DJ status: waiting, starting, playing, stopped, or error.
-  - Lets the user play or pause the active session.
-  - Lets the user stop the AI DJ session.
-  - Shows Coach the DJ feedback buttons:
-    Good vibe, More energy, Less vocals, Smoother.
-  - Shows a volume slider.
-  - Plays the real demo MP3 returned from the backend through session.audioUrl.
-
-  Important product decision:
-  This is not only a Spotify-style song player.
-  Zonix is an AI DJ system, so this player focuses on guiding the music flow,
-  not only controlling a single song.
--->
-
 <script>
-  /**
-   * Fixed AI DJ control deck.
-   *
-   * This component receives all important session data from the parent page/store.
-   * It does not create sessions by itself.
-   * It only displays the active session and triggers callbacks such as:
-   * - onTogglePlay()
-   * - onStop()
-   * - onFeedback()
-   */
+	import { APP_STATES } from '$lib/constants/appStates.js';
 
-  import { APP_STATES } from "$lib/constants/appStates.js";
+	const COACH_OPTIONS = ['Good vibe', 'More energy', 'Less vocals', 'Smoother'];
 
-  /**
-   * Feedback options shown in the Coach the DJ section.
-   *
-   * These options are sent to the backend when clicked.
-   * Later, the backend can use them to choose better next segments.
-   */
-  const COACH_OPTIONS = ["Good vibe", "More energy", "Less vocals", "Smoother"];
+	/**
+	 * @typedef {import('$lib/types.js').AppStatus} AppStatus
+	 * @typedef {import('$lib/types.js').Session} Session
+	 */
 
-  /**
-   * @typedef {import("$lib/types.js").AppStatus} AppStatus
-   * @typedef {import("$lib/types.js").Session} Session
-   */
+	/** @type {{
+	 * status?: AppStatus,
+	 * currentStep?: string,
+	 * progress?: number,
+	 * session?: Session | null,
+	 * isPlaying?: boolean,
+	 * playbackRequested?: boolean,
+	 * isPlaybackBuffering?: boolean,
+	 * hasEnded?: boolean,
+	 * isStopping?: boolean,
+	 * isFeedbackPending?: boolean,
+	 * pendingFeedback?: string | null,
+	 * selectedFeedback?: string | null,
+	 * playbackError?: string | null,
+	 * onTogglePlay?: () => void,
+	 * onStop?: () => void,
+	 * onFeedback?: (feedback: string) => void,
+	 * onMediaPlaying?: () => void,
+	 * onMediaPaused?: () => void,
+	 * onMediaWaiting?: () => void,
+	 * onMediaReady?: () => void,
+	 * onMediaEnded?: () => void,
+	 * onMediaError?: (message: string) => void
+	 * }} */
+	let {
+		status = APP_STATES.IDLE,
+		currentStep = '',
+		progress = 0,
+		session = null,
+		isPlaying = false,
+		playbackRequested = false,
+		isPlaybackBuffering = false,
+		hasEnded = false,
+		isStopping = false,
+		isFeedbackPending = false,
+		pendingFeedback = null,
+		selectedFeedback = null,
+		playbackError = null,
+		onTogglePlay = () => {},
+		onStop = () => {},
+		onFeedback = () => {},
+		onMediaPlaying = () => {},
+		onMediaPaused = () => {},
+		onMediaWaiting = () => {},
+		onMediaReady = () => {},
+		onMediaEnded = () => {},
+		onMediaError = () => {}
+	} = $props();
 
-  /**
-   * Props passed from the parent page/store.
-   *
-   * status:
-   *   Current state of the AI DJ session.
-   *
-   * currentStep:
-   *   Human-readable message about what the app is doing now.
-   *
-   * progress:
-   *   Simple UI progress value used while starting/loading.
-   *
-   * session:
-   *   Current backend session object.
-   *   This contains nowPlaying metadata and audioUrl.
-   *
-   * isPlaying:
-   *   Whether the frontend considers the session currently playing.
-   *
-   * selectedFeedback:
-   *   The feedback option most recently selected by the user.
-   *
-   * onTogglePlay:
-   *   Callback for play/pause button.
-   *
-   * onStop:
-   *   Callback for Stop AI DJ button.
-   *
-   * onFeedback:
-   *   Callback for Coach the DJ feedback buttons.
-   *
-   * @type {{
-   *   status?: AppStatus,
-   *   currentStep?: string,
-   *   progress?: number,
-   *   session?: Session | null,
-   *   isPlaying?: boolean,
-   *   selectedFeedback?: string | null,
-   *   onTogglePlay?: () => void,
-   *   onStop?: () => void,
-   *   onFeedback?: (feedback: string) => void
-   * }}
-   */
-  let {
-    status = APP_STATES.IDLE,
-    currentStep = "",
-    progress = 0,
-    session = null,
-    isPlaying = false,
-    selectedFeedback = null,
-    onTogglePlay = () => {},
-    onStop = () => {},
-    onFeedback = () => {}
-  } = $props();
+	let volume = $state(72);
+	/** @type {HTMLAudioElement | null} */
+	let audioElement = $state(null);
+	let segmentIndex = $state(0);
+	let currentTime = $state(0);
+	let duration = $state(0);
+	let trackedSessionId = $state('');
+	let completedAudioUrl = $state('');
 
-  /**
-   * Current track/segment information returned from the backend.
-   *
-   * Example:
-   * session.nowPlaying.title
-   * session.nowPlaying.artist
-   * session.nowPlaying.coverUrl
-   */
-  let nowPlaying = $derived(session?.nowPlaying);
+	let segments = $derived(session?.segments ?? []);
+	let activeSegment = $derived(segments[segmentIndex] ?? null);
+	let nowPlaying = $derived(
+		activeSegment
+			? {
+					title: activeSegment.title,
+					artist: activeSegment.artist,
+					coverUrl: activeSegment.coverUrl || session?.nowPlaying.coverUrl || ''
+				}
+			: session?.nowPlaying
+	);
+	let audioUrl = $derived(activeSegment?.audioUrl || session?.audioUrl || '');
+	let canControl = $derived(status === APP_STATES.PLAYING && Boolean(audioUrl));
+	let isStarting = $derived(status === APP_STATES.STARTING);
+	let hasPrevious = $derived(segmentIndex > 0);
+	let hasNext = $derived(segmentIndex < segments.length - 1);
+	let progressPercent = $derived(duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0);
+	let playLabel = $derived(
+		isPlaybackBuffering && playbackRequested
+			? 'Loading audio'
+			: isPlaying
+				? 'Pause AI DJ'
+				: hasEnded
+					? 'Replay AI DJ'
+					: 'Play AI DJ'
+	);
 
-  /**
-   * The backend audio URL.
-   *
-   * For the current demo, this should be:
-   * http://localhost:5000/static/audio/demo.mp3
-   */
-  let audioUrl = $derived(session?.audioUrl || "");
+	$effect(() => {
+		const sessionId = session?.id || '';
+		if (sessionId !== trackedSessionId) {
+			trackedSessionId = sessionId;
+			segmentIndex = 0;
+			currentTime = 0;
+			duration = 0;
+			completedAudioUrl = '';
+		}
+	});
 
-  /**
-   * The user can control the player only while the session is playing
-   * or preparing the next segment.
-   */
-  let canControl = $derived(status === APP_STATES.PLAYING || status === APP_STATES.BUFFERING_NEXT);
+	$effect(() => {
+		if (audioElement) {
+			audioElement.volume = volume / 100;
+		}
+	});
 
-  /**
-   * True while the backend is creating the session or preparing the first moment.
-   */
-  let isStarting = $derived(status === APP_STATES.STARTING);
+	$effect(() => {
+		if (!audioElement || !audioUrl) {
+			return;
+		}
 
-  /**
-   * Frontend volume state.
-   *
-   * The slider value is 0-100, but the real HTMLAudioElement volume expects 0-1.
-   */
-  let volume = $state(72);
+		if (canControl && playbackRequested) {
+			const bounds = segmentBounds();
+			if (
+				audioElement.ended ||
+				(bounds.end > bounds.start && audioElement.currentTime >= bounds.end - 0.05)
+			) {
+				audioElement.currentTime = bounds.start;
+				completedAudioUrl = '';
+			}
 
-  /**
-   * Reference to the real <audio> element.
-   *
-   * bind:this={audioElement} connects this variable to the DOM audio player.
-   */
-  /** @type {HTMLAudioElement | null} */
-  let audioElement = $state(null);
+			void audioElement.play().catch((error) => {
+				const wasBlocked = error instanceof DOMException && error.name === 'NotAllowedError';
+				onMediaError(
+					wasBlocked
+						? 'Autoplay was blocked. Press play to start the music.'
+						: 'The audio could not start. Try playing it again.'
+				);
+			});
+		} else if (!playbackRequested && !audioElement.paused) {
+			audioElement.pause();
+		}
+	});
 
+	/** @param {number} seconds */
+	function formatTime(seconds) {
+		if (!Number.isFinite(seconds) || seconds <= 0) {
+			return '0:00';
+		}
 
-  let currentTime = $state(0);
-  let duration = $state(0);
+		const minutes = Math.floor(seconds / 60);
+		const remainingSeconds = Math.floor(seconds % 60)
+			.toString()
+			.padStart(2, '0');
+		return `${minutes}:${remainingSeconds}`;
+	}
 
-  let progressPercent = $derived(
-    duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
-  );
-  /**
-   * Apply the volume slider value to the real audio element.
-   *
-   * Example:
-   * volume = 72
-   * audioElement.volume = 0.72
-   */
-  $effect(() => {
-    if (!audioElement) {
-      return;
-    }
+	function segmentBounds() {
+		const mediaDuration =
+			audioElement && Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
+		const start = Math.max(0, activeSegment?.startSecond || 0);
+		const requestedEnd = activeSegment?.endSecond || 0;
+		const end =
+			requestedEnd > start ? Math.min(requestedEnd, mediaDuration || requestedEnd) : mediaDuration;
+		return { start, end, length: Math.max(0, end - start) };
+	}
 
-    audioElement.volume = volume / 100;
-  });
+	function syncTimeline() {
+		if (!audioElement) {
+			return;
+		}
 
-  /**
-   * Play or pause the real audio according to frontend state.
-   *
-   * When:
-   * - session has audioUrl
-   * - app is in playing state
-   * - isPlaying is true
-   *
-   * Then:
-   * - try to play the audio.
-   *
-   * Some browsers block autoplay.
-   * That is why native audio controls are shown too.
-   */
-  $effect(() => {
-    if (!audioElement || !audioUrl) {
-      return;
-    }
+		const bounds = segmentBounds();
+		currentTime = Math.max(0, audioElement.currentTime - bounds.start);
+		duration = bounds.length;
 
-    if (canControl && isPlaying) {
-      audioElement.play().catch(() => {
-        /**
-         * Browser may block autoplay until the user clicks play.
-         * This is normal browser behavior.
-         */
-      });
-    } else {
-      audioElement.pause();
-    }
-  });
+		if (bounds.end > bounds.start && audioElement.currentTime >= bounds.end - 0.05) {
+			handleAudioEnded();
+		}
+	}
 
-  /**
-   * Handle the volume slider.
-   *
-   * @param {Event} event
-   */
-  function handleVolumeInput(event) {
-    const target = /** @type {HTMLInputElement} */ (event.currentTarget);
-    volume = Number(target.value);
+	function handleLoadedMetadata() {
+		if (!audioElement) {
+			return;
+		}
 
-    if (audioElement) {
-      audioElement.volume = volume / 100;
-    }
-  }
+		const bounds = segmentBounds();
+		if (audioElement.currentTime < bounds.start || audioElement.currentTime >= bounds.end) {
+			audioElement.currentTime = bounds.start;
+		}
+		completedAudioUrl = '';
+		syncTimeline();
+	}
 
-  /**
- * Convert seconds into a readable audio time format.
- *
- * Example:
- * 84 seconds becomes "1:24"
- *
- * @param {number} seconds
- * @returns {string}
- */
-function formatTime(seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return "0:00";
-  }
+	/** @param {Event} event */
+	function handleSeekInput(event) {
+		const target = /** @type {HTMLInputElement} */ (event.currentTarget);
+		if (!audioElement || duration <= 0) {
+			return;
+		}
 
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, "0");
+		const bounds = segmentBounds();
+		const nextTime = (Number(target.value) / 100) * bounds.length;
+		audioElement.currentTime = bounds.start + nextTime;
+		currentTime = nextTime;
+		completedAudioUrl = '';
+	}
 
-  return `${minutes}:${remainingSeconds}`;
-}
+	/** @param {-1 | 1} direction */
+	function changeSegment(direction) {
+		const nextIndex = segmentIndex + direction;
+		if (nextIndex < 0 || nextIndex >= segments.length) {
+			return;
+		}
 
-function handleLoadedMetadata() {
-  if (!audioElement) {
-    return;
-  }
+		segmentIndex = nextIndex;
+		currentTime = 0;
+		duration = 0;
+		completedAudioUrl = '';
+		if (playbackRequested) {
+			onMediaWaiting();
+		}
+	}
 
-  duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
-}
+	function handleAudioEnded() {
+		if (completedAudioUrl === audioUrl) {
+			return;
+		}
 
-function handleTimeUpdate() {
-  if (!audioElement) {
-    return;
-  }
+		completedAudioUrl = audioUrl;
+		currentTime = duration;
+		if (hasNext) {
+			changeSegment(1);
+		} else {
+			onMediaEnded();
+		}
+	}
 
-  currentTime = audioElement.currentTime;
-  duration = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
-}
+	function handleMediaError() {
+		const code = audioElement?.error?.code;
+		const suffix = code ? ` (media error ${code})` : '';
+		onMediaError(`This audio source could not be loaded${suffix}.`);
+	}
 
-
-/** @param {Event} event */
-function handleSeekInput(event) {
-  const target = /** @type {HTMLInputElement} */ (event.currentTarget);
-
-  if (!audioElement || duration <= 0) {
-    return;
-  }
-
-  const percentage = Number(target.value);
-  const nextTime = (percentage / 100) * duration;
-
-  audioElement.currentTime = nextTime;
-  currentTime = nextTime;
-}
-
-function handleAudioEnded() {
-  currentTime = duration;
-}
-
-  
+	/** @param {Event} event */
+	function handleVolumeInput(event) {
+		const target = /** @type {HTMLInputElement} */ (event.currentTarget);
+		volume = Number(target.value);
+	}
 </script>
 
 <section class="player-deck" aria-label="Zonix AI DJ player">
-  <div class="track-block">
-    {#if nowPlaying}
-      <img class="cover" src={nowPlaying.coverUrl} alt={`Cover for ${nowPlaying.title}`} />
-      <div class="track-copy">
-        <h2>{nowPlaying.title}</h2>
-        <p>{nowPlaying.artist}</p>
-      </div>
-      <button class="icon-button" aria-label="Save vibe">♡</button>
-    {:else}
-      <div class="cover placeholder">ZX</div>
-      <div class="track-copy">
-        <h2>Zonix is ready</h2>
-        <p>Start a vibe to begin the flow.</p>
-      </div>
-    {/if}
-  </div>
+	<div class="track-block">
+		{#if nowPlaying}
+			{#if nowPlaying.coverUrl}
+				<img class="cover" src={nowPlaying.coverUrl} alt="" />
+			{:else}
+				<div class="cover placeholder" aria-hidden="true">ZX</div>
+			{/if}
+			<div class="track-copy">
+				<h2>{nowPlaying.title}</h2>
+				<p>{nowPlaying.artist}</p>
+			</div>
+		{:else}
+			<div class="cover placeholder" aria-hidden="true">ZX</div>
+			<div class="track-copy">
+				<h2>Zonix is ready</h2>
+				<p>Start a vibe to begin the flow.</p>
+			</div>
+		{/if}
+	</div>
 
-  <div class="flow-block">
-    <div class="flow-status">
-      <span class="signal" aria-hidden="true"></span>
-      <div>
-        <p class="eyebrow">
-          {#if isStarting}
-            Starting AI DJ
-          {:else if canControl}
-            AI DJ is playing...
-          {:else if status === APP_STATES.STOPPED}
-            Session stopped
-          {:else}
-            Waiting for a vibe
-          {/if}
-        </p>
+	<div class="flow-block">
+		<div class="flow-status" aria-live="polite">
+			<span class:active={isPlaying} class="signal" aria-hidden="true"></span>
+			<div>
+				<p class="eyebrow">
+					{#if isStarting}
+						Starting AI DJ
+					{:else if isStopping}
+						Stopping AI DJ
+					{:else if isPlaybackBuffering}
+						Buffering
+					{:else if isPlaying}
+						AI DJ is playing
+					{:else if hasEnded}
+						Session finished
+					{:else if canControl}
+						AI DJ is paused
+					{:else if status === APP_STATES.STOPPED}
+						Session stopped
+					{:else}
+						Waiting for a vibe
+					{/if}
+				</p>
+				<p class="flow-line">{currentStep || 'Describe your vibe above.'}</p>
+			</div>
+		</div>
 
-        <p class="flow-line">
-          {#if isStarting}
-            {currentStep || "Preparing the first flow"}
-          {:else if canControl}
-            Building your mix · Smooth and emotional
-          {:else if status === APP_STATES.ERROR}
-            Signal interrupted
-          {:else}
-            Describe your vibe above.
-          {/if}
-        </p>
-      </div>
-    </div>
+		<div class="deck-controls">
+			<button
+				class="segment-button"
+				type="button"
+				disabled={!canControl || !hasPrevious}
+				aria-label="Previous segment"
+				onclick={() => changeSegment(-1)}>⏮</button
+			>
+			<button
+				class="play-button"
+				type="button"
+				onclick={onTogglePlay}
+				disabled={!canControl || isStopping}
+				aria-label={playLabel}
+				aria-pressed={isPlaying}
+			>
+				{isPlaybackBuffering && playbackRequested ? '…' : isPlaying ? 'Ⅱ' : '▶'}
+			</button>
+			<button
+				class="segment-button"
+				type="button"
+				disabled={!canControl || !hasNext}
+				aria-label="Next segment"
+				onclick={() => changeSegment(1)}>⏭</button
+			>
+			<button
+				class="stop-button"
+				type="button"
+				onclick={onStop}
+				disabled={!canControl || isStopping}
+			>
+				{isStopping ? 'Stopping…' : 'Stop AI DJ'}
+			</button>
+		</div>
 
-      <div class="deck-controls">
-    <button
-      class="segment-button"
-      disabled
-      aria-label="Previous segment"
-      title="Previous segment will be available when real segments are added"
-    >
-      ⏮
-    </button>
+		<div class="progress-line">
+			<span>{formatTime(currentTime)}</span>
+			<input
+				class="progress-slider"
+				type="range"
+				min="0"
+				max="100"
+				step="0.1"
+				value={isStarting ? progress : progressPercent}
+				oninput={handleSeekInput}
+				disabled={!canControl || duration <= 0}
+				aria-label="Seek audio position"
+				aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
+			/>
+			<span>{formatTime(duration)}</span>
+		</div>
 
-    <button class="play-button" onclick={onTogglePlay} disabled={!canControl} aria-label="Play or pause AI DJ">
-      {isPlaying ? "Ⅱ" : "▶"}
-    </button>
+		{#if playbackError}
+			<p class="playback-error" role="alert">{playbackError}</p>
+		{/if}
 
-    <button
-      class="segment-button"
-      disabled
-      aria-label="Next segment"
-      title="Next segment will be available when real segments are added"
-    >
-      ⏭
-    </button>
+		{#if audioUrl}
+			<audio
+				class="hidden-audio"
+				bind:this={audioElement}
+				src={audioUrl}
+				preload="metadata"
+				onloadedmetadata={handleLoadedMetadata}
+				ontimeupdate={syncTimeline}
+				onplay={onMediaPlaying}
+				onplaying={onMediaReady}
+				onpause={onMediaPaused}
+				onwaiting={onMediaWaiting}
+				oncanplay={onMediaReady}
+				onended={handleAudioEnded}
+				onerror={handleMediaError}
+			></audio>
+		{/if}
+	</div>
 
-    <button class="stop-button" onclick={onStop} disabled={!canControl}>
-      Stop AI DJ
-    </button>
-  </div>
+	<div class="coach-block">
+		<p class="eyebrow">Coach the DJ</p>
+		<div class="coach-row">
+			{#each COACH_OPTIONS as option (option)}
+				<button
+					type="button"
+					class:active={selectedFeedback === option}
+					onclick={() => onFeedback(option)}
+					disabled={!canControl || isFeedbackPending || isStopping}
+					aria-pressed={selectedFeedback === option}
+				>
+					{pendingFeedback === option ? 'Sending…' : option}
+				</button>
+			{/each}
+		</div>
 
-    <div class="progress-line" aria-label="Current audio progress">
-  <span>{formatTime(currentTime)}</span>
-
-  <input
-    class="progress-slider"
-    type="range"
-    min="0"
-    max="100"
-    step="0.1"
-    value={isStarting ? progress : progressPercent}
-    oninput={handleSeekInput}
-    disabled={!audioUrl || duration <= 0}
-    aria-label="Seek audio position"
-  />
-
-  <span>{formatTime(duration)}</span>
-</div>
-
-    {#if audioUrl}
-  <!--
-    Hidden real audio element.
-
-    The user does not control this directly.
-    The custom Zonix play/pause button above controls this audio element.
-  -->
-  <!-- svelte-ignore a11y_media_has_caption -->
-  <audio
-  class="hidden-audio"
-  bind:this={audioElement}
-  src={audioUrl}
-  preload="auto"
-  onloadedmetadata={handleLoadedMetadata}
-  ontimeupdate={handleTimeUpdate}
-  onended={handleAudioEnded}
-></audio>
-{/if}
-  </div>
-
-  <div class="coach-block">
-    <p class="eyebrow">Coach the DJ</p>
-
-    <div class="coach-row">
-      {#each COACH_OPTIONS as option}
-        <button
-          class:active={selectedFeedback === option}
-          onclick={() => onFeedback(option)}
-          disabled={!canControl}
-        >
-          {option}
-        </button>
-      {/each}
-    </div>
-
-    <div class="volume-control" aria-label="Volume control">
-      <span aria-hidden="true">🔊</span>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        value={volume}
-        oninput={handleVolumeInput}
-        aria-label="Volume"
-      />
-      <span class="volume-value">{volume}%</span>
-    </div>
-
-    <p class="coach-note">The more you guide, the better your flow.</p>
-  </div>
+		<label class="volume-control">
+			<span aria-hidden="true">🔊</span>
+			<span class="sr-only">Volume</span>
+			<input type="range" min="0" max="100" value={volume} oninput={handleVolumeInput} />
+			<span class="volume-value">{volume}%</span>
+		</label>
+		<p class="coach-note">Your feedback guides the next choice.</p>
+	</div>
 </section>
 
 <style>
-  .player-deck {
-    position: fixed;
-    left: 50%;
-    bottom: 18px;
-    z-index: 40;
-    width: min(1500px, calc(100% - 32px));
-    transform: translateX(-50%);
-    display: grid;
-    grid-template-columns: 330px 1fr 570px;
-    gap: 26px;
-    align-items: center;
-    padding: 18px 24px;
-    border: 1px solid rgba(125, 183, 255, 0.2);
-    border-radius: 24px;
-    background:
-      linear-gradient(180deg, rgba(8, 16, 31, 0.94), rgba(4, 9, 18, 0.94)),
-      rgba(3, 8, 16, 0.96);
-    box-shadow: 0 22px 90px rgba(0, 0, 0, 0.62), 0 0 70px rgba(59, 130, 246, 0.12);
-    backdrop-filter: blur(18px);
-  }
+	.player-deck {
+		position: fixed;
+		left: 50%;
+		bottom: 18px;
+		z-index: 40;
+		display: grid;
+		grid-template-columns: minmax(220px, 330px) minmax(340px, 1fr) minmax(300px, 500px);
+		gap: 26px;
+		align-items: center;
+		width: min(1500px, calc(100% - 32px));
+		padding: 18px 24px;
+		transform: translateX(-50%);
+		border: 1px solid rgba(125, 183, 255, 0.3);
+		border-radius: 24px;
+		background: linear-gradient(180deg, rgba(8, 16, 31, 0.97), rgba(4, 9, 18, 0.97));
+		box-shadow:
+			0 22px 90px rgba(0, 0, 0, 0.62),
+			0 0 70px rgba(59, 130, 246, 0.12);
+		backdrop-filter: blur(18px);
+	}
 
-  .track-block,
-  .flow-status,
-  .deck-controls,
-  .progress-line,
-  .coach-row {
-    display: flex;
-    align-items: center;
-  }
+	.track-block,
+	.flow-status,
+	.deck-controls,
+	.progress-line,
+	.coach-row {
+		display: flex;
+		align-items: center;
+	}
 
-  .track-block {
-    gap: 16px;
-    min-width: 0;
-  }
+	.track-block {
+		min-width: 0;
+		gap: 16px;
+	}
 
-  .cover {
-    width: 70px;
-    height: 70px;
-    flex: 0 0 auto;
-    border-radius: 14px;
-    object-fit: cover;
-    border: 1px solid rgba(125, 183, 255, 0.2);
-  }
+	.cover {
+		width: 70px;
+		height: 70px;
+		flex: 0 0 auto;
+		border: 1px solid rgba(125, 183, 255, 0.25);
+		border-radius: 14px;
+		object-fit: cover;
+	}
 
-  .placeholder {
-    display: grid;
-    place-items: center;
-    color: white;
-    background: linear-gradient(135deg, #264984, #6ea9ff);
-    font-weight: 1000;
-    letter-spacing: 0.08em;
-  }
+	.placeholder {
+		display: grid;
+		place-items: center;
+		background: linear-gradient(135deg, #264984, #6ea9ff);
+		color: white;
+		font-weight: 900;
+	}
 
-  .track-copy {
-    min-width: 0;
-  }
+	.track-copy {
+		min-width: 0;
+	}
 
-  .track-copy h2 {
-    overflow: hidden;
-    margin: 0 0 5px;
-    color: var(--text-main);
-    font-size: 18px;
-    font-weight: 900;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+	.track-copy h2 {
+		overflow: hidden;
+		margin: 0 0 5px;
+		color: var(--text-main);
+		font-size: 18px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 
-  .track-copy p,
-  .flow-line,
-  .coach-note {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 14px;
-  }
+	.track-copy p,
+	.flow-line,
+	.coach-note {
+		margin: 0;
+		color: var(--text-muted);
+		font-size: 14px;
+	}
 
-  .icon-button {
-    margin-left: auto;
-    border: none;
-    color: var(--text-soft);
-    background: transparent;
-    font-size: 28px;
-  }
+	.flow-block,
+	.coach-block {
+		display: grid;
+		gap: 12px;
+	}
 
-  .flow-block {
-    display: grid;
-    gap: 14px;
-  }
+	.flow-status {
+		gap: 12px;
+	}
 
-  .flow-status {
-    gap: 12px;
-  }
+	.signal {
+		width: 26px;
+		height: 18px;
+		background: repeating-linear-gradient(90deg, var(--accent-2) 0 2px, transparent 2px 6px);
+		opacity: 0.45;
+	}
 
-  .signal {
-    width: 26px;
-    height: 18px;
-    background:
-      linear-gradient(90deg, transparent 0 3px, var(--accent-2) 3px 5px, transparent 5px 9px, var(--accent-2) 9px 11px, transparent 11px 16px, var(--accent-2) 16px 18px, transparent 18px);
-    opacity: 0.85;
-  }
+	.signal.active {
+		opacity: 1;
+		animation: pulse 900ms ease-in-out infinite alternate;
+	}
 
-  .eyebrow {
-    margin: 0 0 4px;
-    color: var(--accent-2);
-    font-size: 12px;
-    font-weight: 900;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-  }
+	.eyebrow {
+		margin: 0 0 4px;
+		color: var(--accent-2);
+		font-size: 12px;
+		font-weight: 900;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+	}
 
-  .deck-controls {
-    justify-content: center;
-    gap: 18px;
-  }
+	.deck-controls {
+		justify-content: center;
+		gap: 14px;
+	}
 
-  .play-button {
-    width: 68px;
-    height: 68px;
-    border: 1px solid rgba(125, 183, 255, 0.28);
-    border-radius: 999px;
-    display: grid;
-    place-items: center;
-    color: white;
-    background: linear-gradient(135deg, #1f5edb, #74adff);
-    box-shadow: var(--shadow-blue);
-    font-size: 26px;
-    font-weight: 900;
-  }
+	.play-button,
+	.segment-button {
+		display: grid;
+		place-items: center;
+		border: 1px solid rgba(125, 183, 255, 0.28);
+		border-radius: 999px;
+	}
 
-  .stop-button {
-    border: 1px solid rgba(125, 183, 255, 0.2);
-    border-radius: 999px;
-    padding: 10px 15px;
-    color: var(--text-soft);
-    background: rgba(125, 183, 255, 0.04);
-    font-size: 13px;
-    font-weight: 850;
-  }
+	.play-button {
+		width: 62px;
+		height: 62px;
+		background: linear-gradient(135deg, #1f5edb, #74adff);
+		box-shadow: var(--shadow-blue);
+		color: white;
+		font-size: 24px;
+	}
 
-  .progress-line {
-    gap: 12px;
-    color: var(--text-muted);
-    font-size: 13px;
-  }
+	.segment-button {
+		width: 44px;
+		height: 44px;
+		background: rgba(125, 183, 255, 0.06);
+		color: var(--text-soft);
+	}
 
-  .progress-slider {
-  flex: 1;
-  height: 6px;
-  accent-color: var(--accent-2);
-  cursor: pointer;
-}
+	.stop-button,
+	.coach-row button {
+		border: 1px solid var(--border-soft);
+		border-radius: 999px;
+		padding: 10px 14px;
+		background: rgba(125, 183, 255, 0.05);
+		color: var(--text-soft);
+		font-size: 13px;
+		font-weight: 800;
+	}
 
-  .progress-slider:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
+	.progress-line {
+		gap: 12px;
+		color: var(--text-muted);
+		font-size: 13px;
+	}
 
-  .hidden-audio {
-  display: none;
-}
+	.progress-slider {
+		flex: 1;
+		accent-color: var(--accent-2);
+	}
 
-  .coach-block {
-    display: grid;
-    gap: 10px;
-  }
+	.playback-error {
+		margin: 0;
+		color: #ff9aab;
+		font-size: 13px;
+	}
 
-  .coach-row {
-    flex-wrap: wrap;
-    gap: 10px;
-  }
+	.hidden-audio {
+		display: none;
+	}
 
-  .volume-control {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    gap: 10px;
-    align-items: center;
-    margin-top: 2px;
-    color: var(--text-soft);
-    font-size: 13px;
-  }
+	.coach-row {
+		flex-wrap: wrap;
+		gap: 8px;
+	}
 
-  .volume-control input[type="range"] {
-    width: 100%;
-    height: 5px;
-    accent-color: var(--accent-2);
-    cursor: pointer;
-  }
+	.coach-row button.active {
+		border-color: var(--accent-2);
+		background: rgba(59, 130, 246, 0.2);
+		color: white;
+	}
 
-  .volume-value {
-    min-width: 38px;
-    color: var(--text-muted);
-    text-align: right;
-  }
+	.volume-control {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
+		gap: 10px;
+		align-items: center;
+		color: var(--text-soft);
+		font-size: 13px;
+	}
 
-  .coach-row button {
-    border: 1px solid var(--border-muted);
-    border-radius: 999px;
-    padding: 10px 14px;
-    color: var(--text-soft);
-    background: rgba(255, 255, 255, 0.025);
-    font-size: 13px;
-    font-weight: 850;
-  }
+	.volume-control input {
+		width: 100%;
+		accent-color: var(--accent-2);
+	}
 
-  .coach-row button.active,
-  .coach-row button:hover:not(:disabled) {
-    border-color: var(--accent-2);
-    color: white;
-    background: rgba(59, 130, 246, 0.16);
-  }
+	.volume-value {
+		min-width: 38px;
+		text-align: right;
+	}
 
-  button:disabled {
-    opacity: 0.42;
-    cursor: not-allowed;
-  }
+	button:disabled,
+	input:disabled {
+		cursor: not-allowed;
+		opacity: 0.42;
+	}
 
-  @media (max-width: 1180px) {
-    .player-deck {
-      grid-template-columns: 1fr;
-      gap: 18px;
-      position: static;
-      width: 100%;
-      transform: none;
-      margin-top: 24px;
-    }
-  }
+	@keyframes pulse {
+		to {
+			transform: scaleY(0.65);
+		}
+	}
 
-  @media (max-width: 620px) {
-    .player-deck {
-      padding: 16px;
-    }
+	@media (max-width: 1180px) {
+		.player-deck {
+			position: static;
+			grid-template-columns: 1fr;
+			width: 100%;
+			margin-top: 24px;
+			transform: none;
+		}
+	}
 
-    .deck-controls {
-      justify-content: flex-start;
-    }
+	@media (max-width: 620px) {
+		.player-deck {
+			padding: 16px;
+		}
 
-    .coach-row button,
-    .stop-button {
-      flex: 1;
-    }
-  }
+		.deck-controls {
+			flex-wrap: wrap;
+		}
 
-  .segment-button {
-  width: 46px;
-  height: 46px;
-  border: 1px solid rgba(125, 183, 255, 0.24);
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  color: var(--text-soft);
-  background: rgba(125, 183, 255, 0.05);
-  font-size: 18px;
-  font-weight: 900;
-}
+		.stop-button {
+			flex-basis: 100%;
+		}
 
-.segment-button:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
+		.coach-row button {
+			flex: 1 1 42%;
+		}
+	}
 </style>

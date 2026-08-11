@@ -1,0 +1,27 @@
+Zonix demo audio asset provenance
+=================================
+
+Active cleared asset
+--------------------
+
+File: zonix-demo.wav
+SHA-256: caf323a5be3e43371d0b50b8f31e2815e8eb7a7bb2974046b26406b0cca6bc4c
+Size: 2,646,044 bytes
+Format: 60 seconds, mono, 22.05 kHz, signed 16-bit PCM WAV
+Origin: original procedural sine-wave synthesis in generate_demo.py
+License/ownership: project-generated; no third-party sample or recording
+Runtime status: active backend demo/fallback asset
+
+Removed legacy asset (historical record)
+----------------------------------------
+
+File: demo.mp3
+SHA-256: a93d0c41b1e5d0e2a59a55ab8d28d1d12ff75c0a0d2177faf4c1548047672065
+Size: 66,833,900 bytes
+Origin and license: unknown
+Redistribution status: NOT CLEARED
+Runtime status: removed from the current revision; no application code references it
+
+Do not restore, publish, redistribute, or deploy demo.mp3 unless its copyright
+holder and license can be verified. Its blob remains in old commits until the
+team coordinates a separate Git history rewrite.

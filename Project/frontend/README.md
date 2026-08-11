@@ -1,42 +1,49 @@
-# sv
+# Zonix frontend
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit 2/Svelte 5 client for the Zonix AI DJ, persistent mix library, community forum, and account features.
 
-## Creating a project
+## Run locally
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+The default API prefix is same-origin `/api`. Vite proxies that prefix to `http://127.0.0.1:5000` and strips `/api`, so start the FastAPI backend on port 5000 before running:
 
 ```sh
-# recreate this project
-npx sv@0.16.1 create --template minimal --types jsdoc --add prettier eslint --install npm frontend
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
+npm ci
 npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
 ```
 
-## Building
+Set `PUBLIC_API_PROXY_TARGET` to change the Vite development proxy target. Set `PUBLIC_API_BASE_URL` only when a deployment intentionally serves the API on a different origin; the same-origin proxy is preferred because cookie authentication then needs no browser-specific CORS setup.
 
-To create a production version of your app:
+The production image serves the static build with unprivileged Nginx. Nginx proxies `/api/` (including notification WebSockets) to the Compose `backend` service.
+
+## User routes
+
+- `/` — prompt-driven AI DJ session and media-event-driven player.
+- `/feed` — published mixes with full segment playback, likes, and saves.
+- `/library` — authenticated draft generation, editing, publishing, and saved mixes.
+- `/forum` — public discussions with authenticated posts, anonymous mode, attachments, comments, and reversible votes.
+- `/social` — authenticated direct messages, attachments, durable notifications, and live notification refresh.
+- `/profile` — authenticated profile and the forum activity metrics supplied by the backend.
+- `/login` and `/register` — HTTP-only cookie authentication.
+
+## Quality gates
 
 ```sh
+npm run check
+npm run lint
+npm test
+npm audit --audit-level=moderate
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
-You can preview the production build with `npm run preview`.
+Vitest covers the shared API client and response adapters. `svelte-check`,
+ESLint, and Prettier cover components and routes. Playwright exercises public
+navigation, guest route protection, and authenticated library/profile/social
+routes against the production build with controlled API fixtures.
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## API conventions
+
+All services use `src/lib/services/api.js`. It provides cookie credentials, timeout/cancellation, structured HTTP errors, FastAPI validation-detail parsing, and deployment-safe backend media URLs. Session playback uses `/sessions` as the canonical live-session API. `/mixes` is reserved for persistent/social mix records.
+
+The player never treats a requested play as proof of playback. Native `play`, `pause`, `waiting`, `canplay`, `ended`, and `error` events update the store, and segment players respect each segment's start/end bounds.

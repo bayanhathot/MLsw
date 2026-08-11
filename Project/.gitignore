@@ -1,13 +1,53 @@
-# Real environment variables.
-# This may contain passwords and secrets, so do not commit it.
+# Editors and operating-system files (kept locally, never removed by this rule).
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Secrets. Keep documented examples in Git.
 .env
+.env.*
+!.env.example
+!**/.env.example
+!**/.env.*.example
 
-# Python virtual environment inside backend.
-backend/.venv/
+# Python environments, caches, coverage, and build products.
+**/.venv/
+**/.ml-venv/
+**/venv/
+**/.venv.zip
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.py[cod]
+backend/app/uploads/*
+!backend/app/uploads/.gitkeep
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
 
-# Python cache files.
-__pycache__/
-*.pyc
+# JavaScript dependencies and Svelte/Vite output.
+**/node_modules/
+**/.svelte-kit/
+frontend/build/
+frontend/.vite/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
 
-# Pytest cache files.
-.pytest_cache/
+# Local MLOps state. Pipeline definitions and committed metrics stay visible.
+.dvc/cache/
+.dvc/tmp/
+mlruns/
+mlartifacts/
+ranked_segments.json
+backend/app/static/audio/demo.mp3
+
+# Runtime logs and scratch files.
+*.log
+*.tmp
+*.bak

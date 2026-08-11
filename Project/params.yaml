@@ -1,0 +1,14 @@
+baseline:
+  prompt_overlap_weight: 0.60
+  transition_weight: 0.30
+  silence_penalty: 0.10
+
+evaluation:
+  query: high energy coding focus
+  top_k: 5
+  max_silence_probability: 0.35
+
+promotion:
+  min_precision_at_k: 0.80
+  min_mean_transition_score_at_k: 0.75
+  required_catalog_integrity_rate: 1.0

@@ -4,3 +4,8 @@ build
 .git
 .vscode
 npm-debug.log
+e2e
+playwright.config.js
+test-results
+playwright-report
+blob-report

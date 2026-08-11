@@ -7,3 +7,8 @@ bun.lockb
 
 # Miscellaneous
 /static/
+build/
+.svelte-kit/
+test-results/
+playwright-report/
+blob-report/

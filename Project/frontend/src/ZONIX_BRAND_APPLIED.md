@@ -1,6 +1,11 @@
 # File: ZONIX_BRAND_APPLIED.md
 
+> **Historical brand rationale.** Visual reasoning below is retained as design
+> history; it is not a current feature or architecture inventory. See
+> [../README.md](../README.md) for the maintained frontend documentation.
+
 ## Purpose
+
 This document explains how the Zonix brand identity was translated into the frontend.
 It is not executed by the app; it is documentation for the team and lecturer.
 

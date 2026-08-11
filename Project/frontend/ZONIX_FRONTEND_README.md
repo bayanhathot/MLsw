@@ -1,5 +1,10 @@
 # Zonix Frontend README
 
+> **Archived implementation snapshot.** This document describes the early
+> mock-only MVP and is retained only for project history. It is not a setup or
+> architecture reference. Use [README.md](README.md) and the repository root
+> [README.md](../README.md) for the current authenticated, persistent frontend.
+
 This README explains the purpose, structure, and current behavior of the Zonix frontend.
 
 ---
@@ -168,8 +173,7 @@ Important:
 The placeholders must appear only in the real head/body locations:
 
 ```html
-%sveltekit.head%
-%sveltekit.body%
+%sveltekit.head% %sveltekit.body%
 ```
 
 They must not be written inside comments, because that can break the build and show `%sveltekit.head% %sveltekit.body%` in the browser.
@@ -326,7 +330,7 @@ This file connects the frontend to the FastAPI backend.
 Current backend base URL:
 
 ```js
-const API_BASE_URL = "http://localhost:5000";
+const API_BASE_URL = 'http://localhost:5000';
 ```
 
 Functions:

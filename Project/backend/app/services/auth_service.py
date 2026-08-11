@@ -8,9 +8,15 @@ The service handles the actual register/login logic.
 """
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    hash_password,
+    verify_and_update_password,
+)
 from app.database.models.user import User
 from app.schemas import UserCreate, UserLogin
 
@@ -24,7 +30,7 @@ def get_user_by_email(db: Session, email: str) -> User | None:
         None if no user exists with this email.
     """
 
-    return db.query(User).filter(User.email == email).first()
+    return db.query(User).filter(func.lower(User.email) == email.strip().lower()).first()
 
 
 def get_user_by_username(db: Session, username: str) -> User | None:
@@ -32,7 +38,7 @@ def get_user_by_username(db: Session, username: str) -> User | None:
     Find a user by username.
     """
 
-    return db.query(User).filter(User.username == username).first()
+    return db.query(User).filter(func.lower(User.username) == username.strip().lower()).first()
 
 
 def register_user(db: Session, user_data: UserCreate) -> User:
@@ -63,14 +69,24 @@ def register_user(db: Session, user_data: UserCreate) -> User:
         )
 
     new_user = User(
-        username=user_data.username,
-        email=user_data.email,
+        username=user_data.username.strip().lower(),
+        email=str(user_data.email).strip().lower(),
         hashed_password=hash_password(user_data.password),
     )
 
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    try:
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+    except IntegrityError as exc:
+        # A concurrent registration can pass the pre-checks.  Database unique
+        # constraints remain the source of truth and the session must be
+        # rolled back before it can be reused.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email or username is already registered.",
+        ) from exc
 
     return new_user
 
@@ -94,7 +110,7 @@ def login_user(db: Session, login_data: UserLogin) -> str:
             detail="Invalid email or password.",
         )
 
-    password_is_valid = verify_password(
+    password_is_valid, replacement_hash = verify_and_update_password(
         plain_password=login_data.password,
         hashed_password=user.hashed_password,
     )
@@ -104,6 +120,16 @@ def login_user(db: Session, login_data: UserLogin) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled.",
+        )
+
+    if replacement_hash is not None:
+        user.hashed_password = replacement_hash
+        db.commit()
 
     access_token = create_access_token(subject=str(user.id))
 

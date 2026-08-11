@@ -1,154 +1,194 @@
-"""
-Mixes router for Zonix.
+"""Generated mix API and its public feed/private library."""
 
-This router exposes API endpoints related to generating AI DJ mixes.
+from datetime import datetime
 
-Current endpoint:
-POST /mixes/start
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session, selectinload
 
-Main idea:
-The user does not receive one song.
-Instead, the backend creates a mix queue made of multiple song segments.
-
-Current MVP flow:
-1. Frontend sends a prompt to POST /mixes/start.
-2. Backend searches Audius for relevant tracks.
-3. Each returned track becomes a simple 45-second segment.
-4. Backend returns an ordered segment queue.
-5. Frontend will later play the queue and crossfade between segments.
-
-Important:
-This router creates a "mix plan", not a real audio file.
-Real audio cutting, beat detection, and crossfading are future work.
-
-Future improvements:
-- Save mix sessions in PostgreSQL.
-- Save tracks and generated segments in PostgreSQL.
-- Generate smarter segments instead of always using 0-45 seconds.
-- Use feedback buttons to choose the next segment.
-- Add real crossfade/playback logic on the frontend.
-"""
-
-from uuid import uuid4
-
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-
-from app.services.audius_service import search_tracks
-
+from app.core.rate_limit import write_rate_limit
+from app.core.time import utc_now
+from app.database.database import get_db
+from app.database.models.mix import Mix
+from app.database.models.mix_social import MixLike, SavedMix
+from app.database.models.user import User
+from app.routers.auth import get_current_user, get_optional_current_user
+from app.schemas import (
+    MixFeedItem,
+    MixLibraryRead,
+    MixRead,
+    MixUpdate,
+    StartMixRequest,
+)
+from app.services import mix_service
 
 router = APIRouter(prefix="/mixes", tags=["mixes"])
 
 
-class StartMixRequest(BaseModel):
-    """
-      Request body for creating a new mix.
-
-      Example:
-      {
-          "prompt": "chill electronic focus"
-      }
-
-      The prompt describes the vibe the user wants.
-      """
-    prompt: str = Field(..., min_length=1, max_length=300)
+def _get_or_404(db: Session, mix_id: int) -> Mix:
+    mix = mix_service.get_mix(db, mix_id)
+    if mix is None:
+        raise HTTPException(status_code=404, detail="Mix not found.")
+    return mix
 
 
-class MixSegment(BaseModel):
-    """
-    Represents one segment in the generated mix queue.
-
-    In the MVP, every segment is created from one Audius track.
-    Later, a segment should represent the best part of a song,
-    such as the chorus, drop, vocal part, or emotional section.
-    """
-    position: int
-    title: str
-    artist: str
-    audio_url: str
-    cover_url: str | None = None
-    start_second: int
-    end_second: int
-    transition_to_next: str
-    source: str
-    source_track_id: str
+def _feed_item(db: Session, mix: Mix, user_id: int | None) -> MixFeedItem:
+    return MixFeedItem(
+        **MixRead.model_validate(mix).model_dump(),
+        owner=mix.owner,
+        like_count=mix_service.like_count(db, mix.id),
+        is_liked=mix_service.liked_by(db, mix.id, user_id),
+        is_saved=mix_service.saved_by(db, mix.id, user_id),
+    )
 
 
-class StartMixResponse(BaseModel):
-    """
-    Response returned by POST /mixes/start.
+@router.post("/start", response_model=MixRead)
+def start_mix(
+    request: StartMixRequest,
+    _: None = Depends(write_rate_limit),
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a persisted mix; provider failures use the known local demo."""
 
-    Fields:
-        session_id:
-            Unique id for this generated mix.
-
-        prompt:
-            The original prompt sent by the user.
-
-        segments:
-            Ordered list of segments that the frontend should play.
-    """
-    session_id: str
-    prompt: str
-    segments: list[MixSegment]
+    return mix_service.create_mix(db, request.prompt, current_user.id if current_user else None)
 
 
-@router.post("/start", response_model=StartMixResponse)
-def start_mix(request: StartMixRequest):
-    """
-       Start a new AI DJ mix.
+@router.get("/feed", response_model=list[MixFeedItem])
+def get_feed(
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    mixes = (
+        db.query(Mix)
+        .options(selectinload(Mix.owner), selectinload(Mix.segments))
+        .filter(Mix.status == "published", Mix.owner_id.is_not(None))
+        .order_by(Mix.published_at.desc(), Mix.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [_feed_item(db, mix, current_user.id if current_user else None) for mix in mixes]
 
-       Flow:
-       1. Receive a prompt from the frontend.
-       2. Search Audius for tracks related to the prompt.
-       3. Convert each track into a temporary 45-second segment.
-       4. Return the ordered segment queue.
 
-       Example:
-           Prompt: "chill electronic focus"
+@router.get("/library", response_model=MixLibraryRead)
+def get_library(
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    owned = (
+        db.query(Mix)
+        .options(selectinload(Mix.segments))
+        .filter(Mix.owner_id == current_user.id)
+        .order_by(Mix.created_at.desc())
+        .all()
+    )
+    saved = (
+        db.query(Mix)
+        .options(selectinload(Mix.segments))
+        .join(SavedMix, SavedMix.mix_id == Mix.id)
+        .filter(SavedMix.user_id == current_user.id, Mix.status == "published")
+        .order_by(SavedMix.created_at.desc())
+        .all()
+    )
+    return {"owned": owned, "saved": saved}
 
-           Returned queue:
-           - Segment 1: Track A, seconds 0-45
-           - Segment 2: Track B, seconds 0-45
-           - Segment 3: Track C, seconds 0-45
 
-       The frontend will later play these segments in order and add crossfade.
-       """
-    tracks = search_tracks(request.prompt, limit=5)
+@router.get("/mine", response_model=list[MixRead])
+def get_owned(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return get_library(current_user, db).get("owned", [])
 
-    if not tracks:
-        raise HTTPException(
-            status_code=404,
-            detail="No tracks found for this prompt",
-        )
 
-    segments = []
+@router.get("/saved", response_model=list[MixRead])
+def get_saved(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return get_library(current_user, db).get("saved", [])
 
-    for index, track in enumerate(tracks):
-        duration = track.get("duration") or 60
 
-        # MVP fake segmentation:
-        # each track becomes one 45-second segment.
-        start_second = 0
-        end_second = min(45, duration)
+@router.get("/{mix_id}", response_model=MixRead)
+def read_mix(mix_id: int, db: Session = Depends(get_db)):
+    mix = _get_or_404(db, mix_id)
+    if mix.status != "published":
+        raise HTTPException(status_code=404, detail="Published mix not found.")
+    return mix
 
-        segments.append(
-            {
-                "position": index + 1,
-                "title": track["title"],
-                "artist": track["artist"],
-                "audio_url": track["audio_url"],
-                "cover_url": track["cover_url"],
-                "start_second": start_second,
-                "end_second": end_second,
-                "transition_to_next": "crossfade",
-                "source": track["source"],
-                "source_track_id": track["source_track_id"],
-            }
-        )
 
+@router.patch("/{mix_id}", response_model=MixRead)
+def update_mix(
+    mix_id: int,
+    request: MixUpdate,
+    _: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    mix = _get_or_404(db, mix_id)
+    if mix.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not own this mix.")
+    mix.title = request.title
+    mix.description = request.description
+    mix.cover_url = request.cover_url
+    db.commit()
+    db.refresh(mix)
+    return mix
+
+
+@router.post("/{mix_id}/publish", response_model=MixRead)
+def publish_mix(
+    mix_id: int,
+    _: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    mix = _get_or_404(db, mix_id)
+    if mix.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not own this mix.")
+    if mix.status != "published":
+        mix.status = "published"
+        mix.published_at = utc_now()
+        db.commit()
+        db.refresh(mix)
+    return mix
+
+
+def _published(db: Session, mix_id: int) -> Mix:
+    mix = _get_or_404(db, mix_id)
+    if mix.status != "published":
+        raise HTTPException(status_code=404, detail="Published mix not found.")
+    return mix
+
+
+def _like(mix_id: int, enabled: bool, current_user: User, db: Session):
+    _published(db, mix_id)
+    mix_service.set_membership(db, MixLike, mix_id, current_user.id, enabled)
     return {
-        "session_id": f"mix_{uuid4().hex[:8]}",
-        "prompt": request.prompt,
-        "segments": segments,
+        "mix_id": mix_id,
+        "is_liked": enabled,
+        "like_count": mix_service.like_count(db, mix_id),
     }
+
+
+@router.post("/{mix_id}/like")
+@router.put("/{mix_id}/like", include_in_schema=False)
+def like_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _like(mix_id, True, current_user, db)
+
+
+@router.delete("/{mix_id}/like")
+def unlike_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _like(mix_id, False, current_user, db)
+
+
+def _save(mix_id: int, enabled: bool, current_user: User, db: Session):
+    _published(db, mix_id)
+    mix_service.set_membership(db, SavedMix, mix_id, current_user.id, enabled)
+    return {"mix_id": mix_id, "is_saved": enabled}
+
+
+@router.post("/{mix_id}/save")
+@router.put("/{mix_id}/save", include_in_schema=False)
+def save_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _save(mix_id, True, current_user, db)
+
+
+@router.delete("/{mix_id}/save")
+def unsave_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _save(mix_id, False, current_user, db)

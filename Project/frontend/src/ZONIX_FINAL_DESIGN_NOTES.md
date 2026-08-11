@@ -1,6 +1,11 @@
 # File: ZONIX_FINAL_DESIGN_NOTES.md
 
+> **Archived design snapshot.** This predates the feed, library, forum, social,
+> profile, and persistent-session work and mentions files that were deliberately
+> removed. Current behavior is documented in [../README.md](../README.md).
+
 ## Purpose
+
 This document explains the final MVP design choices and why the interface looks/behaves this way.
 It is not executed by the app; it is design documentation for the project.
 

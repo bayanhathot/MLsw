@@ -23,23 +23,52 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
+if ALGORITHM not in {"HS256", "HS384", "HS512"}:
+    raise RuntimeError("ALGORITHM must be HS256, HS384, or HS512.")
+
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY is not set. Check your .env file.")
 
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+PLACEHOLDER_SECRETS = {
+    "secret",
+    "changeme",
+    "change-me",
+    "your-secret-key",
+    "local-development-secret-replace-before-deploying",
+}
+
+
+def _is_placeholder_secret(value: str) -> bool:
+    """Recognize example values that must never be accepted in production."""
+
+    normalized = value.strip().lower()
+    return normalized in PLACEHOLDER_SECRETS or normalized.startswith(
+        ("replace-", "changeme", "your-")
+    )
+
+
+if APP_ENV == "production" and (
+    len(SECRET_KEY) < 32
+    or _is_placeholder_secret(SECRET_KEY)
+):
+    raise RuntimeError("SECRET_KEY must be a non-placeholder value of at least 32 characters in production.")
+
 # Password hashing context.
-# bcrypt is a strong password hashing algorithm.
+# New hashes use PBKDF2-HMAC-SHA256 with OWASP's recommended work factor.
+# bcrypt remains available only to verify and transparently upgrade legacy
+# hashes when their owners next authenticate.
 pwd_context = CryptContext(
-    schemes=["bcrypt"],
+    schemes=["pbkdf2_sha256", "bcrypt"],
     deprecated="auto",
+    pbkdf2_sha256__default_rounds=600_000,
+    pbkdf2_sha256__min_rounds=600_000,
 )
 
 
 def hash_password(password: str) -> str:
     """
     Convert a plain password into a secure password hash.
-
-    Example:
-    "123456" -> "$2b$12$....."
 
     We store the hash in the database, not the real password.
     """
@@ -54,7 +83,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Used during login.
     """
 
-    return pwd_context.verify(plain_password, hashed_password)
+    is_valid, _ = verify_and_update_password(plain_password, hashed_password)
+    return is_valid
+
+
+def verify_and_update_password(
+    plain_password: str, hashed_password: str
+) -> tuple[bool, str | None]:
+    """Verify a password and return a replacement for outdated hashes."""
+
+    try:
+        return pwd_context.verify_and_update(plain_password, hashed_password)
+    except (TypeError, ValueError):
+        # Treat corrupted/unknown hashes as invalid credentials rather than a
+        # server error that leaks account state.
+        return False, None
 
 
 def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
@@ -98,10 +141,10 @@ def decode_access_token(token: str) -> str | None:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         subject = payload.get("sub")
 
-        if subject is None:
+        if not isinstance(subject, str) or not subject.strip():
             return None
 
-        return str(subject)
+        return subject
 
     except JWTError:
         return None

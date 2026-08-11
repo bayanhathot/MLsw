@@ -31,10 +31,10 @@
  * }}
  */
 export const APP_STATES = {
-  IDLE: "idle",
-  STARTING: "starting",
-  PLAYING: "playing",
-  BUFFERING_NEXT: "buffering_next",
-  STOPPED: "stopped",
-  ERROR: "error"
+	IDLE: 'idle',
+	STARTING: 'starting',
+	PLAYING: 'playing',
+	BUFFERING_NEXT: 'buffering_next',
+	STOPPED: 'stopped',
+	ERROR: 'error'
 };

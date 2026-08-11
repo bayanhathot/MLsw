@@ -11,28 +11,28 @@
 -->
 
 <script>
-  import { onMount } from "svelte";
+	import { onMount } from 'svelte';
 
-  import "../app.css";
-  import Navbar from "$lib/components/Navbar.svelte";
-  import { authStore } from "$lib/stores/authStore.js";
+	import '../app.css';
+	import Navbar from '$lib/components/Navbar.svelte';
+	import { authStore } from '$lib/stores/authStore.js';
 
-  let { children } = $props();
+	let { children } = $props();
 
-  onMount(() => {
-    authStore.checkAuth();
-  });
+	onMount(() => {
+		authStore.checkAuth();
+	});
 </script>
 
 <div class="app-shell">
-  <Navbar />
+	<Navbar />
 
-  {@render children()}
+	{@render children()}
 </div>
 
 <style>
-  .app-shell {
-    width: min(1500px, calc(100% - 32px));
-    margin: 0 auto;
-  }
+	.app-shell {
+		width: min(1500px, calc(100% - 32px));
+		margin: 0 auto;
+	}
 </style>

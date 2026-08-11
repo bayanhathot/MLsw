@@ -27,7 +27,7 @@ from app.database.base import Base
 
 # Import all models so they are registered inside Base.metadata.
 # If we do not import the models, Alembic may not detect the tables.
-from app.database.models import User  # noqa: F401
+from app.database import models  # noqa: F401
 
 
 # Alembic Config object.
