@@ -68,6 +68,12 @@ def second_client():
 
 
 @pytest.fixture
+def third_client():
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
 def db_session():
     with TestingSessionLocal() as db:
         yield db

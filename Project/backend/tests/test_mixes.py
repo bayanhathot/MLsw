@@ -46,6 +46,8 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
 
     assert second_client.post(f"/mixes/{mix['id']}/like").json()["like_count"] == 1
     assert second_client.post(f"/mixes/{mix['id']}/like").json()["like_count"] == 1
+    mix_like_notices = [item for item in client.get("/notifications").json() if item["kind"] == "mix_like"]
+    assert len(mix_like_notices) == 1
     assert second_client.post(f"/mixes/{mix['id']}/save").status_code == 200
     feed = second_client.get("/mixes/feed").json()
     assert feed[0]["is_liked"] is True
@@ -55,3 +57,29 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
     assert library["saved"][0]["id"] == mix["id"]
     assert second_client.delete(f"/mixes/{mix['id']}/like").json()["like_count"] == 0
     assert second_client.delete(f"/mixes/{mix['id']}/save").json()["is_saved"] is False
+
+
+def test_blocked_owner_hides_direct_mix_access(client, second_client, monkeypatch):
+    monkeypatch.setattr("app.services.mix_service.search_tracks", lambda prompt, limit=5: sample_tracks())
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
+    assert client.post(f"/mixes/{mix['id']}/publish").status_code == 200
+
+    assert second_client.get(f"/mixes/{mix['id']}").status_code == 200
+    assert second_client.post("/users/alice/block").status_code == 204
+    assert second_client.get(f"/mixes/{mix['id']}").status_code == 404
+
+
+def test_mine_and_saved_endpoints_return_the_correct_library_subsets(client, second_client, monkeypatch):
+    monkeypatch.setattr("app.services.mix_service.search_tracks", lambda prompt, limit=5: sample_tracks())
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
+    assert client.post(f"/mixes/{mix['id']}/publish").status_code == 200
+    assert second_client.post(f"/mixes/{mix['id']}/save").status_code == 200
+
+    assert [item["id"] for item in client.get("/mixes/mine").json()] == [mix["id"]]
+    assert client.get("/mixes/saved").json() == []
+    assert second_client.get("/mixes/mine").json() == []
+    assert [item["id"] for item in second_client.get("/mixes/saved").json()] == [mix["id"]]

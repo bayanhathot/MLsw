@@ -104,11 +104,20 @@ def get_current_user(
 
 
 def get_optional_current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
-    """Return a user for a valid cookie, while allowing truly anonymous use."""
+    """Return a user for a valid cookie; any auth failure degrades to anonymous.
+
+    Guest-friendly endpoints must keep working for a visitor whose cookie has
+    expired or gone stale rather than raising 401 in place of serving public
+    content. Endpoints that require auth continue to use get_current_user
+    directly, which still raises on any failure.
+    """
 
     if request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) is None:
         return None
-    return get_current_user(request=request, db=db)
+    try:
+        return get_current_user(request=request, db=db)
+    except HTTPException:
+        return None
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)

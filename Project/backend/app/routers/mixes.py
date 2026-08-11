@@ -16,10 +16,12 @@ from app.schemas import (
     MixFeedItem,
     MixLibraryRead,
     MixRead,
+    NotificationRead,
     MixUpdate,
     StartMixRequest,
 )
-from app.services import mix_service
+from app.services import forum_service, mix_service, social_service
+from app.services.notification_service import notification_hub
 
 router = APIRouter(prefix="/mixes", tags=["mixes"])
 
@@ -60,10 +62,17 @@ def get_feed(
     current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    mixes = (
+    query = (
         db.query(Mix)
         .options(selectinload(Mix.owner), selectinload(Mix.segments))
         .filter(Mix.status == "published", Mix.owner_id.is_not(None))
+    )
+    if current_user is not None:
+        blocked_ids = social_service.blocked_user_ids(db, current_user.id)
+        if blocked_ids:
+            query = query.filter(~Mix.owner_id.in_(blocked_ids))
+    mixes = (
+        query
         .order_by(Mix.published_at.desc(), Mix.id.desc())
         .offset(offset)
         .limit(limit)
@@ -72,42 +81,58 @@ def get_feed(
     return [_feed_item(db, mix, current_user.id if current_user else None) for mix in mixes]
 
 
+def _owned_mixes(db: Session, user_id: int) -> list[Mix]:
+    return (
+        db.query(Mix)
+        .options(selectinload(Mix.segments))
+        .filter(Mix.owner_id == user_id)
+        .order_by(Mix.created_at.desc())
+        .all()
+    )
+
+
+def _saved_mixes(db: Session, user_id: int) -> list[Mix]:
+    return (
+        db.query(Mix)
+        .options(selectinload(Mix.segments))
+        .join(SavedMix, SavedMix.mix_id == Mix.id)
+        .filter(SavedMix.user_id == user_id, Mix.status == "published")
+        .order_by(SavedMix.created_at.desc())
+        .all()
+    )
+
+
 @router.get("/library", response_model=MixLibraryRead)
 def get_library(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    owned = (
-        db.query(Mix)
-        .options(selectinload(Mix.segments))
-        .filter(Mix.owner_id == current_user.id)
-        .order_by(Mix.created_at.desc())
-        .all()
-    )
-    saved = (
-        db.query(Mix)
-        .options(selectinload(Mix.segments))
-        .join(SavedMix, SavedMix.mix_id == Mix.id)
-        .filter(SavedMix.user_id == current_user.id, Mix.status == "published")
-        .order_by(SavedMix.created_at.desc())
-        .all()
-    )
-    return {"owned": owned, "saved": saved}
+    return {"owned": _owned_mixes(db, current_user.id), "saved": _saved_mixes(db, current_user.id)}
 
 
 @router.get("/mine", response_model=list[MixRead])
 def get_owned(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return get_library(current_user, db).get("owned", [])
+    return _owned_mixes(db, current_user.id)
 
 
 @router.get("/saved", response_model=list[MixRead])
 def get_saved(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return get_library(current_user, db).get("saved", [])
+    return _saved_mixes(db, current_user.id)
 
 
 @router.get("/{mix_id}", response_model=MixRead)
-def read_mix(mix_id: int, db: Session = Depends(get_db)):
+def read_mix(
+    mix_id: int,
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
     mix = _get_or_404(db, mix_id)
     if mix.status != "published":
+        raise HTTPException(status_code=404, detail="Published mix not found.")
+    if (
+        current_user is not None
+        and mix.owner_id is not None
+        and social_service.is_blocked_between(db, current_user.id, mix.owner_id)
+    ):
         raise HTTPException(status_code=404, detail="Published mix not found.")
     return mix
 
@@ -168,8 +193,27 @@ def _like(mix_id: int, enabled: bool, current_user: User, db: Session):
 
 @router.post("/{mix_id}/like")
 @router.put("/{mix_id}/like", include_in_schema=False)
-def like_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return _like(mix_id, True, current_user, db)
+async def like_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    mix = _published(db, mix_id)
+    was_liked = mix_service.liked_by(db, mix_id, current_user.id)
+    result = _like(mix_id, True, current_user, db)
+    if not was_liked and mix.owner_id is not None:
+        notification = forum_service.notify(
+            db,
+            mix.owner_id,
+            current_user.id,
+            "mix_like",
+            f"{current_user.username} liked your mix {mix.title}.",
+            "mix",
+            mix.id,
+        )
+        if notification:
+            db.commit()
+            db.refresh(notification)
+            await notification_hub.publish(
+                mix.owner_id, NotificationRead.model_validate(notification).model_dump(mode="json")
+            )
+    return result
 
 
 @router.delete("/{mix_id}/like")

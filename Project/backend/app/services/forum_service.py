@@ -7,8 +7,22 @@ from sqlalchemy.orm import Session
 from app.database.models.attachment import Attachment
 from app.database.models.forum import ForumComment, ForumCommentVote, ForumPost, ForumPostVote
 from app.database.models.messaging import Notification
+from app.database.models.mix import Mix
 from app.database.models.user import User
 from app.schemas import AttachmentRead, CommentRead, PostRead
+from app.services import social_service
+
+
+def can_view_post(db: Session, post: ForumPost, viewer_id: int | None) -> bool:
+    """Shared post-visibility rule used by the forum router and attachment serving."""
+
+    if viewer_id is not None and post.author_id is not None and social_service.is_blocked_between(db, viewer_id, post.author_id):
+        return False
+    if post.visibility == "public":
+        return True
+    if viewer_id is None:
+        return False
+    return viewer_id == post.author_id or social_service.are_friends(db, viewer_id, post.author_id)
 
 
 def attachment_paths(db: Session, field: str, entity_id: int) -> list:
@@ -85,6 +99,19 @@ def build_post(db: Session, post: ForumPost, viewer_id: int | None) -> PostRead:
     if viewer_id is not None:
         vote = db.query(ForumPostVote).filter_by(post_id=post.id, user_id=viewer_id).first()
         my_vote = vote.value if vote else 0
+    shared_mix = None
+    if post.mix_id is not None:
+        mix = db.query(Mix).filter(Mix.id == post.mix_id, Mix.status == "published").first()
+        if mix is not None:
+            owner = db.query(User).filter(User.id == mix.owner_id).first()
+            shared_mix = {
+                "id": mix.id,
+                "title": mix.title,
+                "prompt": mix.prompt,
+                "cover_url": mix.cover_url,
+                "owner_username": owner.username if owner else "Deleted user",
+                "segment_count": len(mix.segments),
+            }
     return PostRead(
         id=post.id,
         author_id=None if post.is_anonymous else post.author_id,
@@ -92,6 +119,9 @@ def build_post(db: Session, post: ForumPost, viewer_id: int | None) -> PostRead:
         title=post.title,
         body=post.body,
         is_anonymous=post.is_anonymous,
+        kind=post.kind,
+        visibility=post.visibility,
+        mix=shared_mix,
         can_delete=viewer_id == post.author_id,
         score=_score(db, ForumPostVote, "post_id", post.id),
         comment_count=db.query(ForumComment).filter(ForumComment.post_id == post.id).count(),

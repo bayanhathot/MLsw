@@ -11,12 +11,19 @@ from app.core.time import utc_now
 
 class ForumPost(Base):
     __tablename__ = "forum_posts"
+    __table_args__ = (
+        CheckConstraint("kind IN ('discussion', 'status', 'mix_share')", name="ck_forum_post_kind"),
+        CheckConstraint("visibility IN ('public', 'friends')", name="ck_forum_post_visibility"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(160), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     is_anonymous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="discussion", index=True)
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="public", index=True)
+    mix_id: Mapped[int | None] = mapped_column(ForeignKey("mixes.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
 
 

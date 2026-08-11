@@ -17,10 +17,12 @@ from app.core.rate_limit import write_rate_limit
 from app.core.config import public_api_url
 from app.database.database import get_db
 from app.database.models.attachment import Attachment
+from app.database.models.forum import ForumComment, ForumPost
 from app.database.models.messaging import DirectMessage
 from app.database.models.user import User
 from app.routers.auth import get_current_user, get_optional_current_user
 from app.schemas import AttachmentRead, UploadBatchRequest, UploadJobRead
+from app.services import forum_service, social_service
 from app.services.upload_queue import ALLOWED_TYPES, UPLOAD_DIR, upload_queue, validate_upload
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
@@ -190,17 +192,36 @@ def serve_attachment(
     attachment = db.query(Attachment).filter_by(id=attachment_id).first()
     if attachment is None:
         raise HTTPException(status_code=404, detail="Attachment not found.")
-    public = attachment.post_id is not None or attachment.comment_id is not None
-    permitted = public or (current_user is not None and attachment.owner_id == current_user.id)
-    if attachment.message_id is not None and current_user is not None:
+
+    viewer_id = current_user.id if current_user else None
+    permitted = current_user is not None and attachment.owner_id == current_user.id
+    publicly_cacheable = False
+
+    if not permitted and attachment.post_id is not None:
+        post = db.query(ForumPost).filter_by(id=attachment.post_id).first()
+        if post is not None and forum_service.can_view_post(db, post, viewer_id):
+            permitted = True
+            publicly_cacheable = post.visibility == "public"
+    elif not permitted and attachment.comment_id is not None:
+        comment = db.query(ForumComment).filter_by(id=attachment.comment_id).first()
+        if comment is not None:
+            post = db.query(ForumPost).filter_by(id=comment.post_id).first()
+            author_blocked = viewer_id is not None and social_service.is_blocked_between(
+                db, viewer_id, comment.author_id
+            )
+            if post is not None and forum_service.can_view_post(db, post, viewer_id) and not author_blocked:
+                permitted = True
+                publicly_cacheable = post.visibility == "public"
+    elif not permitted and attachment.message_id is not None and current_user is not None:
         message = db.query(DirectMessage).filter_by(id=attachment.message_id).first()
         permitted = bool(message and current_user.id in {message.sender_id, message.recipient_id})
+
     if not permitted:
         raise HTTPException(status_code=403, detail="You cannot access this attachment.")
     path = (UPLOAD_DIR / attachment.storage_name).resolve()
     if path.parent != UPLOAD_DIR.resolve() or not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment file is missing.")
-    cache_control = "public, max-age=3600" if public else "private, no-store"
+    cache_control = "public, max-age=3600" if publicly_cacheable else "private, no-store"
     return FileResponse(
         path,
         media_type=attachment.content_type,

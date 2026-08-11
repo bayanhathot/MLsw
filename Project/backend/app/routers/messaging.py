@@ -1,22 +1,21 @@
-"""Private messages plus durable/push notification APIs."""
-
-from datetime import datetime
+"""Friend-based direct messages plus durable/push notifications."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.core.rate_limit import write_rate_limit
 from app.core.config import cors_origins
+from app.core.rate_limit import write_rate_limit
 from app.core.security import decode_access_token
 from app.core.time import utc_now
 from app.database.database import SessionLocal, get_db
 from app.database.models.attachment import Attachment
 from app.database.models.messaging import DirectMessage, Notification
+from app.database.models.profile import Profile
 from app.database.models.user import User
 from app.routers.auth import ACCESS_TOKEN_COOKIE_NAME, get_current_user
-from app.schemas import AttachmentRead, MessageCreate, MessageRead, NotificationRead
-from app.services import forum_service
+from app.schemas import AttachmentRead, ConversationRead, MessageCreate, MessageRead, NotificationRead
+from app.services import forum_service, social_service
 from app.services.auth_service import get_user_by_username
 from app.services.notification_service import notification_hub
 
@@ -40,6 +39,58 @@ def _message_read(db: Session, message: DirectMessage) -> MessageRead:
     )
 
 
+@router.get("/conversations", response_model=list[ConversationRead])
+def conversations(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Conversations are friends-only, so bound the work by friend count and
+    # per-pair indexed lookups instead of loading the user's entire direct-
+    # message history into Python to group it.
+    result = []
+    for other_id in social_service.friend_ids(db, current_user.id):
+        pair = or_(
+            (DirectMessage.sender_id == current_user.id) & (DirectMessage.recipient_id == other_id),
+            (DirectMessage.sender_id == other_id) & (DirectMessage.recipient_id == current_user.id),
+        )
+        latest = (
+            db.query(DirectMessage)
+            .filter(pair)
+            .order_by(DirectMessage.created_at.desc(), DirectMessage.id.desc())
+            .first()
+        )
+        if latest is None:
+            continue
+        user = db.query(User).filter_by(id=other_id).first()
+        if user is None:
+            continue
+        unread_count = (
+            db.query(func.count(DirectMessage.id))
+            .filter(
+                DirectMessage.sender_id == other_id,
+                DirectMessage.recipient_id == current_user.id,
+                DirectMessage.read_at.is_(None),
+            )
+            .scalar()
+            or 0
+        )
+        profile = db.query(Profile).filter_by(user_id=other_id).first()
+        result.append(
+            ConversationRead(
+                username=user.username,
+                display_name=profile.display_name if profile else None,
+                avatar_url=profile.avatar_url if profile else None,
+                last_message=latest.body,
+                last_message_at=latest.created_at,
+                unread_count=unread_count,
+            )
+        )
+    result.sort(key=lambda item: item.last_message_at, reverse=True)
+    return result[offset : offset + limit]
+
+
 @router.post("/messages", response_model=MessageRead, status_code=201)
 async def send_message(
     request: MessageCreate,
@@ -52,12 +103,16 @@ async def send_message(
         raise HTTPException(status_code=404, detail="Recipient not found.")
     if recipient.id == current_user.id:
         raise HTTPException(status_code=422, detail="You cannot message yourself.")
+    if social_service.is_blocked_between(db, current_user.id, recipient.id):
+        raise HTTPException(status_code=403, detail="Messaging is unavailable for this listener.")
+    if not social_service.are_friends(db, current_user.id, recipient.id):
+        raise HTTPException(status_code=403, detail="Direct messages are available between friends.")
     message = DirectMessage(sender_id=current_user.id, recipient_id=recipient.id, body=request.body)
     db.add(message)
     db.flush()
     forum_service.attach_owned(db, request.attachment_ids, current_user.id, "message", message.id)
     notification = forum_service.notify(
-        db, recipient.id, current_user.id, "direct_message", f"New message from {current_user.username}.", "message", message.id
+        db, recipient.id, current_user.id, "direct_message", f"New message from {current_user.username}.", "user", current_user.id
     )
     db.commit()
     db.refresh(message)
@@ -84,6 +139,8 @@ def conversation(
     other = get_user_by_username(db, username)
     if other is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    if not social_service.are_friends(db, current_user.id, other.id):
+        raise HTTPException(status_code=403, detail="Direct messages are available between friends.")
     query = db.query(DirectMessage).filter(
         or_(
             (DirectMessage.sender_id == current_user.id) & (DirectMessage.recipient_id == other.id),

@@ -1,6 +1,32 @@
+import time
+
 from conftest import register_and_login
 import pytest
 from starlette.websockets import WebSocketDisconnect
+
+
+def _upload_audio(uploading_client, filename="clip.mp3"):
+    job = uploading_client.post(
+        "/uploads/jobs",
+        content=b"ID3" + b"\x00" * 16,
+        headers={"Content-Type": "audio/mpeg", "X-Filename": filename},
+    ).json()
+    for _ in range(100):
+        job = uploading_client.get(f"/uploads/jobs/{job['job_id']}").json()
+        if job["status"] == "completed" and job["attachment"]:
+            break
+        time.sleep(0.005)
+    return job["attachment"]
+
+
+def _make_friends(client, second_client):
+    request = client.post("/friends/requests/bob")
+    assert request.status_code == 201
+    request_id = next(
+        item["id"] for item in second_client.get("/friends/requests").json()
+        if item["sender_username"] == "alice"
+    )
+    assert second_client.post(f"/friends/requests/{request_id}/accept").status_code == 200
 
 
 def test_public_anonymous_post_comment_votes_and_profile_stats(client, second_client, monkeypatch):
@@ -53,6 +79,14 @@ def test_direct_messages_are_private_and_notify(client, second_client, monkeypat
     monkeypatch.setattr("app.routers.messaging.notification_hub.publish", publish)
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
+
+    # Direct messages are intentionally friend-only in the social product.
+    request = client.post("/friends/requests/bob")
+    assert request.status_code == 201
+    incoming = second_client.get("/friends/requests").json()
+    request_id = next(item["id"] for item in incoming if item["sender_username"] == "alice")
+    assert second_client.post(f"/friends/requests/{request_id}/accept").status_code == 200
+
     sent = client.post(
         "/messages", json={"recipient_username": "bob", "body": "private hello"}
     )
@@ -105,6 +139,105 @@ def test_profile_partial_updates(client):
     assert profile["display_name"] == "Alice"
     assert profile["favorite_genres"] == ["house", "lofi"]
     assert profile["bio"] == "music fan"
+
+
+def test_friends_only_post_attachment_is_hidden_from_non_friends(client, second_client, third_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    register_and_login(third_client, "carol", "carol@example.com")
+    _make_friends(client, second_client)
+
+    attachment = _upload_audio(client)
+    post = client.post(
+        "/posts",
+        json={
+            "body": "Friends-only track",
+            "kind": "status",
+            "visibility": "friends",
+            "attachment_ids": [attachment["id"]],
+        },
+    ).json()
+    path = attachment["url"].removeprefix("/api")
+
+    # Owner and accepted friend can retrieve the media.
+    assert client.get(path).status_code == 200
+    assert second_client.get(path).status_code == 200
+    # A signed-in stranger and a fully anonymous guest cannot guess the
+    # attachment ID to bypass the post's friends-only visibility.
+    assert third_client.get(path).status_code == 403
+    third_client.post("/auth/logout")
+    assert third_client.get(path).status_code == 403
+
+
+def test_comment_attachment_is_hidden_after_the_author_is_blocked(client, second_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    post = client.post("/posts", json={"title": "Public", "body": "hello"}).json()
+
+    attachment = _upload_audio(second_client, "reply.mp3")
+    second_client.post(
+        f"/posts/{post['id']}/comments",
+        json={"body": "reply with media", "attachment_ids": [attachment["id"]]},
+    )
+    path = attachment["url"].removeprefix("/api")
+
+    assert client.get(path).status_code == 200
+    assert client.post("/users/bob/block").status_code == 204
+    assert client.get(path).status_code == 403
+
+
+def test_comment_list_hides_entries_from_a_blocked_author(client, second_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    post = client.post("/posts", json={"title": "Public", "body": "hello"}).json()
+    comment = second_client.post(f"/posts/{post['id']}/comments", json={"body": "hi"}).json()
+
+    visible = client.get(f"/posts/{post['id']}/comments").json()
+    assert any(item["id"] == comment["id"] for item in visible)
+
+    assert client.post("/users/bob/block").status_code == 204
+    after_block = client.get(f"/posts/{post['id']}/comments").json()
+    assert not any(item["id"] == comment["id"] for item in after_block)
+
+
+def test_blocked_comment_author_cannot_be_voted_on_by_direct_id(client, second_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    post = client.post("/posts", json={"title": "Public", "body": "hello"}).json()
+    comment = second_client.post(f"/posts/{post['id']}/comments", json={"body": "hi"}).json()
+
+    # Voting works normally before any block exists.
+    assert client.post(f"/posts/comments/{comment['id']}/vote", json={"value": 1}).status_code == 200
+
+    assert client.post("/users/bob/block").status_code == 204
+    # Blocking the comment's author must also close the direct-ID vote path,
+    # not just hide the comment from the list endpoint.
+    assert client.post(f"/posts/comments/{comment['id']}/vote", json={"value": 1}).status_code == 404
+    assert client.delete(f"/posts/comments/{comment['id']}/vote").status_code == 404
+
+
+def test_conversations_are_bounded_to_friends_and_paginated(client, second_client, third_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    register_and_login(third_client, "carol", "carol@example.com")
+    _make_friends(client, second_client)
+
+    request = client.post("/friends/requests/carol")
+    assert request.status_code == 201
+    request_id = next(
+        item["id"] for item in third_client.get("/friends/requests").json()
+        if item["sender_username"] == "alice"
+    )
+    assert third_client.post(f"/friends/requests/{request_id}/accept").status_code == 200
+
+    assert client.post("/messages", json={"recipient_username": "bob", "body": "hi bob"}).status_code == 201
+    assert client.post("/messages", json={"recipient_username": "carol", "body": "hi carol"}).status_code == 201
+
+    conversations = client.get("/conversations").json()
+    assert {item["username"] for item in conversations} == {"bob", "carol"}
+
+    limited = client.get("/conversations?limit=1").json()
+    assert len(limited) == 1
 
 
 def test_notification_websocket_rejects_untrusted_origin(client):
