@@ -216,9 +216,16 @@ jobs:
 
       # R7: this must hit the actually-deployed server over its public HTTPS
       # FQDN, from the runner - not a check running on the VM itself.
+      #
+      # --retry-all-errors is required, not optional: on a first-ever deploy
+      # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and
+      # curl treats a TLS handshake failure (exit 35) as non-transient, so
+      # plain --retry will not retry it and the check fails spuriously.
       - name: Verify the public site is healthy
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
         run: |
-          curl --fail --retry 10 --retry-delay 5 --retry-connrefused \
+          curl --fail --show-error \
+            --retry 12 --retry-delay 5 --retry-all-errors --retry-connrefused \
+            --max-time 30 \
             "https://${SSH_HOST}/api/db-health"
