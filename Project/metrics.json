@@ -1,0 +1,10 @@
+{
+  "catalog_size": 8,
+  "eligible_segments": 7,
+  "selected_segments": 5,
+  "silence_rejection_rate": 0.125,
+  "precision_at_k": 1.0,
+  "mean_transition_score_at_k": 0.848,
+  "catalog_integrity_rate": 1.0,
+  "passes_quality_gate": 1
+}

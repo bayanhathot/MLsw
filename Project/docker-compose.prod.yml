@@ -1,18 +1,65 @@
+name: zonix-production
+
+x-backend-environment: &backend-environment
+  APP_ENV: production
+  DATABASE_URL: "${DATABASE_URL:?DATABASE_URL is required}"
+  SECRET_KEY: "${SECRET_KEY:?SECRET_KEY is required}"
+  ALGORITHM: ${ALGORITHM:-HS256}
+  ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+  COOKIE_SECURE: "true"
+  COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+  BACKEND_PUBLIC_URL: /api
+  ROOT_PATH: /api
+  CORS_ORIGINS: "${CORS_ORIGINS:?CORS_ORIGINS is required}"
+  # The backend is internal-only and Caddy replaces client-forwarding headers.
+  TRUST_PROXY_HEADERS: "true"
+  UPLOAD_DIR: /data/uploads
+  UPLOAD_WORKERS: ${UPLOAD_WORKERS:-4}
+  UPLOAD_QUEUE_CAPACITY: ${UPLOAD_QUEUE_CAPACITY:-32}
+  UPLOAD_JOB_TTL_SECONDS: ${UPLOAD_JOB_TTL_SECONDS:-3600}
+
 services:
-  frontend:
-    image: "${FRONTEND_IMAGE}"
+  postgres:
+    image: postgres:16.9-alpine
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
-    expose:
-      - "80"
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
+    environment: *backend-environment
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  uploads-init:
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
+    user: "0:0"
+    command: ["/bin/sh", "-c", "mkdir -p /data/uploads && chown 10001:10001 /data/uploads"]
+    volumes:
+      - uploads_data:/data/uploads
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
 
   backend:
-    image: "${BACKEND_IMAGE}"
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      BACKEND_PUBLIC_URL: /api
-      ROOT_PATH: /api
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
+    environment: *backend-environment
     command:
       - uvicorn
       - app.main:app
@@ -21,45 +68,52 @@ services:
       - --port
       - "5000"
       - --workers
-      - "${BACKEND_WORKERS:-2}"
+      - ${BACKEND_WORKERS:-1}
     expose:
       - "5000"
+    volumes:
+      - uploads_data:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
+      uploads-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/db-health', timeout=3)"
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 20s
-
-  postgres:
-    image: postgres:16-alpine
+      start_period: 15s
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    image: "${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}"
+    expose:
+      - "8080"
+    depends_on:
+      backend:
+        condition: service_healthy
     healthcheck:
-      test:
-        - CMD-SHELL
-        - "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
-      interval: 5s
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 10
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   caddy:
-    image: caddy:2.10-alpine
-    restart: unless-stopped
+    image: caddy:2.10.0-alpine
     environment:
-      DOMAIN: "${DOMAIN}"
+      DOMAIN: "${DOMAIN:?DOMAIN is required}"
     ports:
       - "80:80"
       - "443:443"
@@ -70,11 +124,13 @@ services:
       - caddy_config:/config
     depends_on:
       frontend:
-        condition: service_started
-      backend:
         condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres_data:
+  uploads_data:
   caddy_data:
   caddy_config:

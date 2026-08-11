@@ -1,0 +1,311 @@
+name: Zonix CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zonix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Project/backend
+    services:
+      postgres:
+        image: postgres:16.9-alpine
+        env:
+          POSTGRES_DB: zonix_test
+          POSTGRES_USER: zonix_ci
+          POSTGRES_PASSWORD: zonix_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zonix_ci -d zonix_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+psycopg2://zonix_ci:zonix_ci_password@localhost:5432/zonix_test
+      DATABASE_URL_LOCAL: postgresql+psycopg2://zonix_ci:zonix_ci_password@localhost:5432/zonix_test
+      SECRET_KEY: ci-only-secret-with-at-least-thirty-two-characters
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      COOKIE_SECURE: "false"
+      BACKEND_PUBLIC_URL: /api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            Project/backend/requirements.txt
+            Project/backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: python -m pip install --requirement requirements-dev.txt
+
+      - name: Apply and validate database migrations
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+
+      - name: Run backend tests
+        run: pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: Project/backend/coverage.xml
+          if-no-files-found: ignore
+
+  frontend-checks:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Project/frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: Project/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check types and Svelte components
+        run: npm run check
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Check formatting and lint rules
+        run: npm run lint
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
+      - name: Build production frontend
+        run: npm run build
+
+      - name: Install the Chromium test browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run production browser smoke tests
+        run: npm run test:e2e
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-browser-failures
+          path: Project/frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ml-baseline:
+    name: ML baseline smoke test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Project
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lightweight pipeline parser
+        run: python -m pip install PyYAML==6.0.3
+
+      - name: Reproduce deterministic baseline metrics
+        run: python ml_pipeline.py --skip-mlflow
+
+      - name: Verify committed metrics are reproducible
+        run: git diff --exit-code -- metrics.json
+
+  container-builds:
+    name: Container builds
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-checks, ml-baseline]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        run: docker compose --file Project/docker-compose.yml config --quiet
+
+      - name: Validate production Compose configuration
+        env:
+          BACKEND_IMAGE: ghcr.io/example/zonix-backend:validation
+          FRONTEND_IMAGE: ghcr.io/example/zonix-frontend:validation
+        run: >-
+          docker compose
+          --env-file Project/deploy/.env.production.example
+          --file Project/docker-compose.prod.yml
+          config --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: Project/backend
+          push: false
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: Project/frontend
+          push: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  publish-images:
+    name: Publish immutable images
+    runs-on: ubuntu-latest
+    needs: [container-builds]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend_image: ${{ steps.metadata.outputs.backend_image }}
+      frontend_image: ${{ steps.metadata.outputs.frontend_image }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute immutable image names
+        id: metadata
+        shell: bash
+        run: |
+          owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "backend_image=ghcr.io/${owner}/zonix-backend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "frontend_image=ghcr.io/${owner}/zonix-frontend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and publish backend
+        uses: docker/build-push-action@v6
+        with:
+          context: Project/backend
+          push: true
+          tags: ${{ steps.metadata.outputs.backend_image }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and publish frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: Project/frontend
+          push: true
+          tags: ${{ steps.metadata.outputs.frontend_image }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  deploy-production:
+    name: Deploy to Azure VM
+    runs-on: ubuntu-latest
+    needs: [publish-images]
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate deployment configuration
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          for name in SSH_HOST SSH_USER GHCR_USERNAME PUBLIC_BASE_URL SSH_PRIVATE_KEY SSH_KNOWN_HOSTS GHCR_READ_TOKEN; do
+            test -n "${!name:-}" || { echo "${name} is not configured" >&2; exit 1; }
+          done
+          case "${PUBLIC_BASE_URL}" in
+            https://*) ;;
+            *) echo "PUBLIC_BASE_URL must start with https://" >&2; exit 1 ;;
+          esac
+
+      - name: Configure pinned SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/zonix_deploy"
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/zonix_deploy" "${HOME}/.ssh/known_hosts"
+
+      - name: Upload deployment definitions
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+        run: |
+          ssh -i "${HOME}/.ssh/zonix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/zonix-deploy/deploy"
+          scp -i "${HOME}/.ssh/zonix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/zonix-deploy/"
+          scp -i "${HOME}/.ssh/zonix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh "${SSH_USER}@${SSH_HOST}:~/zonix-deploy/deploy/"
+
+      - name: Log the VM in to GHCR
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_READ_TOKEN}" | ssh -i "${HOME}/.ssh/zonix_deploy" "${SSH_USER}@${SSH_HOST}" \
+            "docker login ghcr.io --username '${GHCR_USERNAME}' --password-stdin"
+
+      - name: Apply migration and deploy
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          BACKEND_IMAGE: ${{ needs.publish-images.outputs.backend_image }}
+          FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}
+        run: |
+          ssh -i "${HOME}/.ssh/zonix_deploy" "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_ROOT=\$HOME/zonix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' bash \$HOME/zonix-deploy/deploy/remote-deploy.sh"
+
+      - name: Verify the public TLS database health endpoint
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+        run: curl --fail --retry 12 --retry-delay 5 --retry-connrefused "${PUBLIC_BASE_URL%/}/api/db-health"

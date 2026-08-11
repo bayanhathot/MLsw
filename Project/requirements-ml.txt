@@ -1,0 +1,4 @@
+# Tooling for the offline evaluation pipeline (separate from the API runtime).
+dvc==3.59.2
+mlflow==3.1.4
+PyYAML==6.0.3

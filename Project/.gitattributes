@@ -1,0 +1,8 @@
+# Keep large audio binaries out of ordinary Git objects when they are staged.
+*.mp3 filter=lfs diff=lfs merge=lfs -text
+
+# Deployment scripts must remain executable by Linux shells after checkout.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf

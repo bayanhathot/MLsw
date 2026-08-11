@@ -9,13 +9,8 @@
  * The backend stores it in an HTTP-only cookie.
  */
 
-import { writable } from "svelte/store";
-import {
-  getCurrentUser,
-  loginUser,
-  logoutUser,
-  registerUser
-} from "../services/authApi.js";
+import { writable } from 'svelte/store';
+import { getCurrentUser, loginUser, logoutUser, registerUser } from '../services/authApi.js';
 
 /**
  * @typedef {Object} AuthUser
@@ -51,115 +46,139 @@ import {
 
 /** @type {AuthState} */
 const initialState = {
-  status: "checking",
-  user: null,
-  error: null
+	status: 'checking',
+	user: null,
+	error: null
 };
 
 function createAuthStore() {
-  const { subscribe, set, update } = writable(initialState);
+	const { subscribe, set, update } = writable(initialState);
+	let requestVersion = 0;
 
-  return {
-    subscribe,
+	return {
+		subscribe,
 
-    async checkAuth() {
-      update((state) => ({
-        ...state,
-        status: "checking",
-        error: null
-      }));
+		async checkAuth() {
+			const currentRequest = ++requestVersion;
+			update((state) => ({
+				...state,
+				status: 'checking',
+				error: null
+			}));
 
-      try {
-        const user = await getCurrentUser();
+			try {
+				const user = await getCurrentUser();
 
-        set({
-          status: "authenticated",
-          user,
-          error: null
-        });
-      } catch {
-        set({
-          status: "guest",
-          user: null,
-          error: null
-        });
-      }
-    },
+				if (currentRequest !== requestVersion) {
+					return;
+				}
 
-    /**
-     * Register a new user.
-     *
-     * This does not store a token on the frontend.
-     * After registration, the register page calls login().
-     *
-     * @param {RegisterParams} params
-     */
-    async register(params) {
-      update((state) => ({
-        ...state,
-        error: null
-      }));
+				set({
+					status: 'authenticated',
+					user,
+					error: null
+				});
+			} catch (error) {
+				if (currentRequest !== requestVersion) {
+					return;
+				}
 
-      return registerUser(params);
-    },
+				set({
+					status: 'guest',
+					user: null,
+					error:
+						error && typeof error === 'object' && 'status' in error && error.status === 401
+							? null
+							: 'Zonix could not verify your account.'
+				});
+			}
+		},
 
-    /**
-     * Login user.
-     *
-     * Backend sets the HTTP-only cookie.
-     * Then frontend calls /auth/me to get the current user object.
-     *
-     * @param {LoginParams} params
-     * @returns {Promise<AuthUser>}
-     */
-    async login(params) {
-      update((state) => ({
-        ...state,
-        error: null
-      }));
+		/**
+		 * Register a new user.
+		 *
+		 * This does not store a token on the frontend.
+		 * After registration, the register page calls login().
+		 *
+		 * @param {RegisterParams} params
+		 */
+		async register(params) {
+			update((state) => ({
+				...state,
+				error: null
+			}));
 
-      await loginUser(params);
+			return registerUser(params);
+		},
 
-      const user = await getCurrentUser();
+		/**
+		 * Login user.
+		 *
+		 * Backend sets the HTTP-only cookie.
+		 * Then frontend calls /auth/me to get the current user object.
+		 *
+		 * @param {LoginParams} params
+		 * @returns {Promise<AuthUser>}
+		 */
+		async login(params) {
+			const currentRequest = ++requestVersion;
+			update((state) => ({
+				...state,
+				error: null
+			}));
 
-      set({
-        status: "authenticated",
-        user,
-        error: null
-      });
+			await loginUser(params);
 
-      return user;
-    },
+			const user = await getCurrentUser();
 
-    async logout() {
-      try {
-        await logoutUser();
-      } finally {
-        set({
-          status: "guest",
-          user: null,
-          error: null
-        });
-      }
-    },
+			if (currentRequest !== requestVersion) {
+				throw new Error('A newer account request replaced this login.');
+			}
 
-    /**
-     * @param {string} message
-     */
-    setError(message) {
-      update((state) => ({
-        ...state,
-        error: message
-      }));
-    },
+			set({
+				status: 'authenticated',
+				user,
+				error: null
+			});
 
-    clearError() {
-      update((state) => ({
-        ...state,
-        error: null
-      }));
-    }
-  };
+			return user;
+		},
+
+		async logout() {
+			try {
+				requestVersion += 1;
+				await logoutUser();
+				set({
+					status: 'guest',
+					user: null,
+					error: null
+				});
+			} catch (error) {
+				update((state) => ({
+					...state,
+					error: error instanceof Error ? error.message : 'Could not sign out.'
+				}));
+				throw error;
+			}
+		},
+
+		/**
+		 * @param {string} message
+		 */
+		setError(message) {
+			update((state) => ({
+				...state,
+				error: message
+			}));
+		},
+
+		clearError() {
+			update((state) => ({
+				...state,
+				error: null
+			}));
+		}
+	};
 }
 
 export const authStore = createAuthStore();

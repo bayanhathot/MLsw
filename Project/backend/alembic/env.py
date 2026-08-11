@@ -27,10 +27,6 @@ from app.database.base import Base
 
 # Import all models so they are registered inside Base.metadata.
 # If we do not import the models, Alembic may not detect the tables.
-#
-# Importing the package (rather than individual model classes) means
-# future models only need to be added to app/database/models/__init__.py,
-# never here.
 from app.database import models  # noqa: F401
 
 

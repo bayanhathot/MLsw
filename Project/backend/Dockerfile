@@ -1,24 +1,27 @@
-# backend/Dockerfile
-
-FROM python:3.11-slim
+FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt ./requirements.txt
+RUN python -m pip install --no-cache-dir --requirement requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN groupadd --gid 10001 zonix \
+    && useradd --uid 10001 --gid zonix --no-create-home --shell /usr/sbin/nologin zonix \
+    && install -d --owner=10001 --group=10001 --mode=0750 /data/uploads
 
-COPY alembic.ini .
-COPY alembic ./alembic
-COPY app ./app
+COPY --chown=10001:10001 alembic.ini ./alembic.ini
+COPY --chown=10001:10001 alembic ./alembic
+COPY --chown=10001:10001 app ./app
 
-RUN useradd --create-home --uid 10001 zonix
-
-USER zonix
+USER 10001:10001
 
 EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/db-health', timeout=3)"]
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]

@@ -34,12 +34,23 @@ Future improvements:
 - Use real audio analysis to find the best song moments.
 """
 
+import logging
+from urllib.parse import quote
+
 import httpx
 
 # Base URL for the Audius Discovery API.
 # We use it to search for tracks and build playable stream URLs.
 AUDIUS_API_BASE = "https://discoveryprovider.audius.co/v1"
 APP_NAME = "Zonix"
+logger = logging.getLogger(__name__)
+
+
+def _optional_text(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
 
 
 def get_artwork_url(artwork: dict | None) -> str | None:
@@ -54,10 +65,10 @@ def get_artwork_url(artwork: dict | None) -> str | None:
     We prefer the highest quality image.
     If no artwork exists, return None.
     """
-    if not artwork:
+    if not isinstance(artwork, dict):
         return None
 
-    return (
+    return _optional_text(
         artwork.get("1000x1000")
         or artwork.get("480x480")
         or artwork.get("150x150")
@@ -78,38 +89,66 @@ def search_tracks(prompt: str, limit: int = 5) -> list[dict]:
         "app_name": APP_NAME,
     }
 
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        response = client.get(
-            f"{AUDIUS_API_BASE}/tracks/search",
-            params=params,
-        )
-        response.raise_for_status()
+    try:
+        with httpx.Client(timeout=httpx.Timeout(6.0), follow_redirects=True) as client:
+            response = client.get(
+                f"{AUDIUS_API_BASE}/tracks/search",
+                params=params,
+            )
+            response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        # Provider downtime must not turn session creation into a 500.  The
+        # caller can select the licensed local demo fallback when this returns
+        # an empty candidate list.
+        logger.warning("Audius search failed: %s", exc)
+        return []
 
-    data = response.json()
+    if not isinstance(data, dict):
+        return []
     tracks = data.get("data", [])
+
+    if not isinstance(tracks, list):
+        return []
 
     results = []
 
-    for track in tracks:
+    for track in tracks[:limit]:
+        if not isinstance(track, dict):
+            continue
         track_id = track.get("id")
 
-        if not track_id:
+        if isinstance(track_id, bool) or not isinstance(track_id, (str, int)):
+            continue
+        if isinstance(track_id, str) and not track_id.strip():
             continue
 
-        user = track.get("user") or {}
+        user = track.get("user")
+        if not isinstance(user, dict):
+            user = {}
+
+        try:
+            duration = max(0, int(track.get("duration") or 0))
+        except (TypeError, ValueError):
+            duration = 0
+
+        artwork_url = get_artwork_url(track.get("artwork"))
+        if not isinstance(artwork_url, str):
+            artwork_url = None
+        safe_track_id = quote(str(track_id), safe="")
 
         results.append(
             {
                 "source": "audius",
-                "source_track_id": track_id,
-                "title": track.get("title", "Unknown title"),
-                "artist": user.get("name", "Unknown artist"),
-                "duration": track.get("duration", 0),
-                "genre": track.get("genre"),
-                "mood": track.get("mood"),
-                "tags": track.get("tags"),
-                "cover_url": get_artwork_url(track.get("artwork")),
-                "audio_url": f"{AUDIUS_API_BASE}/tracks/{track_id}/stream?app_name={APP_NAME}",
+                "source_track_id": str(track_id),
+                "title": _optional_text(track.get("title")) or "Unknown title",
+                "artist": _optional_text(user.get("name")) or "Unknown artist",
+                "duration": duration,
+                "genre": _optional_text(track.get("genre")),
+                "mood": _optional_text(track.get("mood")),
+                "tags": _optional_text(track.get("tags")),
+                "cover_url": artwork_url,
+                "audio_url": f"{AUDIUS_API_BASE}/tracks/{safe_track_id}/stream?app_name={APP_NAME}",
             }
         )
 

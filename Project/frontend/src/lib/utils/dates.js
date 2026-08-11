@@ -15,7 +15,7 @@
  * @returns {Date}
  */
 export function parseUtcDate(iso) {
-  const hasTimezone = /Z$|[+-]\d\d:\d\d$/.test(iso);
+	const hasTimezone = /Z$|[+-]\d\d:\d\d$/.test(iso);
 
-  return new Date(hasTimezone ? iso : `${iso}Z`);
+	return new Date(hasTimezone ? iso : `${iso}Z`);
 }

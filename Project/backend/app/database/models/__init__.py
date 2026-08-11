@@ -1,30 +1,37 @@
-"""
-models package
+"""Import every model so SQLAlchemy and Alembic see complete metadata."""
 
-This package imports all SQLAlchemy models.
-
-Alembic imports this package so all models are registered in Base.metadata.
-"""
-
-from app.database.models.friendship import Friendship
+from app.database.models.attachment import Attachment
+from app.database.models.forum import ForumComment, ForumCommentVote, ForumPost, ForumPostVote
+from app.database.models.messaging import DirectMessage, Notification
+from app.database.models.music_identity import ListeningEvent, UserMusicProfile
 from app.database.models.mix import Mix, MixSegment
-from app.database.models.play_event import PlayEvent
-from app.database.models.post import Post
-from app.database.models.post_comment import PostComment
-from app.database.models.post_like import PostLike
-from app.database.models.post_share import PostShare
+from app.database.models.mix_social import MixLike, SavedMix
 from app.database.models.profile import Profile
+from app.database.models.session import DJSession, SessionFeedback, UserPreference
+from app.database.models.social import FriendRequest, Friendship, SocialReport, UserBlock
 from app.database.models.user import User
 
 __all__ = [
     "User",
-    "Friendship",
+    "DJSession",
+    "SessionFeedback",
+    "UserPreference",
     "Mix",
     "MixSegment",
-    "Post",
-    "PostLike",
-    "PostComment",
-    "PostShare",
+    "MixLike",
+    "SavedMix",
     "Profile",
-    "PlayEvent",
+    "ForumPost",
+    "ForumComment",
+    "ForumPostVote",
+    "ForumCommentVote",
+    "DirectMessage",
+    "Notification",
+    "Attachment",
+    "ListeningEvent",
+    "UserMusicProfile",
+    "FriendRequest",
+    "Friendship",
+    "UserBlock",
+    "SocialReport",
 ]

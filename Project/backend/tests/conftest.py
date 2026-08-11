@@ -2,53 +2,56 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite://")
 os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
 os.environ.setdefault("ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 
+from app.core.rate_limit import auth_rate_limit, write_rate_limit
 from app.database.base import Base
 from app.database.database import get_db
 from app.main import app
-
 
 test_engine = create_engine(
     "sqlite+pysqlite://",
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
-TestingSessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=test_engine,
-)
 
+
+@event.listens_for(test_engine, "connect")
+def enable_foreign_keys(dbapi_connection, _):
+    dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 Base.metadata.create_all(bind=test_engine)
 
 
 def override_get_db():
-    db = TestingSessionLocal()
-    try:
+    with TestingSessionLocal() as db:
         yield db
-    finally:
-        db.close()
 
 
 app.dependency_overrides[get_db] = override_get_db
 
 
 @pytest.fixture(autouse=True)
-def clean_database():
+def clean_database(tmp_path, monkeypatch):
+    # Queue workers and the serving route must share a per-test directory so
+    # validation tests never write runtime media into the source tree.
+    monkeypatch.setattr("app.services.upload_queue.UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr("app.routers.uploads.UPLOAD_DIR", tmp_path)
+    auth_rate_limit.reset()
+    write_rate_limit.reset()
     with TestingSessionLocal() as db:
         for table in reversed(Base.metadata.sorted_tables):
             db.execute(table.delete())
         db.commit()
-
     yield
 
 
@@ -60,24 +63,28 @@ def client():
 
 @pytest.fixture
 def second_client():
-    """
-    A second, independent TestClient with its own cookie jar.
-
-    Needed for tests where two logged-in users interact with each other
-    (friend requests, likes, comments).
-    """
-
     with TestClient(app) as test_client:
         yield test_client
 
 
 @pytest.fixture
 def third_client():
-    """
-    A third, independent TestClient with its own cookie jar.
-
-    Needed for feed-visibility tests (friend vs. stranger).
-    """
-
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def db_session():
+    with TestingSessionLocal() as db:
+        yield db
+
+
+def register_and_login(client, username="alice", email="alice@example.com", password="strongpass"):
+    response = client.post(
+        "/auth/register",
+        json={"username": username, "email": email, "password": password},
+    )
+    assert response.status_code == 201, response.text
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return client.get("/auth/me").json()

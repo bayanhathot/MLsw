@@ -19,7 +19,8 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES, decode_access_token
+from app.core.rate_limit import auth_rate_limit
+from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES, APP_ENV, decode_access_token
 from app.database.database import get_db
 from app.database.models.user import User
 from app.schemas import UserCreate, UserLogin, UserRead
@@ -34,19 +35,17 @@ router = APIRouter(
 
 # Cookie name used by the backend and browser.
 ACCESS_TOKEN_COOKIE_NAME = "zonix_access_token"
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax").lower()
 
-if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
-    raise RuntimeError("COOKIE_SAMESITE must be lax, strict, or none.")
 
-if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
-    raise RuntimeError("COOKIE_SECURE must be true when COOKIE_SAMESITE is none.")
+def _cookie_samesite() -> str:
+    configured = os.getenv("COOKIE_SAMESITE", "lax").lower()
+    return configured if configured in {"lax", "strict", "none"} else "lax"
+
+
+def _cookie_secure() -> bool:
+    configured = os.getenv("COOKIE_SECURE")
+    explicitly_secure = configured is not None and configured.lower() in {"1", "true", "yes"}
+    return APP_ENV == "production" or explicitly_secure or _cookie_samesite() == "none"
 
 
 def get_current_user(
@@ -79,7 +78,15 @@ def get_current_user(
             detail="Invalid or expired token.",
         )
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    try:
+        parsed_user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
+        ) from None
+
+    user = db.query(User).filter(User.id == parsed_user_id).first()
 
     if user is None:
         raise HTTPException(
@@ -96,9 +103,27 @@ def get_current_user(
     return user
 
 
+def get_optional_current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
+    """Return a user for a valid cookie; any auth failure degrades to anonymous.
+
+    Guest-friendly endpoints must keep working for a visitor whose cookie has
+    expired or gone stale rather than raising 401 in place of serving public
+    content. Endpoints that require auth continue to use get_current_user
+    directly, which still raises on any failure.
+    """
+
+    if request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) is None:
+        return None
+    try:
+        return get_current_user(request=request, db=db)
+    except HTTPException:
+        return None
+
+
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register(
     user_data: UserCreate,
+    _: None = Depends(auth_rate_limit),
     db: Session = Depends(get_db),
 ):
     """
@@ -115,6 +140,7 @@ def register(
 def login(
     login_data: UserLogin,
     response: Response,
+    _: None = Depends(auth_rate_limit),
     db: Session = Depends(get_db),
 ):
     """
@@ -135,8 +161,8 @@ def login(
         key=ACCESS_TOKEN_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
+        secure=_cookie_secure(),
+        samesite=_cookie_samesite(),
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
@@ -158,8 +184,9 @@ def logout(response: Response):
     response.delete_cookie(
         key=ACCESS_TOKEN_COOKIE_NAME,
         path="/",
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
+        secure=_cookie_secure(),
+        httponly=True,
+        samesite=_cookie_samesite(),
     )
 
     return {

@@ -1,5 +1,10 @@
 # Zonix Frontend/Backend Connection Notes
 
+> **Archived integration note.** The absolute localhost and mock-import details
+> below describe an earlier milestone. The current application uses one
+> deployment-safe `/api` client and proxy. Follow [README.md](README.md) and
+> [frontend/README.md](frontend/README.md), not the old commands below.
+
 ## What was fixed
 
 The frontend API file already contained real FastAPI calls:

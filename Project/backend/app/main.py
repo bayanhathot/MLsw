@@ -9,56 +9,36 @@ This file is responsible for:
 3. Defining basic health-check endpoints.
 4. Defining the database health-check endpoint.
 
-Current backend routes:
-- GET  /
-- GET  /db-health
-- POST /auth/register
-- POST /auth/login
-- GET  /auth/me
-- GET  /users/search
-- GET  /users/{username}
-- POST /friends/requests
-- GET  /friends/requests/incoming
-- GET  /friends/requests/outgoing
-- POST /friends/requests/{id}/accept
-- POST /friends/requests/{id}/decline
-- DELETE /friends/requests/{id}
-- GET  /friends
-- DELETE /friends/{username}
-- POST /posts
-- GET  /posts/feed
-- GET  /posts/{id}
-- DELETE /posts/{id}
-- POST /posts/{id}/like
-- DELETE /posts/{id}/like
-- GET  /posts/{id}/comments
-- POST /posts/{id}/comments
-- DELETE /posts/{id}/comments/{comment_id}
-- POST /posts/{id}/share
-- GET  /users/{username}/posts
-- GET  /users/me/profile
-- PATCH /users/me/profile
-- GET  /users/{username}/stats
-- POST /play-events
+Domain routers provide auth, sessions, mixes, forum, profiles, messaging,
+notifications, and uploads. This module also exposes liveness, readiness, and
+selector-information endpoints.
 """
 
 import os
+import json
+import logging
+from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
+from app.core.config import cors_origins
 from app.routers.auth import router as auth_router
 from app.routers.sessions import router as sessions_router
 from app.routers.mixes import router as mixes_router
-from app.routers.posts import router as posts_router
-from app.routers.users import router as users_router
-from app.routers.friends import router as friends_router
+from app.routers.forum import router as forum_router
+from app.routers.messaging import router as messaging_router
+from app.routers.listening import router as listening_router
 from app.routers.profiles import router as profiles_router
-from app.routers.play_events import router as play_events_router
+from app.routers.uploads import router as uploads_router
+from app.routers.social import router as social_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -74,29 +54,64 @@ from app.routers.play_events import router as play_events_router
 app = FastAPI(
     title="Zonix Backend",
     description="Backend API for the Zonix Smart AI DJ Mixer project.",
-    version="0.1.0",
+    version="0.2.0",
     root_path=os.getenv("ROOT_PATH", ""),
 )
 
 app.mount(
     "/static",
-    StaticFiles(directory="app/static"),
+    StaticFiles(directory=Path(__file__).resolve().parent / "static"),
     name="static",
 )
 
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+access_logger = logging.getLogger("zonix.access")
+
+
+@app.middleware("http")
+async def csrf_origin_guard(request, call_next):
+    """Reject cross-site cookie-authenticated writes without changing the UI contract."""
+
+    unsafe = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    cookie_auth = "zonix_access_token" in request.cookies
+    fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    if unsafe and cookie_auth and (
+        fetch_site == "cross-site" or (origin and origin not in cors_origins())
+    ):
+        return JSONResponse(status_code=403, content={"detail": "Cross-site request rejected."})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def request_context(request, call_next):
+    """Attach a request ID and emit one structured access event."""
+
+    request_id = request.headers.get("x-request-id", "")[:100] or uuid4().hex
+    started = perf_counter()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    access_logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+            }
+        )
+    )
+    return response
 
 # ---------------------------------------------------------
 # Register routers
@@ -114,17 +129,12 @@ app.include_router(sessions_router)
 # Register mix generation endpoints.
 # POST /mixes/start creates a new mix queue from Audius search results.
 app.include_router(mixes_router)
-
-# Register user lookup and friend request endpoints.
-app.include_router(users_router)
-app.include_router(friends_router)
-
-# Register post (feed entry) endpoints.
-app.include_router(posts_router)
-
-# Register profile customization/stats and play-event tracking endpoints.
+app.include_router(forum_router)
 app.include_router(profiles_router)
-app.include_router(play_events_router)
+app.include_router(messaging_router)
+app.include_router(listening_router)
+app.include_router(uploads_router)
+app.include_router(social_router)
 
 
 # ---------------------------------------------------------
@@ -183,4 +193,26 @@ def db_health(db: Session = Depends(get_db)):
     return {
         "database": "connected",
         "result": result,
+    }
+
+
+@app.get("/health")
+def health():
+    """Stable health-check path for containers and load balancers."""
+
+    return {"service": "zonix-backend", "status": "healthy", "version": app.version}
+
+
+@app.get("/model-info")
+def model_info():
+    """Describe the configured selection implementation without overstating it."""
+
+    ollama_model = os.getenv("OLLAMA_MODEL", "").strip()
+    ollama_configured = bool(os.getenv("OLLAMA_BASE_URL", "").strip() and ollama_model)
+    return {
+        "selector": "deterministic-intent-v1",
+        "local_llm_configured": ollama_configured,
+        "local_llm_availability": "not_checked" if ollama_configured else "not_configured",
+        "local_llm_model": ollama_model if ollama_configured else None,
+        "hallucination_guard": "playable tracks must resolve from Audius or the local demo catalog",
     }

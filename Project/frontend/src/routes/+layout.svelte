@@ -11,48 +11,30 @@
 -->
 
 <script>
-  import { onMount } from "svelte";
+	import { onMount } from 'svelte';
 
-  import "../app.css";
-  import Navbar from "$lib/components/Navbar.svelte";
-  import { authStore } from "$lib/stores/authStore.js";
-  import { profileStore } from "$lib/stores/profileStore.js";
+	import '../app.css';
+	import Navbar from '$lib/components/Navbar.svelte';
+	import GlobalPlayer from '$lib/components/GlobalPlayer.svelte';
+	import { authStore } from '$lib/stores/authStore.js';
 
-  let { children } = $props();
+	let { children } = $props();
 
-  onMount(() => {
-    authStore.checkAuth();
-  });
-
-  // Load the profile (for theme_preference) once we know who's logged in.
-  $effect(() => {
-    if ($authStore.status === "authenticated") {
-      profileStore.load();
-    }
-  });
-
-  // Apply the stored theme choice to the document. "system"/no profile
-  // means: don't force anything, let the prefers-color-scheme CSS decide.
-  $effect(() => {
-    const theme = $profileStore.profile?.theme_preference;
-
-    if (theme && theme !== "system") {
-      document.documentElement.dataset.theme = theme;
-    } else {
-      delete document.documentElement.dataset.theme;
-    }
-  });
+	onMount(() => {
+		authStore.checkAuth();
+	});
 </script>
 
 <div class="app-shell">
-  <Navbar />
+	<Navbar />
 
-  {@render children()}
+	{@render children()}
+	<GlobalPlayer />
 </div>
 
 <style>
-  .app-shell {
-    width: min(1500px, calc(100% - 32px));
-    margin: 0 auto;
-  }
+	.app-shell {
+		width: min(1500px, calc(100% - 32px));
+		margin: 0 auto;
+	}
 </style>

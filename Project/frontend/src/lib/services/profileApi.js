@@ -1,70 +1,58 @@
-/**
- * File: src/lib/services/profileApi.js
- *
- * Purpose:
- * Frontend functions for profile customization and listening stats.
- *
- * Backend endpoints:
- * - GET   /users/me/profile
- * - PATCH /users/me/profile
- * - GET   /users/{username}/stats
- */
+import { apiRequest } from './api.js';
+import { normalizeMix } from './mixApi.js';
 
-import { apiRequest } from "./api.js";
-
-/**
- * @typedef {"dark" | "light" | "system"} ThemePreference
- */
-
-/**
- * @typedef {Object} Profile
- * @property {string | null} display_name
- * @property {string | null} avatar_url
- * @property {string | null} bio
- * @property {string[] | null} favorite_genres
- * @property {ThemePreference} theme_preference
- */
-
-/**
- * @typedef {Object} FavoriteArtist
- * @property {string} artist
- * @property {number} seconds_listened
- */
-
-/**
- * @typedef {Object} ProfileStats
- * @property {number} minutes_listened
- * @property {FavoriteArtist[]} favorite_artists
- */
-
-/**
- * @returns {Promise<Profile>}
- */
 export function getMyProfile() {
-  return apiRequest("/users/me/profile", { method: "GET" });
+	return apiRequest('/users/me/profile');
 }
 
-/**
- * @param {Partial<{
- *   display_name: string | null,
- *   avatar_url: string | null,
- *   bio: string | null,
- *   favorite_genres: string[] | null,
- *   theme_preference: ThemePreference
- * }>} updates
- * @returns {Promise<Profile>}
- */
-export function updateMyProfile(updates) {
-  return apiRequest("/users/me/profile", {
-    method: "PATCH",
-    body: JSON.stringify(updates)
-  });
+/** @param {{ displayName: string|null, avatarUrl: string|null, bio: string|null, favoriteGenres: string[]|null }} changes */
+export function updateMyProfile(changes) {
+	return apiRequest('/users/me/profile', {
+		method: 'PATCH',
+		body: JSON.stringify({
+			display_name: changes.displayName,
+			avatar_url: changes.avatarUrl,
+			bio: changes.bio,
+			favorite_genres: changes.favoriteGenres
+		})
+	});
 }
 
-/**
- * @param {string} username
- * @returns {Promise<ProfileStats>}
- */
+export function getMyPreferences() {
+	return apiRequest('/users/me/preferences');
+}
+
+/** @param {'7d'|'30d'|'6m'|'all'} [period] */
+export function getMyMusicIdentity(period = 'all') {
+	return apiRequest(`/users/me/music-identity?period=${period}`);
+}
+
+/** @param {'private'|'friends'|'public'|boolean} visibility */
+export function updateMusicIdentityPrivacy(visibility) {
+	const body = typeof visibility === 'boolean' ? { is_public: visibility } : { visibility };
+	return apiRequest('/users/me/music-identity/privacy', {
+		method: 'PATCH',
+		body: JSON.stringify(body)
+	});
+}
+
+/** @param {string} username */
 export function getUserStats(username) {
-  return apiRequest(`/users/${encodeURIComponent(username)}/stats`, { method: "GET" });
+	return apiRequest(`/users/${encodeURIComponent(username)}/stats`);
+}
+
+/** @param {string} username */
+export function getPublicProfile(username) {
+	return apiRequest(`/users/${encodeURIComponent(username)}/profile`);
+}
+
+/** @param {string} username @param {'7d'|'30d'|'6m'|'all'} [period] */
+export function getPublicMusicIdentity(username, period = 'all') {
+	return apiRequest(`/users/${encodeURIComponent(username)}/music-identity?period=${period}`);
+}
+
+/** @param {string} username */
+export async function getPublicMixes(username) {
+	const response = await apiRequest(`/users/${encodeURIComponent(username)}/mixes`);
+	return Array.isArray(response) ? response.map(normalizeMix) : [];
 }

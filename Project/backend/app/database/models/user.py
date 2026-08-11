@@ -13,9 +13,10 @@ We only store hashed_password.
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
+from app.core.time import utc_now
 
 
 class User(Base):
@@ -71,6 +72,8 @@ class User(Base):
     # Account creation time.
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=utc_now,
         nullable=False,
     )
+
+    mixes = relationship("Mix", back_populates="owner", cascade="all, delete-orphan")
