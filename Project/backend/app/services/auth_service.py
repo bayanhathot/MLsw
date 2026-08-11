@@ -18,6 +18,7 @@ from app.core.security import (
     verify_and_update_password,
 )
 from app.database.models.user import User
+from app.database.models.music_identity import UserMusicProfile
 from app.schemas import UserCreate, UserLogin
 
 
@@ -76,6 +77,8 @@ def register_user(db: Session, user_data: UserCreate) -> User:
 
     try:
         db.add(new_user)
+        db.flush()
+        db.add(UserMusicProfile(user_id=new_user.id, is_public=False))
         db.commit()
         db.refresh(new_user)
     except IntegrityError as exc:

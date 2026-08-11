@@ -1,6 +1,6 @@
 /** Public forum API: posts, comments, and reversible votes. */
 
-import { apiRequest, backendMediaUrl } from './api.js';
+import { API_BASE_URL, apiRequest, backendMediaUrl } from './api.js';
 
 /** @param {unknown} value */
 function normalizeAttachment(value) {
@@ -27,6 +27,19 @@ export function normalizePost(value) {
 		title: String(raw.title || 'Untitled'),
 		body: String(raw.body || ''),
 		isAnonymous: Boolean(raw.is_anonymous),
+		kind: String(raw.kind || 'discussion'),
+		visibility: String(raw.visibility || 'public'),
+		mix:
+			raw.mix && typeof raw.mix === 'object'
+				? {
+						id: Number(raw.mix.id),
+						title: String(raw.mix.title || ''),
+						prompt: String(raw.mix.prompt || ''),
+						coverUrl: String(raw.mix.cover_url || ''),
+						ownerUsername: String(raw.mix.owner_username || ''),
+						segmentCount: Number(raw.mix.segment_count || 0)
+					}
+				: null,
 		canDelete: Boolean(raw.can_delete ?? raw.canDelete),
 		score: Number(raw.score || 0),
 		commentCount: Number(raw.comment_count || 0),
@@ -56,8 +69,11 @@ export function normalizeComment(value) {
 }
 
 /** @param {{ limit?: number, offset?: number, signal?: AbortSignal }} [options] */
-export async function getPosts({ limit = 10, offset = 0, signal } = {}) {
-	const response = await apiRequest(`/posts/feed?limit=${limit}&offset=${offset}`, { signal });
+export async function getPosts({ limit = 10, offset = 0, mode = 'explore', signal } = {}) {
+	const response = await apiRequest(
+		`/posts/feed?mode=${encodeURIComponent(mode)}&limit=${limit}&offset=${offset}`,
+		{ signal }
+	);
 	if (!Array.isArray(response)) throw new TypeError('The server returned an invalid forum feed.');
 	return response.map(normalizePost);
 }
@@ -67,15 +83,18 @@ export function deletePost(postId) {
 	return apiRequest(`/posts/${postId}`, { method: 'DELETE' });
 }
 
-/** @param {{ title: string, body: string, isAnonymous: boolean, attachmentIds?: number[] }} input */
+/** @param {{ title?: string, body: string, isAnonymous?: boolean, attachmentIds?: number[], kind?: 'discussion'|'status'|'mix_share', visibility?: 'public'|'friends', mixId?: number|null }} input */
 export async function createPost(input) {
 	return normalizePost(
 		await apiRequest('/posts', {
 			method: 'POST',
 			body: JSON.stringify({
-				title: input.title,
+				title: input.title || null,
 				body: input.body,
-				is_anonymous: input.isAnonymous,
+				is_anonymous: Boolean(input.isAnonymous),
+				kind: input.kind || 'discussion',
+				visibility: input.visibility || 'public',
+				mix_id: input.mixId || null,
 				attachment_ids: input.attachmentIds || []
 			})
 		})
@@ -126,4 +145,15 @@ export async function voteComment(commentId, value) {
 			...(value === 0 ? {} : { body: JSON.stringify({ value }) })
 		})
 	);
+}
+
+export function communityWebSocketUrl() {
+	if (typeof window === 'undefined') return '';
+	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+	if (/^https?:\/\//.test(API_BASE_URL)) {
+		const url = new URL(`${API_BASE_URL}/posts/ws/community`);
+		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+		return url.toString();
+	}
+	return `${protocol}//${window.location.host}${API_BASE_URL}/posts/ws/community`;
 }

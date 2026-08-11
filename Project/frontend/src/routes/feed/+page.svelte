@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 
 	import MixCard from '$lib/components/MixCard.svelte';
-	import MiniMixPlayer from '$lib/components/MiniMixPlayer.svelte';
+	import { playerStore } from '$lib/stores/playerStore.js';
 	import { getFeed, likeMix, saveMix, unlikeMix, unsaveMix } from '$lib/services/mixApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
 
@@ -18,7 +18,6 @@
 	let error = $state('');
 	/** @type {Record<number, string>} */
 	let busyActions = $state({});
-	let activeMix = $state(/** @type {Mix | null} */ (null));
 	const feedController = new AbortController();
 
 	onMount(() => {
@@ -68,7 +67,7 @@
 			error = 'This mix has no playable audio.';
 			return;
 		}
-		activeMix = mix;
+		playerStore.play(mix);
 	}
 
 	/** @param {Mix} mix */
@@ -179,12 +178,6 @@
 		{/if}
 	{/if}
 </main>
-
-{#if activeMix}
-	{#key activeMix.id}
-		<MiniMixPlayer mix={activeMix} onClose={() => (activeMix = null)} />
-	{/key}
-{/if}
 
 <style>
 	.feed-page {

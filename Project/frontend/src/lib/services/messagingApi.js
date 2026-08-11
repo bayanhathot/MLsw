@@ -43,6 +43,20 @@ export function normalizeNotification(value) {
 	};
 }
 
+/** @param {{ signal?: AbortSignal }} [options] */
+export async function getConversations({ signal } = {}) {
+	const response = await apiRequest('/conversations', { signal });
+	if (!Array.isArray(response)) throw new TypeError('The server returned invalid conversations.');
+	return response.map((raw) => ({
+		username: String(raw.username || ''),
+		displayName: raw.display_name == null ? null : String(raw.display_name),
+		avatarUrl: raw.avatar_url == null ? null : String(raw.avatar_url),
+		lastMessage: String(raw.last_message || ''),
+		lastMessageAt: String(raw.last_message_at || ''),
+		unreadCount: Number(raw.unread_count || 0)
+	}));
+}
+
 /** @param {string} username @param {{ signal?: AbortSignal }} [options] */
 export async function getConversation(username, { signal } = {}) {
 	const response = await apiRequest(`/messages/${encodeURIComponent(username)}`, { signal });

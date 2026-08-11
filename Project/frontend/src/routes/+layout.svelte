@@ -15,6 +15,7 @@
 
 	import '../app.css';
 	import Navbar from '$lib/components/Navbar.svelte';
+	import GlobalPlayer from '$lib/components/GlobalPlayer.svelte';
 	import { authStore } from '$lib/stores/authStore.js';
 
 	let { children } = $props();
@@ -28,6 +29,7 @@
 	<Navbar />
 
 	{@render children()}
+	<GlobalPlayer />
 </div>
 
 <style>

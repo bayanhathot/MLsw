@@ -1,5 +1,8 @@
 <script>
+	import { onDestroy } from 'svelte';
 	import { APP_STATES } from '$lib/constants/appStates.js';
+	import { authStore } from '$lib/stores/authStore.js';
+	import { recordListeningEvent } from '$lib/services/listeningApi.js';
 
 	const COACH_OPTIONS = ['Good vibe', 'More energy', 'Less vocals', 'Smoother'];
 
@@ -64,7 +67,16 @@
 	let currentTime = $state(0);
 	let duration = $state(0);
 	let trackedSessionId = $state('');
+	let trackedNowPlayingKey = $state('');
 	let completedAudioUrl = $state('');
+	let trackingEventId = '';
+	let trackingSessionId = '';
+	/** @type {Date | null} */
+	let trackingStartedAt = null;
+	let listenedSeconds = 0;
+	/** @type {number | null} */
+	let lastMediaPosition = null;
+	let eventFlushed = false;
 
 	let segments = $derived(session?.segments ?? []);
 	let activeSegment = $derived(segments[segmentIndex] ?? null);
@@ -95,12 +107,20 @@
 
 	$effect(() => {
 		const sessionId = session?.id || '';
+		const playingKey = sessionId ? `${sessionId}:${nowPlaying?.title || ''}:${segmentIndex}` : '';
 		if (sessionId !== trackedSessionId) {
+			void flushListening(true, true);
 			trackedSessionId = sessionId;
+			trackedNowPlayingKey = playingKey;
 			segmentIndex = 0;
 			currentTime = 0;
 			duration = 0;
 			completedAudioUrl = '';
+			resetTracking();
+		} else if (playingKey && playingKey !== trackedNowPlayingKey) {
+			void flushListening(true);
+			trackedNowPlayingKey = playingKey;
+			resetTracking();
 		}
 	});
 
@@ -138,6 +158,75 @@
 		}
 	});
 
+	onDestroy(() => {
+		void flushListening(true, true);
+	});
+
+	function makeEventId() {
+		return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+			? `listen:${crypto.randomUUID()}`
+			: `listen:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+	}
+
+	function resetTracking() {
+		trackingEventId = makeEventId();
+		trackingSessionId = session?.id || '';
+		trackingStartedAt = null;
+		listenedSeconds = 0;
+		lastMediaPosition = null;
+		eventFlushed = false;
+	}
+
+	/** @param {boolean} skipped @param {boolean} [keepalive] */
+	async function flushListening(skipped, keepalive = false) {
+		if (
+			eventFlushed ||
+			$authStore.status !== 'authenticated' ||
+			!trackingSessionId ||
+			!trackingStartedAt ||
+			listenedSeconds < 0.75
+		)
+			return;
+		eventFlushed = true;
+		try {
+			await recordListeningEvent({
+				clientEventId: trackingEventId,
+				sessionId: trackingSessionId,
+				startedAt: trackingStartedAt.toISOString(),
+				endedAt: new Date().toISOString(),
+				secondsListened: listenedSeconds,
+				skipped,
+				keepalive
+			});
+		} catch (requestError) {
+			console.warn('Zonix listening event was not recorded.', requestError);
+		}
+	}
+
+	function trackedMediaPlaying() {
+		if (!trackingStartedAt) trackingStartedAt = new Date();
+		lastMediaPosition = audioElement?.currentTime ?? null;
+		onMediaPlaying();
+	}
+
+	function trackedMediaPaused() {
+		lastMediaPosition = null;
+		onMediaPaused();
+	}
+
+	function handleStopClick() {
+		void flushListening(true, true);
+		onStop();
+	}
+
+	/** @param {string} feedback */
+	async function handleCoachFeedback(feedback) {
+		// Flush the moment before the backend changes the session track key, so
+		// listening analytics are attributed to what the user actually heard.
+		await flushListening(true);
+		onFeedback(feedback);
+	}
+
 	/** @param {number} seconds */
 	function formatTime(seconds) {
 		if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -166,8 +255,14 @@
 			return;
 		}
 
+		const absolute = audioElement.currentTime;
+		if (isPlaying && lastMediaPosition !== null) {
+			const delta = absolute - lastMediaPosition;
+			if (delta > 0 && delta <= 2.5) listenedSeconds += delta;
+		}
+		lastMediaPosition = absolute;
 		const bounds = segmentBounds();
-		currentTime = Math.max(0, audioElement.currentTime - bounds.start);
+		currentTime = Math.max(0, absolute - bounds.start);
 		duration = bounds.length;
 
 		if (bounds.end > bounds.start && audioElement.currentTime >= bounds.end - 0.05) {
@@ -185,6 +280,7 @@
 			audioElement.currentTime = bounds.start;
 		}
 		completedAudioUrl = '';
+		resetTracking();
 		syncTimeline();
 	}
 
@@ -199,6 +295,7 @@
 		const nextTime = (Number(target.value) / 100) * bounds.length;
 		audioElement.currentTime = bounds.start + nextTime;
 		currentTime = nextTime;
+		lastMediaPosition = audioElement.currentTime;
 		completedAudioUrl = '';
 	}
 
@@ -209,6 +306,7 @@
 			return;
 		}
 
+		void flushListening(true);
 		segmentIndex = nextIndex;
 		currentTime = 0;
 		duration = 0;
@@ -225,6 +323,7 @@
 
 		completedAudioUrl = audioUrl;
 		currentTime = duration;
+		void flushListening(false);
 		if (hasNext) {
 			changeSegment(1);
 		} else {
@@ -233,6 +332,7 @@
 	}
 
 	function handleMediaError() {
+		void flushListening(true);
 		const code = audioElement?.error?.code;
 		const suffix = code ? ` (media error ${code})` : '';
 		onMediaError(`This audio source could not be loaded${suffix}.`);
@@ -321,7 +421,7 @@
 			<button
 				class="stop-button"
 				type="button"
-				onclick={onStop}
+				onclick={handleStopClick}
 				disabled={!canControl || isStopping}
 			>
 				{isStopping ? 'Stopping…' : 'Stop AI DJ'}
@@ -357,9 +457,9 @@
 				preload="metadata"
 				onloadedmetadata={handleLoadedMetadata}
 				ontimeupdate={syncTimeline}
-				onplay={onMediaPlaying}
+				onplay={trackedMediaPlaying}
 				onplaying={onMediaReady}
-				onpause={onMediaPaused}
+				onpause={trackedMediaPaused}
 				onwaiting={onMediaWaiting}
 				oncanplay={onMediaReady}
 				onended={handleAudioEnded}
@@ -375,7 +475,7 @@
 				<button
 					type="button"
 					class:active={selectedFeedback === option}
-					onclick={() => onFeedback(option)}
+					onclick={() => handleCoachFeedback(option)}
 					disabled={!canControl || isFeedbackPending || isStopping}
 					aria-pressed={selectedFeedback === option}
 				>

@@ -35,8 +35,10 @@ from app.routers.sessions import router as sessions_router
 from app.routers.mixes import router as mixes_router
 from app.routers.forum import router as forum_router
 from app.routers.messaging import router as messaging_router
+from app.routers.listening import router as listening_router
 from app.routers.profiles import router as profiles_router
 from app.routers.uploads import router as uploads_router
+from app.routers.social import router as social_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -130,7 +132,9 @@ app.include_router(mixes_router)
 app.include_router(forum_router)
 app.include_router(profiles_router)
 app.include_router(messaging_router)
+app.include_router(listening_router)
 app.include_router(uploads_router)
+app.include_router(social_router)
 
 
 # ---------------------------------------------------------

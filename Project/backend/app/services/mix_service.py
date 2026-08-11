@@ -21,6 +21,8 @@ def local_demo_track() -> dict:
         "duration": 60,
         "source": "local-demo",
         "source_track_id": "zonix-demo-v1",
+        "genre": "Zonix demo",
+        "mood": "Balanced",
     }
 
 
@@ -65,6 +67,8 @@ def create_mix(db: Session, prompt: str, owner_id: int | None = None) -> Mix:
                     transition_to_next="crossfade" if position < len(tracks) else "end",
                     source=str(track.get("source") or "unknown")[:50],
                     source_track_id=str(track.get("source_track_id") or uuid4().hex)[:255],
+                    genre=(str(track.get("genre")).strip()[:100] if track.get("genre") else None),
+                    vibe=(str(track.get("mood") or intent.mood).strip()[:100] if (track.get("mood") or intent.mood) else None),
                 )
             )
         db.commit()

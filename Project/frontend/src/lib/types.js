@@ -71,6 +71,8 @@
  * @property {string} transitionToNext
  * @property {string} source
  * @property {string} sourceTrackId
+ * @property {string} genre
+ * @property {string} vibe
  */
 
 /**
@@ -113,6 +115,9 @@
  * @property {string} title
  * @property {string} body
  * @property {boolean} isAnonymous
+ * @property {'discussion'|'status'|'mix_share'} kind
+ * @property {'public'|'friends'} visibility
+ * @property {{id:number,title:string,prompt:string,coverUrl:string,ownerUsername:string,segmentCount:number}|null} mix
  * @property {boolean} canDelete
  * @property {number} score
  * @property {number} commentCount
@@ -126,6 +131,9 @@
  * @property {string} authorUsername
  * @property {string} body
  * @property {boolean} isAnonymous
+ * @property {'discussion'|'status'|'mix_share'} kind
+ * @property {'public'|'friends'} visibility
+ * @property {{id:number,title:string,prompt:string,coverUrl:string,ownerUsername:string,segmentCount:number}|null} mix
  * @property {boolean} canDelete
  * @property {number} score
  * @property {number} myVote

@@ -118,6 +118,8 @@ class MixSegmentRead(BaseModel):
     transition_to_next: str
     source: str
     source_track_id: str
+    genre: str | None = None
+    vibe: str | None = None
 
 
 class MixOwnerRead(BaseModel):
@@ -183,9 +185,12 @@ class AttachmentRead(BaseModel):
 
 
 class PostCreate(NonBlankModel):
-    title: str = Field(min_length=1, max_length=160)
+    title: str | None = Field(default=None, max_length=160)
     body: str = Field(min_length=1, max_length=5000)
     is_anonymous: bool = False
+    kind: Literal["discussion", "status", "mix_share"] = "discussion"
+    visibility: Literal["public", "friends"] = "public"
+    mix_id: int | None = Field(default=None, ge=1)
     attachment_ids: list[int] = Field(default_factory=list, max_length=8)
 
 
@@ -212,6 +217,15 @@ class CommentRead(BaseModel):
     created_at: datetime
 
 
+class SharedMixRead(BaseModel):
+    id: int
+    title: str
+    prompt: str
+    cover_url: str | None = None
+    owner_username: str
+    segment_count: int
+
+
 class PostRead(BaseModel):
     id: int
     author_id: int | None
@@ -219,6 +233,9 @@ class PostRead(BaseModel):
     title: str
     body: str
     is_anonymous: bool
+    kind: Literal["discussion", "status", "mix_share"] = "discussion"
+    visibility: Literal["public", "friends"] = "public"
+    mix: SharedMixRead | None = None
     can_delete: bool
     score: int
     comment_count: int
@@ -269,6 +286,166 @@ class ProfileStatsRead(BaseModel):
     comment_count: int
 
 
+class ListeningEventCreate(NonBlankModel):
+    client_event_id: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
+    session_id: str | None = Field(default=None, max_length=48)
+    mix_id: int | None = Field(default=None, ge=1)
+    segment_id: int | None = Field(default=None, ge=1)
+    started_at: datetime
+    ended_at: datetime | None = None
+    seconds_listened: int = Field(ge=0, le=86_400)
+    skipped: bool = False
+
+
+class ListeningEventRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    client_event_id: str
+    session_id: str | None = None
+    mix_id: int | None = None
+    segment_id: int | None = None
+    source: str
+    source_track_id: str
+    track_title: str
+    artist_name: str
+    genre: str | None = None
+    vibe: str | None = None
+    started_at: datetime
+    ended_at: datetime | None = None
+    seconds_listened: int
+    track_duration_seconds: int | None = None
+    segment_start_second: int | None = None
+    segment_end_second: int | None = None
+    completion_ratio: float | None = None
+    skipped: bool
+    created_at: datetime
+
+
+class MusicMetricRead(BaseModel):
+    name: str
+    seconds: int
+    percentage: float
+
+
+class ListeningTrendPointRead(BaseModel):
+    date: str
+    seconds: int
+
+
+class RecentListeningRead(BaseModel):
+    key: str
+    kind: Literal["mix", "session"]
+    title: str
+    subtitle: str | None = None
+    seconds: int
+    started_at: datetime
+
+
+class ListeningDNADimensionRead(BaseModel):
+    name: str
+    value: float
+
+
+class ListeningDNARead(BaseModel):
+    status: str
+    label: str | None = None
+    summary: str | None = None
+    dimensions: list[ListeningDNADimensionRead] = Field(default_factory=list)
+    version: str | None = None
+
+
+class TrackMetricRead(BaseModel):
+    title: str
+    artist: str
+    seconds: int
+    percentage: float
+
+
+class MusicIdentitySummaryRead(BaseModel):
+    total_listening_seconds: int
+    top_artist: MusicMetricRead | None = None
+    top_genre: MusicMetricRead | None = None
+    top_vibe: MusicMetricRead | None = None
+    artists_discovered: int = 0
+    tracks_discovered: int = 0
+    listening_contexts: int = 0
+    average_context_seconds: int = 0
+
+
+class MusicIdentityRead(BaseModel):
+    is_public: bool
+    visibility: Literal["private", "friends", "public"] = "private"
+    period: Literal["7d", "30d", "6m", "all"] = "all"
+    summary: MusicIdentitySummaryRead
+    artists: list[MusicMetricRead]
+    genres: list[MusicMetricRead]
+    vibes: list[MusicMetricRead]
+    top_tracks: list[TrackMetricRead] = Field(default_factory=list)
+    time_of_day: list[MusicMetricRead] = Field(default_factory=list)
+    listening_trend: list[ListeningTrendPointRead]
+    recent_listening: list[RecentListeningRead]
+    listening_dna: ListeningDNARead
+
+
+class MusicIdentityPrivacyUpdate(BaseModel):
+    is_public: bool | None = None
+    visibility: Literal["private", "friends", "public"] | None = None
+
+
+class PublicProfileRead(BaseModel):
+    id: int
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    bio: str | None = None
+    favorite_genres: list[str] | None = None
+    member_since: datetime
+    stats: ProfileStatsRead
+    music_identity_public: bool
+    music_identity_visibility: Literal["private", "friends", "public"] = "private"
+    friend_count: int = 0
+    mutual_friend_count: int = 0
+    published_mix_count: int = 0
+    relationship_status: str = "guest"
+    viewer_has_blocked: bool = False
+
+
+class PublicMusicIdentityRead(BaseModel):
+    username: str
+    is_public: bool
+    music_identity: MusicIdentityRead | None = None
+
+
+class UserCardRead(BaseModel):
+    id: int
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    bio: str | None = None
+    music_interests: list[str] | None = None
+    friend_count: int = 0
+    mutual_friend_count: int = 0
+    relationship_status: str
+
+
+class FriendRequestRead(BaseModel):
+    id: int
+    sender_username: str
+    receiver_username: str
+    status: str
+    created_at: datetime
+    responded_at: datetime | None = None
+    other_user: UserCardRead | None = None
+
+
+class ReportCreate(NonBlankModel):
+    target_type: Literal["user", "post", "comment"]
+    target_id: int = Field(ge=1)
+    reason: str = Field(min_length=2, max_length=80)
+    details: str | None = Field(default=None, max_length=1000)
+
+
 class MessageCreate(NonBlankModel):
     recipient_username: str = Field(min_length=3, max_length=50)
     body: str = Field(min_length=1, max_length=4000)
@@ -285,6 +462,16 @@ class MessageRead(BaseModel):
     attachments: list[AttachmentRead]
     created_at: datetime
     read_at: datetime | None = None
+
+
+class ConversationRead(BaseModel):
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    last_message: str
+    last_message_at: datetime
+    unread_count: int
+
 
 
 class NotificationRead(BaseModel):

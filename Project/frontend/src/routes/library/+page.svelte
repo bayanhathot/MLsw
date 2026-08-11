@@ -5,7 +5,7 @@
 
 	import { createMix, getLibrary, publishMix, unsaveMix, updateMix } from '$lib/services/mixApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
-	import MiniMixPlayer from '$lib/components/MiniMixPlayer.svelte';
+	import { playerStore } from '$lib/stores/playerStore.js';
 
 	/** @typedef {import('$lib/types.js').Mix} Mix */
 	/** @type {'owned' | 'saved'} */
@@ -25,7 +25,6 @@
 	let editCoverUrl = $state('');
 	/** @type {Record<number, string>} */
 	let busyActions = $state({});
-	let activeMix = $state(/** @type {Mix | null} */ (null));
 	let displayedMixes = $derived(activeTab === 'owned' ? owned : saved);
 	let controller = new AbortController();
 
@@ -154,7 +153,7 @@
 			error = 'This mix has no playable audio.';
 			return;
 		}
-		activeMix = mix;
+		playerStore.play(mix);
 	}
 </script>
 
@@ -293,12 +292,6 @@
 		</div>
 	{/if}
 </main>
-
-{#if activeMix}
-	{#key activeMix.id}
-		<MiniMixPlayer mix={activeMix} onClose={() => (activeMix = null)} />
-	{/key}
-{/if}
 
 <style>
 	.library-page {

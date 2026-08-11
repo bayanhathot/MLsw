@@ -26,7 +26,9 @@ export function normalizeMix(value) {
 					segment.transitionToNext ?? segment.transition_to_next ?? 'crossfade'
 				),
 				source: String(segment.source ?? ''),
-				sourceTrackId: String(segment.sourceTrackId ?? segment.source_track_id ?? '')
+				sourceTrackId: String(segment.sourceTrackId ?? segment.source_track_id ?? ''),
+				genre: String(segment.genre ?? ''),
+				vibe: String(segment.vibe ?? '')
 			}))
 		: [];
 
@@ -71,6 +73,11 @@ export async function getLibrary({ signal } = {}) {
 		owned: Array.isArray(library.owned) ? library.owned.map(normalizeMix) : [],
 		saved: Array.isArray(library.saved) ? library.saved.map(normalizeMix) : []
 	};
+}
+
+/** @param {number} mixId */
+export async function getMix(mixId) {
+	return normalizeMix(await apiRequest(`/mixes/${mixId}`));
 }
 
 /** @param {string} prompt */

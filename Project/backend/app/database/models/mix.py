@@ -56,5 +56,7 @@ class MixSegment(Base):
     transition_to_next: Mapped[str] = mapped_column(String(50), nullable=False, default="crossfade")
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     source_track_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    genre: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    vibe: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     mix = relationship("Mix", back_populates="segments")

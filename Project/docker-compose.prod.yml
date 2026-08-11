@@ -33,6 +33,8 @@ services:
       timeout: 5s
       retries: 20
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   migrate:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
@@ -42,6 +44,8 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    security_opt:
+      - no-new-privileges:true
 
   uploads-init:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
@@ -50,6 +54,8 @@ services:
     volumes:
       - uploads_data:/data/uploads
     restart: "no"
+    security_opt:
+      - no-new-privileges:true
 
   backend:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
@@ -85,6 +91,8 @@ services:
       retries: 10
       start_period: 15s
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   frontend:
     image: "${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}"
@@ -99,6 +107,8 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   caddy:
     image: caddy:2.10.0-alpine

@@ -36,7 +36,9 @@ export function normalizeSession(value, fallbackPrompt) {
 		endSecond: Number(segment.endSecond ?? segment.end_second ?? 0),
 		transitionToNext: text(segment.transitionToNext ?? segment.transition_to_next, 'crossfade'),
 		source: text(segment.source),
-		sourceTrackId: text(segment.sourceTrackId ?? segment.source_track_id)
+		sourceTrackId: text(segment.sourceTrackId ?? segment.source_track_id),
+		genre: text(segment.genre),
+		vibe: text(segment.vibe)
 	}));
 	const firstSegment = segments[0];
 	const rawNowPlaying = raw.nowPlaying ?? raw.now_playing ?? {};

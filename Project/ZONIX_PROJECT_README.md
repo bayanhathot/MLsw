@@ -3,8 +3,9 @@
 Zonix is a full-stack prototype for a prompt-guided DJ experience. The current
 application provides a SvelteKit UI, a FastAPI/PostgreSQL API, cookie-based
 authentication, persistent sessions and feedback, an Audius-backed mix plan
-with a local fallback, mix/forum/social vertical slices, protected uploads,
-and local Docker orchestration.
+with a local fallback, mix/community/social-graph vertical slices, protected uploads,
+raw listening-event capture, a private-by-default Music Identity analytics dashboard,
+public listener profiles, and local Docker orchestration.
 
 It is **not yet a trained AI DJ or an audio mixing engine**. The current player
 plays source/demo audio; it does not analyze waveforms or render real
@@ -100,12 +101,22 @@ Main API groups:
   like, and save mixes.
 - `/posts`: create/read posts and comments, post anonymously, attach media, and
   apply reversible votes.
-- `/users`: read/update the current profile, preferences, and engagement stats.
+- `/users`: profile/preferences, Music Identity analytics/privacy, engagement stats, and safe public listener profiles.
+- `/listening-events`: authenticated, idempotent raw playback events used by Music Identity analytics.
 - `/messages`, `/notifications`, and `/ws/notifications`: protected direct
   messages, durable notification history, and live notification delivery.
 - `/uploads`: validated single/batch attachment jobs and protected inline
   retrieval. The bounded priority queue is in-process; file bytes persist.
 - `/db-health`: checks the API-to-PostgreSQL connection.
+
+
+## Music Identity analytics
+
+Zonix now records **actual playback time** as raw `listening_events` when an authenticated listener finishes, skips, closes, stops, or changes a played segment/session. It does not send a request every second. Track identity/artist/genre/vibe are resolved by the backend from the referenced Zonix mix segment or DJ session rather than trusted from client metadata.
+
+The deterministic analytics service derives total listening time, top artists, artist listening shares, genre distribution, recurring vibes, a listening trend, and recent listening contexts. New and migrated users have a `user_music_profiles` row that is **private by default**. Public profile endpoints never return private Music Identity data.
+
+The frontend provides a modern `/profile` Music Identity dashboard plus `/users/[username]` public profiles, and forum author names link into those profiles. The Listening DNA panel/API contract is present but intentionally reports `not_generated` until later ML work is implemented. See [MUSIC_IDENTITY.md](MUSIC_IDENTITY.md) for the data flow, debugging steps, and exact future ML integration point.
 
 ## Development checks
 
@@ -143,7 +154,7 @@ lightweight reproducible ML baseline, production build and Chromium route
 smoke tests, Compose validation, and both container builds. Its first hosted
 result requires a push or pull request. Protect `main` and require these checks
 before merging.
-Backend coverage is gated at 80% (the current CI-like run is 88.04%). Ratchet
+Backend coverage is gated at 80% (the current implementation run is 88.49%). Ratchet
 the gate upward as WebSocket and queue internals gain deterministic tests
 rather than weakening it when coverage falls.
 
@@ -174,7 +185,7 @@ parameters, metrics, and artifacts in MLflow.
 | Hallucination robustness | Provider/local catalog boundaries and deterministic fallback; offline silence/catalog-integrity metrics | Compute silence features for the production catalog and reject every unknown segment ID at the API boundary |
 | Upload job queue | Raw single and JSON-base64 batch upload endpoints, type/signature/size validation, bounded parallel priority queue, status polling, protected media, UI uploader, and persistent file volume | Add durable Redis-backed job state, retries/cancellation/progress, codec decoding, object storage, and restart/load tests |
 | Local LLM | Optional Ollama intent parser with deterministic fallback | Benchmark the chosen model and add bounded concurrency/load tests; never let LLM text create catalog records |
-| Forum/communication | Mix feed/library, likes/saves, posts/comments/votes, anonymous posting, profiles, protected attachments, DMs, durable notifications, WebSocket UI, and a mocked browser route smoke suite are implemented | Expand browser E2E to mutating flows against live PostgreSQL; add accessibility tests, moderation/reporting, shared WebSocket pub/sub, and production load tests |
+| Community/communication | Friends, search/discovery, public profiles, mix feed/library, native mix sharing, Friends/Explore/Discussions feeds, posts/comments/votes, anonymity in Discussions, protected attachments, friend-only DMs, durable notifications, block/report infrastructure, and WebSocket UI are implemented | Expand browser E2E to mutating flows against live PostgreSQL; add accessibility tests, moderation review UI, shared Redis WebSocket pub/sub, pagination/load tests, and later collaborative mixes |
 | CI/CD/deployment | Reproducible CI/container builds and a secrets-gated Azure/GHCR deployment template | Configure the supplied host/domain and protected secrets, perform the first deploy, test rollback, and add an external uptime check |
 
 The safest order is: keep CI green, exercise migrations and social/upload flows

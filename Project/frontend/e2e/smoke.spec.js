@@ -7,11 +7,38 @@ const authenticatedUser = {
 	is_active: true
 };
 
+const emptyIdentity = {
+	is_public: false,
+	visibility: 'private',
+	period: 'all',
+	summary: {
+		total_listening_seconds: 0,
+		top_artist: null,
+		top_genre: null,
+		top_vibe: null,
+		artists_discovered: 0,
+		tracks_discovered: 0,
+		listening_contexts: 0,
+		average_context_seconds: 0
+	},
+	artists: [],
+	genres: [],
+	vibes: [],
+	top_tracks: [],
+	time_of_day: [],
+	listening_trend: [],
+	recent_listening: [],
+	listening_dna: {
+		status: 'not_generated',
+		label: null,
+		summary: null,
+		dimensions: [],
+		version: null
+	}
+};
+
 /**
- * Mock the API boundary while exercising the actual production frontend. The
- * returned list makes every unplanned request fail the assertion instead of
- * silently turning this into a visual-only smoke test.
- *
+ * Mock the API boundary while exercising the production Svelte UI.
  * @param {import('@playwright/test').Page} page
  * @param {{ authenticated?: boolean }} options
  */
@@ -19,6 +46,9 @@ async function mockApi(page, { authenticated = false } = {}) {
 	const unexpectedRequests = [];
 
 	await page.routeWebSocket('**/api/ws/notifications', (socket) => {
+		socket.onMessage(() => {});
+	});
+	await page.routeWebSocket('**/api/posts/ws/community', (socket) => {
 		socket.onMessage(() => {});
 	});
 
@@ -36,17 +66,35 @@ async function mockApi(page, { authenticated = false } = {}) {
 		} else if (path === '/api/mixes/library') {
 			payload = { owned: [], saved: [] };
 		} else if (path === '/api/users/me/profile') {
-			payload = { display_name: 'Test Listener', bio: 'Browser smoke fixture' };
+			payload = {
+				display_name: 'Test Listener',
+				avatar_url: null,
+				bio: 'Browser smoke fixture',
+				favorite_genres: ['house']
+			};
 		} else if (path === '/api/users/me/preferences') {
 			payload = [];
-		} else if (path === `/api/users/${authenticatedUser.username}/stats`) {
+		} else if (path === '/api/users/me/music-identity') {
+			payload = emptyIdentity;
+		} else if (path === `/api/users/${authenticatedUser.username}/profile`) {
 			payload = {
-				received_upvotes: 0,
-				received_downvotes: 0,
-				post_count: 0,
-				comment_count: 0
+				id: 1,
+				username: authenticatedUser.username,
+				display_name: 'Test Listener',
+				avatar_url: null,
+				bio: 'Browser smoke fixture',
+				favorite_genres: ['house'],
+				member_since: '2026-08-01T00:00:00Z',
+				stats: { received_upvotes: 0, received_downvotes: 0, post_count: 0, comment_count: 0 },
+				music_identity_public: false,
+				music_identity_visibility: 'private',
+				friend_count: 0,
+				mutual_friend_count: 0,
+				published_mix_count: 0,
+				relationship_status: 'self',
+				viewer_has_blocked: false
 			};
-		} else if (path === '/api/notifications') {
+		} else if (path === '/api/notifications' || path === '/api/conversations') {
 			payload = [];
 		} else {
 			unexpectedRequests.push(`${request.method()} ${path}`);
@@ -64,21 +112,20 @@ async function mockApi(page, { authenticated = false } = {}) {
 	return unexpectedRequests;
 }
 
-test('public home, mix feed, and forum routes render through navigation', async ({ page }) => {
+test('public DJ, Discover, and Community routes render through navigation', async ({ page }) => {
 	const unexpectedRequests = await mockApi(page);
 
 	await page.goto('/');
 	await expect(page.getByRole('heading', { name: /Your AI DJ/ })).toBeVisible();
 
-	await page.getByRole('link', { name: 'Mixes' }).click();
+	await page.getByRole('link', { name: 'Discover' }).click();
 	await expect(page).toHaveURL(/\/feed$/);
 	await expect(page.getByRole('heading', { name: 'Discover mixes' })).toBeVisible();
-	await expect(page.getByText('No mixes have been published yet.')).toBeVisible();
 
-	await page.getByRole('link', { name: 'Forum' }).click();
-	await expect(page).toHaveURL(/\/forum$/);
-	await expect(page.getByRole('heading', { name: 'Talk music, focus, and flow.' })).toBeVisible();
-	await expect(page.getByText('No discussions yet. Be the first to start one.')).toBeVisible();
+	await page.getByRole('link', { name: 'Community' }).click();
+	await expect(page).toHaveURL(/\/community/);
+	await expect(page.getByRole('heading', { name: 'Community' })).toBeVisible();
+	await expect(page.getByText('No posts here yet. Start the conversation.')).toBeVisible();
 	expect(unexpectedRequests).toEqual([]);
 });
 
@@ -91,19 +138,21 @@ test('guest users are redirected away from protected routes', async ({ page }) =
 	expect(unexpectedRequests).toEqual([]);
 });
 
-test('authenticated library, profile, and social routes load their API state', async ({ page }) => {
+test('authenticated library, Music Identity profile, and messages load their API state', async ({
+	page
+}) => {
 	const unexpectedRequests = await mockApi(page, { authenticated: true });
 
 	await page.goto('/library');
 	await expect(page.getByRole('heading', { name: 'Mix library' })).toBeVisible();
 	await expect(page.getByText('No generated drafts yet.')).toBeVisible();
 
-	await page.getByRole('link', { name: 'Profile' }).click();
-	await expect(page.getByRole('heading', { name: authenticatedUser.username })).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Forum activity' })).toBeVisible();
+	await page.getByRole('link', { name: 'Your profile' }).click();
+	await expect(page.getByRole('heading', { name: 'Test Listener' })).toBeVisible();
+	await expect(page.getByText('Your Music Identity')).toBeVisible();
 
-	await page.getByRole('link', { name: 'Social' }).click();
-	await expect(page.getByRole('heading', { name: 'Messages and notifications' })).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Direct messages' })).toBeVisible();
+	await page.getByRole('link', { name: 'Messages' }).click();
+	await expect(page.getByRole('heading', { name: 'Messages' })).toBeVisible();
+	await expect(page.getByText('No conversations yet')).toBeVisible();
 	expect(unexpectedRequests).toEqual([]);
 });

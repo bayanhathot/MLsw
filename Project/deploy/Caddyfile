@@ -3,9 +3,9 @@
 
 	redir /api /api/ 308
 
-	# Preserve /api because FastAPI is configured with ROOT_PATH=/api. Caddy
-	# manages WebSocket upgrades and replaces spoofable forwarding headers.
-	handle /api/* {
+	# handle_path strips /api before forwarding. Caddy manages WebSocket
+	# upgrades and replaces spoofable client-forwarding headers by default.
+	handle_path /api/* {
 		request_body {
 			max_size 10485760
 		}

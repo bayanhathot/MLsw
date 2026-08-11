@@ -1,6 +1,6 @@
 /*
-  Static frontend mode for Docker/Nginx.
-  The app is served as static files and runs in the browser.
+  Zonix is deployed as a client-rendered SPA behind Nginx.
+  Dynamic routes such as /users/[username] and social deep links are resolved at runtime.
 */
 export const ssr = false;
-export const prerender = true;
+export const prerender = false;

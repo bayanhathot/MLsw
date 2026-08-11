@@ -1,0 +1,669 @@
+<script>
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
+	import { onDestroy, onMount } from 'svelte';
+
+	import AttachmentUploader from '$lib/components/AttachmentUploader.svelte';
+	import ForumPostCard from '$lib/components/ForumPostCard.svelte';
+	import UserCard from '$lib/components/UserCard.svelte';
+	import { communityWebSocketUrl, createPost, getPosts } from '$lib/services/forumApi.js';
+	import {
+		acceptFriendRequest,
+		cancelFriendRequest,
+		discoverUsers,
+		declineFriendRequest,
+		getFriendRequests,
+		getFriends,
+		searchUsers,
+		sendFriendRequest
+	} from '$lib/services/socialApi.js';
+	import { deleteAttachment } from '$lib/services/uploadApi.js';
+	import { authStore } from '$lib/stores/authStore.js';
+
+	const validTabs = ['friends', 'explore', 'discussions', 'people'];
+	let activeTab = $state('explore');
+	let posts = $state([]);
+	let loading = $state(true);
+	let error = $state('');
+	let body = $state('');
+	let title = $state('');
+	let anonymous = $state(false);
+	let visibility = $state('public');
+	let posting = $state(false);
+	let attachments = $state([]);
+	let query = $state('');
+	let people = $state([]);
+	let friends = $state([]);
+	let requests = $state([]);
+	let peopleBusy = $state({});
+	let searching = $state(false);
+	let communitySocket = null;
+	let refreshTimer = null;
+
+	onMount(() => {
+		const requested = page.url.searchParams.get('tab');
+		activeTab = validTabs.includes(requested || '') ? requested : 'explore';
+		void loadActive();
+		connectCommunitySocket();
+	});
+
+	onDestroy(() => {
+		if (refreshTimer) clearTimeout(refreshTimer);
+		if (communitySocket) communitySocket.close();
+	});
+
+	function connectCommunitySocket() {
+		const url = communityWebSocketUrl();
+		if (!url) return;
+		try {
+			communitySocket = new WebSocket(url);
+			communitySocket.onopen = () => communitySocket?.send('ready');
+			communitySocket.onmessage = () => {
+				if (activeTab === 'people') return;
+				if (refreshTimer) clearTimeout(refreshTimer);
+				refreshTimer = setTimeout(() => void loadActive(), 300);
+			};
+		} catch {
+			// Best-effort realtime/indicator behavior; REST state remains authoritative.
+		}
+	}
+
+	async function switchTab(tab) {
+		activeTab = tab;
+		error = '';
+		await goto(resolve(`/community?tab=${tab}`), { replaceState: true, noScroll: true });
+		await loadActive();
+	}
+
+	async function loadActive() {
+		if (activeTab === 'people') return loadPeople();
+		loading = true;
+		error = '';
+		try {
+			posts = await getPosts({ mode: activeTab, limit: 30, offset: 0 });
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not load Community.';
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function loadPeople() {
+		loading = true;
+		error = '';
+		try {
+			if ($authStore.status !== 'authenticated') {
+				friends = [];
+				requests = [];
+				return;
+			}
+			[friends, requests, people] = await Promise.all([
+				getFriends(),
+				getFriendRequests(),
+				discoverUsers()
+			]);
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not load people.';
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function runSearch() {
+		if (!$authStore.user || query.trim().length < 1) return;
+		searching = true;
+		error = '';
+		try {
+			people = await searchUsers(query.trim());
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Search failed.';
+		} finally {
+			searching = false;
+		}
+	}
+
+	async function handlePost(event) {
+		event.preventDefault();
+		if ($authStore.status !== 'authenticated') return goto(resolve('/login'));
+		if (!body.trim() || posting) return;
+		posting = true;
+		error = '';
+		try {
+			const discussion = activeTab === 'discussions';
+			const post = await createPost({
+				title: discussion ? title.trim() : undefined,
+				body: body.trim(),
+				isAnonymous: discussion ? anonymous : false,
+				kind: discussion ? 'discussion' : 'status',
+				visibility: activeTab === 'friends' ? 'friends' : visibility,
+				attachmentIds: attachments.map((item) => Number(item.id))
+			});
+			posts = [post, ...posts];
+			body = '';
+			title = '';
+			anonymous = false;
+			attachments = [];
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not publish.';
+		} finally {
+			posting = false;
+		}
+	}
+
+	async function removeAttachment(item) {
+		try {
+			await deleteAttachment(Number(item.id));
+			attachments = attachments.filter((a) => a.id !== item.id);
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not remove attachment.';
+		}
+	}
+
+	function requestFor(username) {
+		return requests.find((request) => request.other_user?.username === username);
+	}
+
+	async function connect(user) {
+		peopleBusy = { ...peopleBusy, [user.username]: true };
+		try {
+			await sendFriendRequest(user.username);
+			user.relationshipStatus = 'request_sent';
+			people = [...people];
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not send request.';
+		} finally {
+			const next = { ...peopleBusy };
+			delete next[user.username];
+			peopleBusy = next;
+		}
+	}
+
+	async function cancel(user) {
+		peopleBusy = { ...peopleBusy, [user.username]: true };
+		try {
+			await cancelFriendRequest(user.username);
+			await loadPeople();
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not cancel request.';
+		} finally {
+			const next = { ...peopleBusy };
+			delete next[user.username];
+			peopleBusy = next;
+		}
+	}
+
+	async function accept(user) {
+		const request = requestFor(user.username);
+		if (!request) return;
+		peopleBusy = { ...peopleBusy, [user.username]: true };
+		try {
+			await acceptFriendRequest(request.id);
+			await loadPeople();
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not accept request.';
+		} finally {
+			const next = { ...peopleBusy };
+			delete next[user.username];
+			peopleBusy = next;
+		}
+	}
+
+	async function decline(user) {
+		const request = requestFor(user.username);
+		if (!request) return;
+		peopleBusy = { ...peopleBusy, [user.username]: true };
+		try {
+			await declineFriendRequest(request.id);
+			await loadPeople();
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not decline request.';
+		} finally {
+			const next = { ...peopleBusy };
+			delete next[user.username];
+			peopleBusy = next;
+		}
+	}
+</script>
+
+<svelte:head><title>Community | Zonix</title></svelte:head>
+
+<main class="community-page">
+	<header class="hero">
+		<div>
+			<p class="eyebrow">Music is better together</p>
+			<h1>Community</h1>
+			<p>
+				Share what you are hearing, follow the sound of your friends, and meet listeners through
+				music.
+			</p>
+		</div>
+	</header>
+
+	<nav class="tabs" aria-label="Community sections">
+		{#each [['friends', 'Friends'], ['explore', 'Explore'], ['discussions', 'Discussions'], ['people', 'People']] as item (item[0])}
+			<button class:active={activeTab === item[0]} type="button" onclick={() => switchTab(item[0])}
+				>{item[1]}</button
+			>
+		{/each}
+	</nav>
+
+	{#if error}<div class="notice error" role="alert">{error}</div>{/if}
+
+	{#if activeTab === 'people'}
+		<section class="people-layout">
+			<div class="people-main">
+				<form
+					class="search-card"
+					onsubmit={(event) => {
+						event.preventDefault();
+						void runSearch();
+					}}
+				>
+					<div>
+						<p class="eyebrow">Find your people</p>
+						<h2>Search listeners</h2>
+					</div>
+					<div class="search-row">
+						<input
+							bind:value={query}
+							placeholder="Search by username or display name"
+							autocomplete="off"
+						/><button type="submit" disabled={searching || !query.trim()}
+							>{searching ? 'Searching…' : 'Search'}</button
+						>
+					</div>
+				</form>
+				{#if people.length}<div class="user-list">
+						{#each people as user (user.id)}<UserCard
+								{user}
+								busy={peopleBusy[user.username]}
+								onConnect={connect}
+								onCancel={cancel}
+								onAccept={accept}
+								onDecline={decline}
+							/>{/each}
+					</div>
+				{:else if query && !searching}<div class="empty">
+						No listeners matched that search.
+					</div>{/if}
+			</div>
+			<aside>
+				<section class="side-card">
+					<p class="eyebrow">Requests</p>
+					<h3>Friend requests</h3>
+					{#each requests.filter((r) => r.receiver_username === $authStore.user?.username) as request (request.id)}
+						{#if request.other_user}<UserCard
+								user={{
+									...request.other_user,
+									displayName: request.other_user.display_name,
+									avatarUrl: request.other_user.avatar_url,
+									musicInterests: request.other_user.music_interests,
+									friendCount: request.other_user.friend_count,
+									mutualFriendCount: request.other_user.mutual_friend_count,
+									relationshipStatus: 'request_received'
+								}}
+								busy={peopleBusy[request.other_user.username]}
+								onAccept={accept}
+								onDecline={decline}
+							/>{/if}
+					{:else}<p class="muted">No incoming requests.</p>{/each}
+				</section>
+				<section class="side-card">
+					<p class="eyebrow">Your circle</p>
+					<h3>{friends.length} friends</h3>
+					<div class="friend-mini">
+						{#each friends.slice(0, 5) as friend (friend.id)}<a
+								href={resolve(`/users/${encodeURIComponent(friend.username)}`)}
+								>{friend.displayName || friend.username}<span>@{friend.username}</span></a
+							>{/each}
+					</div>
+				</section>
+			</aside>
+		</section>
+	{:else}
+		<div class="feed-layout">
+			<section class="stream">
+				{#if $authStore.status === 'authenticated'}
+					<form class="composer" onsubmit={handlePost}>
+						<div class="composer-heading">
+							<div class="composer-avatar">
+								{($authStore.user?.username || 'ZX').slice(0, 2).toUpperCase()}
+							</div>
+							<div>
+								<strong
+									>{activeTab === 'discussions'
+										? 'Start a music discussion'
+										: "What's playing?"}</strong
+								><span
+									>{activeTab === 'friends'
+										? 'Visible to friends'
+										: activeTab === 'discussions'
+											? 'Ask, compare, or debate music'
+											: 'Share with the Zonix community'}</span
+								>
+							</div>
+						</div>
+						{#if activeTab === 'discussions'}<input
+								bind:value={title}
+								maxlength="160"
+								required
+								placeholder="Discussion title"
+							/>{/if}
+						<textarea
+							bind:value={body}
+							maxlength="5000"
+							required
+							placeholder={activeTab === 'discussions'
+								? 'What do you want to discuss?'
+								: 'Share a thought, track discovery, or moment…'}></textarea>
+						<div class="composer-tools">
+							<AttachmentUploader
+								disabled={posting || attachments.length >= 8}
+								onUploaded={(item) => (attachments = [...attachments, item])}
+							/>
+							{#if activeTab === 'discussions'}<label
+									><input type="checkbox" bind:checked={anonymous} /> Anonymous</label
+								>{:else if activeTab === 'explore'}<select bind:value={visibility}
+									><option value="public">Everyone</option><option value="friends">Friends</option
+									></select
+								>{/if}
+							<button
+								class="post-button"
+								type="submit"
+								disabled={posting || !body.trim() || (activeTab === 'discussions' && !title.trim())}
+								>{posting ? 'Posting…' : 'Post'}</button
+							>
+						</div>
+						{#if attachments.length}<div class="staged">
+								{#each attachments as item (item.id)}<span
+										>{item.filename}<button type="button" onclick={() => removeAttachment(item)}
+											>×</button
+										></span
+									>{/each}
+							</div>{/if}
+					</form>
+				{:else}<div class="signin-card">
+						Sign in to share music with the community. <a href={resolve('/login')}>Sign in</a>
+					</div>{/if}
+
+				{#if loading}<div class="empty">Loading the stream…</div>
+				{:else if posts.length === 0}<div class="empty">
+						{activeTab === 'friends'
+							? 'Your friends have not shared anything yet.'
+							: 'No posts here yet. Start the conversation.'}
+					</div>
+				{:else}<div class="post-list">
+						{#each posts as post (post.id)}<ForumPostCard
+								{post}
+								authenticated={$authStore.status === 'authenticated'}
+								onUpdate={(updated) =>
+									(posts = posts.map((p) => (p.id === updated.id ? updated : p)))}
+								onDelete={(id) => (posts = posts.filter((p) => p.id !== id))}
+								onRequireLogin={() => goto(resolve('/login'))}
+							/>{/each}
+					</div>{/if}
+			</section>
+			<aside class="context-card">
+				<p class="eyebrow">Zonix social loop</p>
+				<h3>Connect through sound</h3>
+				<p>
+					Listen → build your Music Identity → share a mix → friends react → discover more music.
+				</p>
+				<a href={resolve('/feed')}>Discover mixes →</a>
+			</aside>
+		</div>
+	{/if}
+</main>
+
+<style>
+	.community-page {
+		width: min(1180px, 100%);
+		margin: 0 auto;
+		padding: 42px 0 110px;
+	}
+	.hero {
+		display: flex;
+		justify-content: space-between;
+		gap: 24px;
+	}
+	.eyebrow {
+		margin: 0 0 6px;
+		color: #7d9cc7;
+		font-size: 11px;
+		font-weight: 900;
+		letter-spacing: 0.15em;
+		text-transform: uppercase;
+	}
+	h1 {
+		margin: 0;
+		font-size: clamp(42px, 7vw, 72px);
+		letter-spacing: -0.055em;
+	}
+	.hero p:last-child {
+		max-width: 720px;
+		color: #8c9db4;
+		line-height: 1.7;
+	}
+	.tabs {
+		display: flex;
+		gap: 8px;
+		margin: 26px 0;
+	}
+	.tabs button {
+		border: 1px solid rgba(125, 183, 255, 0.14);
+		border-radius: 999px;
+		padding: 10px 16px;
+		background: rgba(125, 183, 255, 0.04);
+		color: #8fa4c0;
+		font-weight: 900;
+	}
+	.tabs button.active {
+		border-color: rgba(115, 152, 255, 0.45);
+		background: linear-gradient(135deg, rgba(49, 101, 225, 0.28), rgba(116, 86, 218, 0.2));
+		color: white;
+	}
+	.notice,
+	.empty,
+	.signin-card {
+		padding: 18px;
+		border: 1px solid rgba(125, 183, 255, 0.14);
+		border-radius: 18px;
+		background: rgba(7, 15, 29, 0.72);
+		color: #8799b1;
+	}
+	.error {
+		border-color: rgba(255, 105, 135, 0.35);
+		color: #ffb2c0;
+	}
+	.feed-layout {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 300px;
+		gap: 22px;
+		align-items: start;
+	}
+	.stream,
+	.post-list {
+		display: grid;
+		gap: 16px;
+	}
+	.composer,
+	.search-card,
+	.side-card,
+	.context-card {
+		padding: 20px;
+		border: 1px solid rgba(125, 183, 255, 0.15);
+		border-radius: 24px;
+		background: linear-gradient(180deg, rgba(9, 18, 34, 0.9), rgba(5, 10, 20, 0.84));
+	}
+	.composer {
+		display: grid;
+		gap: 12px;
+	}
+	.composer-heading {
+		display: flex;
+		gap: 12px;
+		align-items: center;
+	}
+	.composer-heading > div:last-child {
+		display: grid;
+		gap: 2px;
+	}
+	.composer-heading span {
+		color: #74879f;
+		font-size: 12px;
+	}
+	.composer-avatar {
+		display: grid;
+		width: 42px;
+		height: 42px;
+		place-items: center;
+		border-radius: 14px;
+		background: linear-gradient(135deg, #315fb7, #705bd9);
+		font-size: 12px;
+		font-weight: 900;
+	}
+	.composer input,
+	.composer textarea,
+	.search-card input,
+	.composer select {
+		width: 100%;
+		border: 1px solid rgba(125, 183, 255, 0.14);
+		border-radius: 14px;
+		padding: 12px;
+		background: #050b16;
+		color: white;
+	}
+	.composer textarea {
+		min-height: 105px;
+		resize: vertical;
+	}
+	.composer-tools {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+	.composer-tools label {
+		display: flex;
+		gap: 7px;
+		align-items: center;
+		color: #8da0b9;
+		font-size: 12px;
+	}
+	.composer-tools label input {
+		width: auto;
+	}
+	.composer-tools select {
+		width: auto;
+	}
+	.post-button,
+	.search-row button {
+		margin-left: auto;
+		border: 0;
+		border-radius: 999px;
+		padding: 10px 17px;
+		background: linear-gradient(135deg, #356fe7, #735bd7);
+		color: white;
+		font-weight: 900;
+	}
+	.staged {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.staged span {
+		padding: 6px 9px;
+		border-radius: 999px;
+		background: rgba(125, 183, 255, 0.08);
+		color: #9cb5d5;
+		font-size: 11px;
+	}
+	.staged button {
+		border: 0;
+		background: none;
+		color: #ff9cad;
+	}
+	.context-card {
+		position: sticky;
+		top: 24px;
+	}
+	.context-card h3,
+	.side-card h3,
+	.search-card h2 {
+		margin: 0;
+	}
+	.context-card p {
+		color: #8395ad;
+		line-height: 1.6;
+	}
+	.context-card a,
+	.signin-card a {
+		color: #9fc9ff;
+		font-weight: 900;
+	}
+	.people-layout {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 360px;
+		gap: 22px;
+		align-items: start;
+	}
+	.people-main,
+	.user-list,
+	aside {
+		display: grid;
+		gap: 14px;
+	}
+	.search-card {
+		display: grid;
+		gap: 14px;
+	}
+	.search-row {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: 10px;
+	}
+	.search-row button {
+		margin: 0;
+	}
+	.friend-mini {
+		display: grid;
+		gap: 7px;
+		margin-top: 12px;
+	}
+	.friend-mini a {
+		display: flex;
+		justify-content: space-between;
+		gap: 10px;
+		color: #dbe9ff;
+		text-decoration: none;
+	}
+	.friend-mini span,
+	.muted {
+		color: #6f829c;
+		font-size: 12px;
+	}
+	@media (max-width: 900px) {
+		.feed-layout,
+		.people-layout {
+			grid-template-columns: 1fr;
+		}
+		.context-card {
+			position: static;
+		}
+	}
+	@media (max-width: 600px) {
+		.tabs {
+			overflow: auto;
+		}
+		.search-row {
+			grid-template-columns: 1fr;
+		}
+		.composer-tools {
+			align-items: stretch;
+		}
+		.post-button {
+			margin-left: 0;
+		}
+	}
+</style>

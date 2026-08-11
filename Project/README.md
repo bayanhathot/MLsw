@@ -22,8 +22,9 @@ migrations, and then starts the API and UI.
 | Persistent sessions, feedback, and user preferences | Implemented |
 | Audius mix planning with a controlled local fallback | Implemented prototype |
 | Mix library/feed, publishing, likes, and saves | Implemented UI/API vertical slice |
-| Forum posts/comments/votes and attachments | Implemented UI/API vertical slice |
-| Profiles, direct messages, and live/durable notifications | Implemented UI/API vertical slice |
+| Community: Friends/Explore/Discussions/People, posts/comments/votes, native mix sharing, and attachments | Implemented UI/API vertical slice |
+| Social-first public profiles, mutual friends, search/discovery, friend-only DMs, live/durable notifications, block/report | Implemented UI/API vertical slice |
+| Music Identity analytics, raw listening events, period filters, and private/friends/public visibility | Implemented full-stack infrastructure; Listening DNA ML intentionally deferred |
 | Bounded upload queue and persistent attachment volume | Implemented prototype; queue state is process-local |
 | Real audio segmentation/crossfading | Not implemented |
 | Trained prompt-to-segment model | Not implemented |
@@ -33,7 +34,8 @@ migrations, and then starts the API and UI.
 | Azure CD | Template only; VM, DNS, secrets, and first deployment are external prerequisites |
 
 The complete architecture, commands, limitations, security notes, and roadmap
-are in [ZONIX_PROJECT_README.md](ZONIX_PROJECT_README.md). The offline baseline
+are in [ZONIX_PROJECT_README.md](ZONIX_PROJECT_README.md). Music Identity data flow, privacy,
+future ML integration points, and a debugging checklist are in [MUSIC_IDENTITY.md](MUSIC_IDENTITY.md). The V3 social-product architecture and debugging flow are in [SOCIAL_PRODUCT_V3.md](SOCIAL_PRODUCT_V3.md), with an implementation summary in [IMPLEMENTATION_REPORT_V3.md](IMPLEMENTATION_REPORT_V3.md). The offline baseline
 is documented in [ML_PIPELINE.md](ML_PIPELINE.md), and deployment prerequisites
 are in [deploy/README.md](deploy/README.md). Generated dependencies and caches
 have been removed from the current Git index; the cleanup record and optional
