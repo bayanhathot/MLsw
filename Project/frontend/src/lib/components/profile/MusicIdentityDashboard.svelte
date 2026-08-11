@@ -19,6 +19,15 @@
 	let totalSeconds = $derived(Number(identity?.summary?.total_listening_seconds || 0));
 	let hasData = $derived(totalSeconds > 0);
 
+	/** @type {[('7d'|'30d'|'6m'|'all'), string][]} */
+	const periodOptions = [
+		['7d', '7D'],
+		['30d', '30D'],
+		['6m', '6M'],
+		['all', 'All time']
+	];
+
+	/** @param {number} seconds */
 	function duration(seconds) {
 		const safe = Math.max(0, Number(seconds || 0));
 		const hours = Math.floor(safe / 3600),
@@ -27,9 +36,11 @@
 		if (minutes) return `${minutes}m`;
 		return `${Math.floor(safe)}s`;
 	}
+	/** @param {{ seconds: number, percentage: number } | null | undefined} metric @param {string} fallback */
 	function metricDetail(metric, fallback) {
 		return metric ? `${duration(metric.seconds)} · ${metric.percentage}%` : fallback;
 	}
+	/** @param {string} value */
 	function dateLabel(value) {
 		const date = new Date(value);
 		return Number.isNaN(date.getTime())
@@ -58,7 +69,7 @@
 	<div class="period-row">
 		<span>Time window</span>
 		<div class="periods">
-			{#each [['7d', '7D'], ['30d', '30D'], ['6m', '6M'], ['all', 'All time']] as option (option[0])}<button
+			{#each periodOptions as option (option[0])}<button
 					class:active={(identity?.period || 'all') === option[0]}
 					disabled={periodBusy}
 					type="button"

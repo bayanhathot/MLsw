@@ -21,29 +21,50 @@
 	import { deleteAttachment } from '$lib/services/uploadApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
 
-	const validTabs = ['friends', 'explore', 'discussions', 'people'];
+	/** @type {[('friends'|'explore'|'discussions'|'people'), string][]} */
+	const tabOptions = [
+		['friends', 'Friends'],
+		['explore', 'Explore'],
+		['discussions', 'Discussions'],
+		['people', 'People']
+	];
+	/** @param {string | null} value @returns {value is 'friends'|'explore'|'discussions'|'people'} */
+	function isValidTab(value) {
+		return tabOptions.some(([key]) => key === value);
+	}
+
+	/** @type {'friends'|'explore'|'discussions'|'people'} */
 	let activeTab = $state('explore');
+	/** @type {import('$lib/types.js').ForumPost[]} */
 	let posts = $state([]);
 	let loading = $state(true);
 	let error = $state('');
 	let body = $state('');
 	let title = $state('');
 	let anonymous = $state(false);
+	/** @type {'public'|'friends'} */
 	let visibility = $state('public');
 	let posting = $state(false);
+	/** @type {Record<string, any>[]} */
 	let attachments = $state([]);
 	let query = $state('');
+	/** @type {import('$lib/types.js').SocialUser[]} */
 	let people = $state([]);
+	/** @type {import('$lib/types.js').SocialUser[]} */
 	let friends = $state([]);
+	/** @type {import('$lib/types.js').FriendRequestEntry[]} */
 	let requests = $state([]);
+	/** @type {Record<string, boolean>} */
 	let peopleBusy = $state({});
 	let searching = $state(false);
+	/** @type {WebSocket | null} */
 	let communitySocket = null;
+	/** @type {ReturnType<typeof setTimeout> | null} */
 	let refreshTimer = null;
 
 	onMount(() => {
 		const requested = page.url.searchParams.get('tab');
-		activeTab = validTabs.includes(requested || '') ? requested : 'explore';
+		activeTab = isValidTab(requested) ? requested : 'explore';
 		void loadActive();
 		connectCommunitySocket();
 	});
@@ -69,6 +90,7 @@
 		}
 	}
 
+	/** @param {'friends'|'explore'|'discussions'|'people'} tab */
 	async function switchTab(tab) {
 		activeTab = tab;
 		error = '';
@@ -123,6 +145,7 @@
 		}
 	}
 
+	/** @param {SubmitEvent} event */
 	async function handlePost(event) {
 		event.preventDefault();
 		if ($authStore.status !== 'authenticated') return goto(resolve('/login'));
@@ -151,6 +174,7 @@
 		}
 	}
 
+	/** @param {Record<string, any>} item */
 	async function removeAttachment(item) {
 		try {
 			await deleteAttachment(Number(item.id));
@@ -160,10 +184,12 @@
 		}
 	}
 
+	/** @param {string} username */
 	function requestFor(username) {
 		return requests.find((request) => request.other_user?.username === username);
 	}
 
+	/** @param {import('$lib/types.js').SocialUser} user */
 	async function connect(user) {
 		peopleBusy = { ...peopleBusy, [user.username]: true };
 		try {
@@ -179,6 +205,7 @@
 		}
 	}
 
+	/** @param {import('$lib/types.js').SocialUser} user */
 	async function cancel(user) {
 		peopleBusy = { ...peopleBusy, [user.username]: true };
 		try {
@@ -193,6 +220,7 @@
 		}
 	}
 
+	/** @param {import('$lib/types.js').SocialUser} user */
 	async function accept(user) {
 		const request = requestFor(user.username);
 		if (!request) return;
@@ -209,6 +237,7 @@
 		}
 	}
 
+	/** @param {import('$lib/types.js').SocialUser} user */
 	async function decline(user) {
 		const request = requestFor(user.username);
 		if (!request) return;
@@ -241,7 +270,7 @@
 	</header>
 
 	<nav class="tabs" aria-label="Community sections">
-		{#each [['friends', 'Friends'], ['explore', 'Explore'], ['discussions', 'Discussions'], ['people', 'People']] as item (item[0])}
+		{#each tabOptions as item (item[0])}
 			<button class:active={activeTab === item[0]} type="button" onclick={() => switchTab(item[0])}
 				>{item[1]}</button
 			>

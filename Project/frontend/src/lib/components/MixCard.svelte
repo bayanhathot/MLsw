@@ -15,6 +15,7 @@
 	let hasAudio = $derived(mix.segments.some((segment) => Boolean(segment.audioUrl)));
 	let shareOpen = $state(false);
 	let shareCaption = $state('');
+	/** @type {'public'|'friends'} */
 	let shareVisibility = $state('public');
 	let shareBusy = $state(false);
 	let shareMessage = $state('');

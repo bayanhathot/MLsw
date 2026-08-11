@@ -12,7 +12,7 @@ function normalizeAttachment(value) {
 	};
 }
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {import('../types.js').DirectMessage} */
 export function normalizeMessage(value) {
 	const raw = /** @type {Record<string, any>} */ (value || {});
 	return {
@@ -28,7 +28,7 @@ export function normalizeMessage(value) {
 	};
 }
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {import('../types.js').AppNotification} */
 export function normalizeNotification(value) {
 	const raw = /** @type {Record<string, any>} */ (value || {});
 	return {
@@ -43,7 +43,7 @@ export function normalizeNotification(value) {
 	};
 }
 
-/** @param {{ signal?: AbortSignal }} [options] */
+/** @param {{ signal?: AbortSignal }} [options] @returns {Promise<import('../types.js').Conversation[]>} */
 export async function getConversations({ signal } = {}) {
 	const response = await apiRequest('/conversations', { signal });
 	if (!Array.isArray(response)) throw new TypeError('The server returned invalid conversations.');

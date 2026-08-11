@@ -2,6 +2,16 @@
 
 import { API_BASE_URL, apiRequest, backendMediaUrl } from './api.js';
 
+/** @param {unknown} value @returns {'discussion'|'status'|'mix_share'} */
+function normalizePostKind(value) {
+	return value === 'status' || value === 'mix_share' ? value : 'discussion';
+}
+
+/** @param {unknown} value @returns {'public'|'friends'} */
+function normalizeVisibility(value) {
+	return value === 'friends' ? 'friends' : 'public';
+}
+
 /** @param {unknown} value */
 function normalizeAttachment(value) {
 	const raw = /** @type {Record<string, any>} */ (value || {});
@@ -27,8 +37,8 @@ export function normalizePost(value) {
 		title: String(raw.title || 'Untitled'),
 		body: String(raw.body || ''),
 		isAnonymous: Boolean(raw.is_anonymous),
-		kind: String(raw.kind || 'discussion'),
-		visibility: String(raw.visibility || 'public'),
+		kind: normalizePostKind(raw.kind),
+		visibility: normalizeVisibility(raw.visibility),
 		mix:
 			raw.mix && typeof raw.mix === 'object'
 				? {
@@ -68,7 +78,7 @@ export function normalizeComment(value) {
 	};
 }
 
-/** @param {{ limit?: number, offset?: number, signal?: AbortSignal }} [options] */
+/** @param {{ limit?: number, offset?: number, mode?: 'explore'|'friends'|'discussions', signal?: AbortSignal }} [options] */
 export async function getPosts({ limit = 10, offset = 0, mode = 'explore', signal } = {}) {
 	const response = await apiRequest(
 		`/posts/feed?mode=${encodeURIComponent(mode)}&limit=${limit}&offset=${offset}`,

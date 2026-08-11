@@ -17,9 +17,11 @@
 	let isLoggingOut = $state(false);
 	let logoutError = $state('');
 	let notificationsOpen = $state(false);
+	/** @type {import('$lib/types.js').AppNotification[]} */
 	let notifications = $state([]);
 	let messageUnread = $state(0);
 	let socialLoadedFor = $state('');
+	/** @type {WebSocket | null} */
 	let socket = null;
 
 	let unreadNotifications = $derived(notifications.filter((item) => !item.is_read).length);
@@ -41,6 +43,7 @@
 
 	onDestroy(closeSocket);
 
+	/** @param {string} path */
 	function isCurrent(path) {
 		return path === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(path);
 	}
@@ -71,7 +74,7 @@
 		if (!url) return;
 		try {
 			socket = new WebSocket(url);
-			socket.onmessage = (event) => {
+			socket.onmessage = (/** @type {MessageEvent} */ event) => {
 				try {
 					const item = normalizeNotification(JSON.parse(event.data));
 					notifications = [item, ...notifications.filter((existing) => existing.id !== item.id)];
@@ -86,6 +89,7 @@
 		}
 	}
 
+	/** @param {import('$lib/types.js').AppNotification} item */
 	function notificationHref(item) {
 		if (item.kind === 'direct_message') return '/messages';
 		if (item.kind === 'friend_request' || item.kind === 'friend_accepted')
@@ -95,6 +99,7 @@
 		return '/community';
 	}
 
+	/** @param {import('$lib/types.js').AppNotification} item */
 	async function openNotification(item) {
 		if (!item.is_read) {
 			try {

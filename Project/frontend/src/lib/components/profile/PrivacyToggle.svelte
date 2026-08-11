@@ -6,6 +6,12 @@
 		friends: ['Friends can see it', 'Only accepted friends can view your Music Identity.', '◉'],
 		public: ['Public Music Identity', 'Anyone can view your Music Identity on your profile.', '◎']
 	};
+	/** @type {[('private'|'friends'|'public'), string][]} */
+	const visibilityOptions = [
+		['private', 'Only me'],
+		['friends', 'Friends'],
+		['public', 'Everyone']
+	];
 </script>
 
 <div
@@ -21,7 +27,7 @@
 		</div>
 	</div>
 	<div class="segmented" aria-label="Music Identity visibility">
-		{#each [['private', 'Only me'], ['friends', 'Friends'], ['public', 'Everyone']] as item (item[0])}
+		{#each visibilityOptions as item (item[0])}
 			<button
 				type="button"
 				class:active={visibility === item[0]}

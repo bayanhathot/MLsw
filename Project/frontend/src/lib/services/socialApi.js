@@ -1,6 +1,6 @@
 import { apiRequest } from './api.js';
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {import('../types.js').SocialUser} */
 export function normalizeUserCard(value) {
 	const raw = /** @type {Record<string, any>} */ (value || {});
 	return {
@@ -16,6 +16,7 @@ export function normalizeUserCard(value) {
 	};
 }
 
+/** @param {string} query */
 export async function searchUsers(query) {
 	const response = await apiRequest(`/users/search?q=${encodeURIComponent(query)}`);
 	return Array.isArray(response) ? response.map(normalizeUserCard) : [];
@@ -37,6 +38,7 @@ export async function getPublicFriends(username) {
 	return Array.isArray(response) ? response.map(normalizeUserCard) : [];
 }
 
+/** @returns {Promise<import('../types.js').FriendRequestEntry[]>} */
 export async function getFriendRequests() {
 	const response = await apiRequest('/friends/requests');
 	return Array.isArray(response) ? response : [];

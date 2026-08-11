@@ -32,13 +32,18 @@
 	let trackedUsername = $state('');
 	let loading = $state(true);
 	let error = $state('');
+	/** @type {import('$lib/types.js').PublicProfile | null} */
 	let profile = $state(null);
+	/** @type {import('$lib/types.js').PublicMusicIdentity | null} */
 	let publicIdentity = $state(null);
+	/** @type {import('$lib/types.js').Mix[]} */
 	let mixes = $state([]);
+	/** @type {import('$lib/types.js').SocialUser[]} */
 	let friends = $state([]);
 	let activeTab = $state('overview');
 	let relationshipBusy = $state(false);
 	let periodBusy = $state(false);
+	/** @type {Record<string, string>} */
 	let mixBusy = $state({});
 
 	$effect(() => {
@@ -48,6 +53,7 @@
 		}
 	});
 
+	/** @param {string} name */
 	async function load(name) {
 		loading = true;
 		error = '';

@@ -16,16 +16,20 @@
 	import { deleteAttachment } from '$lib/services/uploadApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
 
+	/** @type {import('$lib/types.js').Conversation[]} */
 	let conversations = $state([]);
 	let activeUsername = $state('');
+	/** @type {import('$lib/types.js').DirectMessage[]} */
 	let messages = $state([]);
 	let loading = $state(true);
 	let loadingThread = $state(false);
 	let error = $state('');
 	let body = $state('');
 	let sending = $state(false);
+	/** @type {Record<string, any>[]} */
 	let attachments = $state([]);
 	let inboxLoadedFor = $state('');
+	/** @type {WebSocket | null} */
 	let socket = null;
 
 	$effect(() => {
@@ -52,7 +56,7 @@
 		try {
 			socket = new WebSocket(url);
 			socket.onopen = () => socket?.send('ready');
-			socket.onmessage = (event) => {
+			socket.onmessage = (/** @type {MessageEvent} */ event) => {
 				try {
 					const notification = normalizeNotification(JSON.parse(event.data));
 					const incoming = notification.direct_message;
@@ -105,6 +109,7 @@
 		}
 	}
 
+	/** @param {string} username */
 	async function openConversation(username) {
 		if (!username) return;
 		activeUsername = username;
@@ -126,6 +131,7 @@
 		}
 	}
 
+	/** @param {SubmitEvent} event */
 	async function send(event) {
 		event.preventDefault();
 		if (!activeUsername || !body.trim() || sending) return;
@@ -158,6 +164,7 @@
 		}
 	}
 
+	/** @param {Record<string, any>} item */
 	async function removeAttachment(item) {
 		try {
 			await deleteAttachment(Number(item.id));
@@ -167,6 +174,7 @@
 		}
 	}
 
+	/** @param {string} value */
 	function labelTime(value) {
 		const date = new Date(value);
 		return Number.isNaN(date.getTime())
