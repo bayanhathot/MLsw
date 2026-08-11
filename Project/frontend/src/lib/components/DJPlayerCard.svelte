@@ -163,6 +163,7 @@
    * handful of times per second - too coarse for a smooth-looking
    * progress bar. This runs continuously and simply no-ops while paused.
    */
+  /** @type {number | null} */
   let progressFrameId = null;
 
   function stepProgressFrame() {

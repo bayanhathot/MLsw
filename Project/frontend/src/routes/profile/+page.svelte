@@ -15,6 +15,12 @@
   let avatarUrl = $state("");
   let bio = $state("");
   let genresText = $state("");
+  /** @typedef {import("$lib/services/profileApi.js").ThemePreference} ThemePreference */
+
+  /** @type {ThemePreference[]} */
+  const THEME_OPTIONS = ["dark", "light", "system"];
+
+  /** @type {ThemePreference} */
   let themePreference = $state("dark");
 
   let isSaving = $state(false);
@@ -130,7 +136,7 @@
 
       <span class="field-label">Theme</span>
       <div class="theme-options">
-        {#each ["dark", "light", "system"] as option}
+        {#each THEME_OPTIONS as option}
           <button
             type="button"
             class="theme-option"

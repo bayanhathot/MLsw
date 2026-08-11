@@ -88,9 +88,14 @@
   }
 
   $effect(() => {
-    loadProfile($page.params.username);
-    loadPosts($page.params.username);
-    loadStats($page.params.username);
+    // SvelteKit types route params as possibly undefined, so guard before use.
+    const username = $page.params.username;
+
+    if (!username) return;
+
+    loadProfile(username);
+    loadPosts(username);
+    loadStats(username);
   });
 
   /**

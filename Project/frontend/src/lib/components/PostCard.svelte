@@ -66,6 +66,7 @@
   // fill bar). Kept separate from currentTime so the play-tracking delta
   // math in handleTimeUpdate below stays untouched and correct.
   let visualTime = $state(0);
+  /** @type {number | null} */
   let progressFrameId = null;
 
   /** @type {HTMLAudioElement | null} */
@@ -154,6 +155,9 @@
     };
   });
 
+  /**
+   * @param {number} index
+   */
   function goToSegment(index) {
     if (index < 0 || index >= segments.length) return;
 

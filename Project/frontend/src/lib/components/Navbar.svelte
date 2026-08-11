@@ -17,9 +17,15 @@
   import { authStore } from "$lib/stores/authStore.js";
   import { profileStore } from "$lib/stores/profileStore.js";
 
+  /** @typedef {import("$lib/services/profileApi.js").ThemePreference} ThemePreference */
+
+  /** @type {ThemePreference[]} */
   const THEME_CYCLE = ["dark", "light", "system"];
+
+  /** @type {Record<ThemePreference, string>} */
   const THEME_ICONS = { dark: "☾", light: "☼", system: "◐" };
 
+  /** @type {ThemePreference} */
   let guestTheme = $state("system");
 
   const currentTheme = $derived(
