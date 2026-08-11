@@ -77,6 +77,7 @@
 		return false;
 	}
 
+	/** @param {import('$lib/types.js').Mix} mix */
 	async function toggleLike(mix) {
 		if (!requireAccount() || mixBusy[mix.id]) return;
 		const desired = !mix.isLiked;
@@ -108,6 +109,7 @@
 		}
 	}
 
+	/** @param {import('$lib/types.js').Mix} mix */
 	async function toggleSave(mix) {
 		if (!requireAccount() || mixBusy[mix.id]) return;
 		const desired = !mix.isSaved;
@@ -127,6 +129,7 @@
 		}
 	}
 
+	/** @param {'7d'|'30d'|'6m'|'all'} period */
 	async function changePeriod(period) {
 		if (periodBusy) return;
 		periodBusy = true;
@@ -204,6 +207,7 @@
 		}
 	}
 
+	/** @param {boolean} accept */
 	async function respond(accept) {
 		relationshipBusy = true;
 		try {

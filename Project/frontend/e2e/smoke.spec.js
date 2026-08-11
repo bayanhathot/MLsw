@@ -149,7 +149,7 @@ test('authenticated library, Music Identity profile, and messages load their API
 
 	await page.getByRole('link', { name: 'Your profile' }).click();
 	await expect(page.getByRole('heading', { name: 'Test Listener' })).toBeVisible();
-	await expect(page.getByText('Your Music Identity')).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Your Music Identity' })).toBeVisible();
 
 	await page.getByRole('link', { name: 'Messages' }).click();
 	await expect(page.getByRole('heading', { name: 'Messages' })).toBeVisible();
