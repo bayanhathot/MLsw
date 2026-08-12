@@ -114,6 +114,12 @@ services:
     image: caddy:2.10.0-alpine
     environment:
       DOMAIN: "${DOMAIN:?DOMAIN is required}"
+    # Explicit public resolvers: on this host, Docker's default DNS
+    # forwarding to systemd-resolved's 127.0.0.53 stub is not reachable from
+    # inside the container, which blocks the ACME/Let's Encrypt TLS lookups.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "80:80"
       - "443:443"
