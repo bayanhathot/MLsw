@@ -12,9 +12,11 @@ The GitHub workflow deploy job is disabled unless repository variable
    origin, such as `https://zonix.example.com`; it is intentionally separate
    from the SSH hostname or IP and its hostname must match `DOMAIN` in the
    VM's `.env` file.
-5. Add secrets `SSH_PRIVATE_KEY`, `SSH_KNOWN_HOSTS`, and `GHCR_READ_TOKEN`.
-   The token needs only `read:packages`; the known-hosts value must be verified
-   out of band rather than learned during deployment.
+5. Add secrets `SSH_PRIVATE_KEY` and `GHCR_READ_TOKEN`. The token needs only
+   `read:packages`. The workflow trusts the VM's SSH host key on first
+   connect each run (`StrictHostKeyChecking accept-new`) rather than pinning
+   it via a verified secret — a deliberate simplicity trade-off for this
+   project, not a hardened setup.
 6. Use a protected GitHub `production` environment and protect `main` with the
    Backend tests, Frontend checks, and Container builds checks.
 

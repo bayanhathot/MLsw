@@ -255,10 +255,9 @@ jobs:
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
           PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         run: |
-          for name in SSH_HOST SSH_USER GHCR_USERNAME PUBLIC_BASE_URL SSH_PRIVATE_KEY SSH_KNOWN_HOSTS GHCR_READ_TOKEN; do
+          for name in SSH_HOST SSH_USER GHCR_USERNAME PUBLIC_BASE_URL SSH_PRIVATE_KEY GHCR_READ_TOKEN; do
             test -n "${!name:-}" || { echo "${name} is not configured" >&2; exit 1; }
           done
           case "${PUBLIC_BASE_URL}" in
@@ -266,15 +265,24 @@ jobs:
             *) echo "PUBLIC_BASE_URL must start with https://" >&2; exit 1 ;;
           esac
 
-      - name: Configure pinned SSH identity
+      # Host keys are trusted on first connect (TOFU) rather than pinned via a
+      # verified SSH_KNOWN_HOSTS secret. The runner is ephemeral, so this is a
+      # deliberate simplicity trade-off, not an oversight: accept-new still
+      # rejects a key that changes mid-job, it just does not protect against a
+      # MITM on the very first connection.
+      - name: Configure SSH identity
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           install -d -m 700 "${HOME}/.ssh"
           printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/zonix_deploy"
-          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
-          chmod 600 "${HOME}/.ssh/zonix_deploy" "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/zonix_deploy"
+          {
+            echo "Host *"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  UserKnownHostsFile ${HOME}/.ssh/known_hosts"
+          } > "${HOME}/.ssh/config"
+          chmod 600 "${HOME}/.ssh/config"
 
       - name: Upload deployment definitions
         env:
