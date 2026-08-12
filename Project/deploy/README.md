@@ -1,7 +1,14 @@
 # Production deployment template
 
-The GitHub workflow deploy job is disabled unless repository variable
-`DEPLOY_ENABLED` equals `true`. Before enabling it:
+CI (tests, build, and publishing images to GHCR) runs automatically on every
+push to `main` and needs no VM access at all — that part is complete and
+does not require anything below.
+
+The separate "Deploy to Azure VM" job only runs when repository variable
+`VM_DEPLOY_ENABLED` equals `true`. It is intentionally left unset for now:
+this VM belongs to the course rather than the team, and the one-time setup
+below hasn't been done. Leaving it unset keeps every CI run green without
+touching the VM. Before setting it to `true`:
 
 1. Install Docker Engine and Compose v2 on the supplied Azure VM.
 2. Point the VM's DNS name at it and allow inbound TCP 22/80/443 and UDP 443.

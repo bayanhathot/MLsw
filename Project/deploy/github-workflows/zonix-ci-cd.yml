@@ -243,6 +243,12 @@ jobs:
     name: Deploy to Azure VM
     runs-on: ubuntu-latest
     needs: [publish-images]
+    # Separate from DEPLOY_ENABLED (which only gates publishing images to
+    # GHCR): this VM belongs to the course, not the team, and the one-time
+    # `.env` + Docker setup on it isn't done yet. Leaving this variable unset
+    # keeps CI green (tests run, images publish) without touching the VM.
+    # Flip vars.VM_DEPLOY_ENABLED to "true" once that VM setup is complete.
+    if: needs.publish-images.result == 'success' && vars.VM_DEPLOY_ENABLED == 'true'
     environment: production
     steps:
       - name: Check out repository
