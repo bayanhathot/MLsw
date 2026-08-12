@@ -4,7 +4,7 @@ Zonix is a SvelteKit, FastAPI, and PostgreSQL prototype for prompt-guided DJ
 sessions. It currently has a working UI/API/database vertical slice; it is not
 yet a trained music model or a real audio-transition engine.
 
-## Quick start
+## Quick startt
 
 ```powershell
 Copy-Item .env.example .env
