@@ -34,6 +34,11 @@ class DJSession(Base):
     now_playing_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Serialized ReasoningRead-shaped data (selectedMoment/transitionPlan/nextDirection).
     reasoning_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Per-stage debug trace (implementation name + short result) for the most
+    # recent pipeline resolution -- read by the internal debug panel
+    # (routers/debug.py); never read by the ordinary session flow, so it's
+    # nullable and safe to leave unset on older rows.
+    pipeline_trace_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     selected_feedback: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

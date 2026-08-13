@@ -277,4 +277,34 @@
  * @property {string | null} error
  */
 
+/**
+ * Internal AI-DJ pipeline / Ollama debug panel (GET /debug/pipeline).
+ *
+ * @typedef {Object} PipelineDebugSession
+ * @property {string} session_id
+ * @property {string} prompt
+ * @property {'playing'|'stopped'} status
+ * @property {number | null} user_id
+ * @property {string} retriever_name
+ * @property {string} vibe_label
+ * @property {string} updated_at
+ * @property {Record<string, any> | null} trace
+ */
+
+/**
+ * @typedef {Object} PipelineDebugOllama
+ * @property {boolean} configured
+ * @property {boolean} reachable
+ * @property {string | null} error
+ * @property {string | null} configured_model
+ * @property {string[]} loaded_models
+ * @property {{ at: string | null, latency_ms: number | null, ok: boolean | null }} last_call
+ */
+
+/**
+ * @typedef {Object} PipelineDebugState
+ * @property {PipelineDebugOllama} ollama
+ * @property {PipelineDebugSession[]} sessions
+ */
+
 export {};

@@ -7,7 +7,7 @@ never reach the service layer.
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -562,6 +562,47 @@ class RenderedAudio(BaseModel):
     audio_url: str
     offsets: list[tuple[int, int]]
     is_pass_through: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Internal pipeline/Ollama debug panel (routers/debug.py). Observability
+# only -- read-only reflections of state the pipeline/session layer already
+# produces, never accepted as input.
+# ---------------------------------------------------------------------------
+
+
+class SessionPipelineDebugRead(BaseModel):
+    session_id: str
+    prompt: str
+    status: Literal["playing", "stopped"]
+    user_id: int | None
+    retriever_name: str
+    vibe_label: str
+    updated_at: datetime
+    # Per-stage {implementation, ...short result} trace built in
+    # session_manager._resolve_and_render; None for sessions created before
+    # this column existed.
+    trace: dict[str, Any] | None = None
+
+
+class OllamaLastCallRead(BaseModel):
+    at: datetime | None = None
+    latency_ms: float | None = None
+    ok: bool | None = None
+
+
+class OllamaHealthRead(BaseModel):
+    configured: bool
+    reachable: bool
+    error: str | None = None
+    configured_model: str | None = None
+    loaded_models: list[str] = Field(default_factory=list)
+    last_call: OllamaLastCallRead
+
+
+class PipelineDebugRead(BaseModel):
+    ollama: OllamaHealthRead
+    sessions: list[SessionPipelineDebugRead]
 
 
 class CatalogTrackRead(BaseModel):

@@ -32,6 +32,7 @@
 	import HeroSection from '$lib/components/HeroSection.svelte';
 	import PromptComposer from '$lib/components/PromptComposer.svelte';
 	import DJPlayerCard from '$lib/components/DJPlayerCard.svelte';
+	import PipelineDebugPanel from '$lib/components/PipelineDebugPanel.svelte';
 
 	/* Local UI-only state:
      Tracks whether the compact prompt panel is currently open while a session is active.
@@ -145,6 +146,8 @@
 	onMediaEnded={sessionStore.mediaEnded}
 	onMediaError={sessionStore.mediaError}
 />
+
+<PipelineDebugPanel />
 
 <style>
 	.home-stage {

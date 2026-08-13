@@ -250,6 +250,27 @@ retriever-agnostic (it reads persisted `MixSegment` columns) and didn't need
 to change. Music Identity therefore gets one consistent event stream no
 matter which engine served a given track.
 
+## Internal pipeline/Ollama debug panel
+
+`session_manager._resolve_and_render` also builds a `pipeline_trace` dict --
+which concrete implementation handled each of the four downstream stages
+(candidate retriever, segment selector, transition planner, audio renderer)
+plus a short result from each -- stored on `DJSession.pipeline_trace_json`
+alongside `now_playing_json`/`reasoning_json`. `create_session` fills in the
+`vibe_understander` stage as `invoked: true`; feedback-triggered
+re-resolution fills it in as `invoked: false` (feedback mutates the stored
+intent deterministically and never calls the LLM again).
+
+`GET /debug/pipeline` (`routers/debug.py`) returns the trace for recent
+sessions plus a live Ollama health probe (`pipeline/ollama_health.py`:
+reachable, currently loaded model(s) via `/api/ps`) and the latency/outcome
+of the last *real* `parse_prompt` call (tracked in `prompt_parser.py`, not a
+synthetic ping). `WS /debug/ws` pushes an invalidation signal on every new
+trace, same pattern as `/posts/ws/community`. Both are gated behind
+`ENABLE_PIPELINE_DEBUG` (off by default) and a logged-in user -- see
+`ZONIX_PROJECT_README.md`'s "Internal debug panel" section. Observability
+only: nothing here can trigger or change pipeline behavior.
+
 ## Deliberately left for later
 
 - **A real trained ranking/recommendation model.** This design has no

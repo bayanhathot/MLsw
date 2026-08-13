@@ -18,6 +18,10 @@ x-backend-environment: &backend-environment
   UPLOAD_QUEUE_CAPACITY: ${UPLOAD_QUEUE_CAPACITY:-32}
   UPLOAD_JOB_TTL_SECONDS: ${UPLOAD_JOB_TTL_SECONDS:-3600}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
+  # Internal AI-DJ pipeline / Ollama debug panel. Off by default; keep it off
+  # unless an operator is actively debugging, even though it also requires a
+  # logged-in user.
+  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-false}
   # Ollama is the sole LLM option and the production default: fully local,
   # no hosted-API key to provision. Set VIBE_LLM_PROVIDER=none to skip the
   # LLM step entirely instead.

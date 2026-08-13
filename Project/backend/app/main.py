@@ -41,6 +41,7 @@ from app.routers.listening import router as listening_router
 from app.routers.profiles import router as profiles_router
 from app.routers.uploads import router as uploads_router
 from app.routers.social import router as social_router
+from app.routers.debug import router as debug_router
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -139,6 +140,7 @@ app.include_router(uploads_router)
 app.include_router(social_router)
 app.include_router(catalog_router)
 app.include_router(media_router)
+app.include_router(debug_router)
 
 
 # ---------------------------------------------------------

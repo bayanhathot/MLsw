@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_now
 from app.database.models.session import DJSession, SessionFeedback, UserPreference
 from app.schemas import (
     NowPlayingRead,
@@ -22,7 +23,7 @@ from app.schemas import (
     SessionRead,
     Track,
 )
-from app.services.pipeline.dependencies import CANDIDATE_RETRIEVERS
+from app.services.pipeline.dependencies import CANDIDATE_RETRIEVERS, get_vibe_understander
 from app.services.pipeline.interfaces import (
     AudioRenderer,
     CandidateRetriever,
@@ -31,6 +32,7 @@ from app.services.pipeline.interfaces import (
     VibeUnderstander,
 )
 from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates
+from app.services.pipeline_debug_service import notify_pipeline_debug_change
 
 COVER_URL = "/brand/zonix-logo.svg"
 
@@ -135,11 +137,16 @@ def _resolve_and_render(
     *,
     previous_segment: SelectedSegment | None,
     prefers_smoother: bool,
-) -> tuple[Track, SelectedSegment, dict, dict]:
+) -> tuple[Track, SelectedSegment, dict, dict, dict]:
     """Runs CandidateRetriever -> SegmentSelector -> TransitionPlanner ->
     AudioRenderer for one session-sized (single track) resolution and
-    returns the pieces needed to persist SessionState. Raises
-    NoMatchingCandidate when the retriever plainly found nothing."""
+    returns the pieces needed to persist SessionState, plus a pipeline_trace
+    dict recording which concrete implementation handled each of those four
+    stages and a short result from each -- read by the internal debug panel
+    (routers/debug.py). The caller fills in the vibe_understander stage,
+    since understand() may or may not have been called this resolution
+    (feedback re-resolves without a new LLM call). Raises NoMatchingCandidate
+    when the retriever plainly found nothing."""
 
     candidates = retrieve_candidates(db, intent, retriever, limit=5)
     track = candidates[0]
@@ -160,7 +167,40 @@ def _resolve_and_render(
         "selectedMoment": _selected_moment_text(segment),
         "transitionPlan": transition.notes,
     }
-    return track, segment, now_playing, reasoning
+    pipeline_trace = {
+        "candidate_retriever": {
+            "implementation": type(retriever).__name__,
+            "name": retriever.name,
+            "candidate_count": len(candidates),
+            "selected_track": {
+                "source": track.source,
+                "source_track_id": track.source_track_id,
+                "title": track.title,
+                "artist": track.artist,
+            },
+        },
+        "segment_selector": {
+            "implementation": type(selector).__name__,
+            "method": segment.method,
+            "start_second": segment.start_second,
+            "end_second": segment.end_second,
+            "bpm": segment.bpm,
+            "musical_key": segment.musical_key,
+        },
+        "transition_planner": {
+            "implementation": type(planner).__name__,
+            "crossfade_ms": transition.crossfade_ms,
+            "style": transition.style,
+            "notes": transition.notes,
+        },
+        "audio_renderer": {
+            "implementation": type(renderer).__name__,
+            "is_pass_through": rendered.is_pass_through,
+            "offset_count": len(rendered.offsets),
+        },
+        "resolved_at": utc_now().isoformat(),
+    }
+    return track, segment, now_playing, reasoning, pipeline_trace
 
 
 def serialize_session(session: DJSession) -> SessionRead:
@@ -220,10 +260,15 @@ def create_session(
     renderer: AudioRenderer,
 ) -> SessionRead:
     intent = _initial_intent(prompt, db, user_id, vibe)
-    _, _, now_playing, reasoning = _resolve_and_render(
+    _, _, now_playing, reasoning, pipeline_trace = _resolve_and_render(
         db, intent, retriever, selector, planner, renderer,
         previous_segment=None, prefers_smoother=False,
     )
+    pipeline_trace["vibe_understander"] = {
+        "implementation": type(vibe).__name__,
+        "invoked": True,
+        "intent": intent.model_dump(mode="json"),
+    }
 
     session = DJSession(
         id=f"session_{uuid4().hex}",
@@ -235,10 +280,12 @@ def create_session(
         intent_json=intent.model_dump(mode="json"),
         now_playing_json=now_playing,
         reasoning_json=reasoning,
+        pipeline_trace_json=pipeline_trace,
     )
     db.add(session)
     db.commit()
     db.refresh(session)
+    notify_pipeline_debug_change()
     return serialize_session(session)
 
 
@@ -277,18 +324,30 @@ def apply_feedback(
     else:
         mutated, prefers_smoother = current_intent, False
 
+    resolved_again = False
     if mutated is not current_intent or prefers_smoother:
         retriever = CANDIDATE_RETRIEVERS[session.retriever_name]
         previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
         try:
-            _, _, now_playing, reasoning = _resolve_and_render(
+            _, _, now_playing, reasoning, pipeline_trace = _resolve_and_render(
                 db, mutated, retriever, selector, planner, renderer,
                 previous_segment=previous_segment, prefers_smoother=prefers_smoother,
             )
+            # Feedback mutates the stored intent with fixed keyword rules
+            # (_mutate_intent) rather than calling the LLM again -- invoked
+            # stays False so the debug panel doesn't imply a call that never
+            # happened, while still naming which implementation is bound.
+            pipeline_trace["vibe_understander"] = {
+                "implementation": type(get_vibe_understander()).__name__,
+                "invoked": False,
+                "intent": mutated.model_dump(mode="json"),
+            }
             session.intent_json = mutated.model_dump(mode="json")
             session.now_playing_json = now_playing
             session.reasoning_json = reasoning
+            session.pipeline_trace_json = pipeline_trace
             session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
+            resolved_again = True
         except NoMatchingCandidate:
             # Nothing matched the mutated intent closely enough; keep the
             # session on its current track rather than erroring out a live
@@ -311,6 +370,8 @@ def apply_feedback(
 
     db.commit()
     db.refresh(session)
+    if resolved_again:
+        notify_pipeline_debug_change()
     return serialize_session(session)
 
 

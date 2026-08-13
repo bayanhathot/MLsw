@@ -26,3 +26,13 @@ def public_api_url(path: str) -> str:
         "BACKEND_PUBLIC_URL", os.getenv("ROOT_PATH", "/api")
     ).strip().rstrip("/")
     return f"{base}{path}" if base else path
+
+
+def pipeline_debug_enabled() -> bool:
+    """Explicit opt-in gate for the internal AI-DJ pipeline/Ollama debug
+    panel (routers/debug.py) -- the same "off by default, never silently on"
+    shape as ALLOW_DEMO_SEED (app/seed.py). Combined with requiring a logged
+    -in user, this keeps internal system state out of reach of a normal
+    visitor without inventing a new role/permission system."""
+
+    return os.getenv("ENABLE_PIPELINE_DEBUG", "false").strip().lower() in {"1", "true", "yes"}

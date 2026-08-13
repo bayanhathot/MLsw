@@ -12,7 +12,9 @@ configured, unreachable, or returns something invalid.
 import json
 import os
 import re
-from threading import BoundedSemaphore
+from datetime import UTC, datetime
+from threading import BoundedSemaphore, Lock
+from time import perf_counter
 
 import httpx
 from pydantic import ValidationError
@@ -33,6 +35,27 @@ ALLOWED_GENRES = {
     "techno",
 }
 _ollama_slots = BoundedSemaphore(max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "4")))))
+
+# Debug-panel observability only (routers/debug.py): the outcome of the most
+# recent actual Ollama call this process made. Never consulted by the parse
+# path itself -- only real, attempted calls update it, so a disabled/unused
+# LLM step correctly shows "no calls yet" rather than a stale/fabricated value.
+_last_call_lock = Lock()
+_last_ollama_call: dict = {"at": None, "latency_ms": None, "ok": None}
+
+
+def _record_ollama_call(latency_ms: float, ok: bool) -> None:
+    with _last_call_lock:
+        _last_ollama_call["at"] = datetime.now(UTC).replace(tzinfo=None)
+        _last_ollama_call["latency_ms"] = round(latency_ms, 1)
+        _last_ollama_call["ok"] = ok
+
+
+def get_last_ollama_call() -> dict:
+    """A shallow copy so callers can't mutate the shared tracker."""
+
+    with _last_call_lock:
+        return dict(_last_ollama_call)
 
 # Matches "by/like/similar to/reminds me of <name>" so a named artist can be
 # forwarded to CandidateRetriever's fuzzy catalog search. This is only ever a
@@ -110,6 +133,8 @@ def parse_prompt(prompt: str) -> PromptIntent:
 
     if not _ollama_slots.acquire(timeout=0.05):
         return fallback
+    started = perf_counter()
+    ok = False
     try:
         timeout_seconds = max(0.5, min(10.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
         with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
@@ -130,9 +155,11 @@ def parse_prompt(prompt: str) -> PromptIntent:
         raw = payload.get("response") if isinstance(payload, dict) else None
         decoded = json.loads(raw) if isinstance(raw, str) else raw
         intent = PromptIntent.model_validate(decoded)
+        ok = True
     except (httpx.HTTPError, ValueError, TypeError, ValidationError):
         return fallback
     finally:
+        _record_ollama_call((perf_counter() - started) * 1000, ok)
         _ollama_slots.release()
 
     return _apply_guardrails(intent, fallback)

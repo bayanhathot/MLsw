@@ -122,6 +122,26 @@ The deterministic analytics service derives total listening time, top artists, a
 
 The frontend provides a modern `/profile` Music Identity dashboard plus `/users/[username]` public profiles, and forum author names link into those profiles. The Listening DNA panel/API contract is present but intentionally reports `not_generated` until later ML work is implemented. See [MUSIC_IDENTITY.md](MUSIC_IDENTITY.md) for the data flow, debugging steps, and exact future ML integration point.
 
+## Internal debug panel
+
+A live AI-DJ pipeline/Ollama observability panel is available on the main
+screen for the operator running this deployment, not for ordinary visitors.
+It's off by default; enable it explicitly:
+
+```dotenv
+ENABLE_PIPELINE_DEBUG=true
+```
+
+It also requires a logged-in user -- there's no separate admin role in this
+app, so the panel combines this explicit opt-in flag (same shape as
+`ALLOW_DEMO_SEED`) with the existing cookie-auth check, rather than adding a
+new access-control mechanism. When enabled, it shows per-session pipeline
+traces (which concrete `VibeUnderstander`/`CandidateRetriever`/
+`SegmentSelector`/`TransitionPlanner`/`AudioRenderer` handled each recent
+request, and a short result from each) plus local Ollama's reachability,
+currently loaded model, and last-call latency. It never changes pipeline
+behavior. See [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the implementation.
+
 ## Development checks
 
 Backend (Python 3.11):
