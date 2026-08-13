@@ -12,8 +12,17 @@ x-backend-environment: &backend-environment
   ROOT_PATH: ${ROOT_PATH:-/api}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
   TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
-  OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
-  OLLAMA_MODEL: "${OLLAMA_MODEL:-}"
+  VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-none}
+  GROQ_API_KEY: "${GROQ_API_KEY:-}"
+  GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+  GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+  GROQ_TIMEOUT_SECONDS: ${GROQ_TIMEOUT_SECONDS:-5}
+  GROQ_MAX_CONCURRENCY: ${GROQ_MAX_CONCURRENCY:-4}
+  # Defaults match the "ollama" service (the `ai` profile) below, so
+  # VIBE_LLM_PROVIDER=ollama works with no further configuration once
+  # qwen3:8b is pulled: `docker compose exec ollama ollama pull qwen3:8b`.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
   OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-5}
   OLLAMA_MAX_CONCURRENCY: ${OLLAMA_MAX_CONCURRENCY:-4}
   UPLOAD_DIR: ${UPLOAD_DIR:-/data/uploads}

@@ -273,8 +273,9 @@ def test_health_and_request_id(client):
     assert response.headers["x-request-id"] == "test-request"
     model = client.get("/model-info").json()
     assert model["selector"] == "deterministic-intent-v1"
-    assert model["local_llm_configured"] is False
-    assert model["local_llm_availability"] == "not_configured"
+    assert model["llm_provider"] == "none"
+    assert model["llm_configured"] is False
+    assert model["llm_availability"] == "not_configured"
     audio = client.get("/static/audio/zonix-demo.wav")
     assert audio.status_code == 200
     assert audio.content[:4] == b"RIFF"

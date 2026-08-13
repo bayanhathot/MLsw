@@ -8,7 +8,8 @@ deterministic `TransitionPlanner` -> pydub/ffmpeg `AudioRenderer`) — see
 [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full write-up. It is not a
 trained music model: candidate ordering is deterministic string similarity,
 keyword rules, and BPM/key arithmetic throughout, with one optional,
-schema-constrained Ollama call for prompt classification.
+schema-constrained LLM call (Groq by default, or a fully local Ollama model)
+for prompt classification.
 
 ## Quick startt
 
@@ -36,13 +37,13 @@ migrations, and then starts the API and UI.
 | Music Identity analytics, raw listening events, period filters, and private/friends/public visibility | Implemented full-stack infrastructure; Listening DNA ML intentionally deferred |
 | Bounded upload queue and persistent attachment volume | Implemented prototype; queue state is process-local |
 | Trained ranking/recommendation model | Deliberately not implemented; see [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) |
-| Local LLM | Scaffolded; Ollama model pull and host resources are external prerequisites |
+| LLM prompt refinement | Implemented; Groq (default, hosted) or Ollama (local, `VIBE_LLM_PROVIDER`) |
 | CI | Installed at repository root; the first hosted run is still pending |
 | Azure CD | Template only; VM, DNS, secrets, and first deployment are external prerequisites |
 
 The complete architecture, commands, limitations, security notes, and roadmap
 are in [ZONIX_PROJECT_README.md](ZONIX_PROJECT_README.md). The AI-DJ pipeline
-(stages, why each is swappable, deterministic-vs-Ollama breakdown, and what's
+(stages, why each is swappable, deterministic-vs-LLM breakdown, and what's
 deferred) is in [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md). Music Identity data
 flow, privacy, future ML integration points, and a debugging checklist are in
 [MUSIC_IDENTITY.md](MUSIC_IDENTITY.md). The V3 social-product architecture and

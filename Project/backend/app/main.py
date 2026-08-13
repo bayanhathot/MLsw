@@ -211,12 +211,21 @@ def health():
 def model_info():
     """Describe the configured selection implementation without overstating it."""
 
-    ollama_model = os.getenv("OLLAMA_MODEL", "").strip()
-    ollama_configured = bool(os.getenv("OLLAMA_BASE_URL", "").strip() and ollama_model)
+    provider = os.getenv("VIBE_LLM_PROVIDER", "groq").strip().lower()
+    if provider == "groq":
+        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+        configured = bool(os.getenv("GROQ_API_KEY", "").strip())
+    elif provider == "ollama":
+        model = os.getenv("OLLAMA_MODEL", "").strip()
+        configured = bool(os.getenv("OLLAMA_BASE_URL", "").strip() and model)
+    else:
+        model = ""
+        configured = False
     return {
         "selector": "deterministic-intent-v1",
-        "local_llm_configured": ollama_configured,
-        "local_llm_availability": "not_checked" if ollama_configured else "not_configured",
-        "local_llm_model": ollama_model if ollama_configured else None,
+        "llm_provider": provider,
+        "llm_configured": configured,
+        "llm_availability": "not_checked" if configured else "not_configured",
+        "llm_model": model if configured else None,
         "hallucination_guard": "playable tracks must resolve from Audius or the local demo catalog",
     }

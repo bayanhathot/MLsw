@@ -2,6 +2,8 @@
 indirectly: fuzzy artist matching, segment selection, and transition
 planning."""
 
+import pytest
+
 from app.database.models.catalog import CatalogTrack
 from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
@@ -10,8 +12,14 @@ from app.services.pipeline.catalog_retriever import (
     CatalogTrackRetriever,
     _trigram_similarity,
 )
+from app.services.pipeline.dependencies import _build_vibe_understander
 from app.services.pipeline.segment_selector import LibrosaSegmentSelector
 from app.services.pipeline.transition_planner import DeterministicTransitionPlanner
+from app.services.pipeline.vibe import (
+    DeterministicOnlyVibeUnderstander,
+    GroqVibeUnderstander,
+    OllamaVibeUnderstander,
+)
 from app.services.prompt_parser import deterministic_parse
 
 
@@ -161,3 +169,30 @@ def test_audio_renderer_degrades_to_pass_through_when_a_track_cannot_be_fetched(
     composite = renderer.render([segment, other], [plan])
     assert composite.is_pass_through is True
     assert len(composite.offsets) == 2
+
+
+def test_vibe_provider_defaults_to_groq_and_requires_an_api_key(monkeypatch):
+    monkeypatch.delenv("VIBE_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        _build_vibe_understander()
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    assert isinstance(_build_vibe_understander(), GroqVibeUnderstander)
+
+
+def test_vibe_provider_can_be_switched_to_ollama_or_none(monkeypatch):
+    monkeypatch.setenv("VIBE_LLM_PROVIDER", "ollama")
+    assert isinstance(_build_vibe_understander(), OllamaVibeUnderstander)
+
+    monkeypatch.setenv("VIBE_LLM_PROVIDER", "none")
+    assert isinstance(_build_vibe_understander(), DeterministicOnlyVibeUnderstander)
+
+    monkeypatch.setenv("VIBE_LLM_PROVIDER", "NONE")
+    assert isinstance(_build_vibe_understander(), DeterministicOnlyVibeUnderstander)
+
+
+def test_vibe_provider_rejects_an_unknown_value(monkeypatch):
+    monkeypatch.setenv("VIBE_LLM_PROVIDER", "spotify-llm")
+    with pytest.raises(RuntimeError, match="VIBE_LLM_PROVIDER"):
+        _build_vibe_understander()

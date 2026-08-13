@@ -10,6 +10,11 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite://")
 os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
 os.environ.setdefault("ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
+# Keep the pipeline's VibeUnderstander on the deterministic parser only: the
+# suite never sets GROQ_API_KEY, and tests that want to exercise the Ollama
+# refinement path call prompt_parser.parse_prompt directly with its own env
+# vars monkeypatched, independent of which provider dependencies.py wires up.
+os.environ.setdefault("VIBE_LLM_PROVIDER", "none")
 
 from app.core.rate_limit import auth_rate_limit, write_rate_limit
 from app.database.base import Base

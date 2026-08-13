@@ -7,6 +7,8 @@ Audius, matching each surface's existing behavior; either can be repointed
 independently.
 """
 
+import os
+
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
 from app.services.pipeline.audius_retriever import AudiusCandidateRetriever
 from app.services.pipeline.catalog_retriever import CatalogTrackRetriever
@@ -19,11 +21,43 @@ from app.services.pipeline.interfaces import (
 )
 from app.services.pipeline.segment_selector import LibrosaSegmentSelector
 from app.services.pipeline.transition_planner import DeterministicTransitionPlanner
-from app.services.pipeline.vibe import DeterministicVibeUnderstander
+from app.services.pipeline.vibe import (
+    DeterministicOnlyVibeUnderstander,
+    GroqVibeUnderstander,
+    OllamaVibeUnderstander,
+)
+
+
+def _build_vibe_understander() -> VibeUnderstander:
+    """Which LLM (if any) refines the deterministic parse is a runtime
+    setting -- VIBE_LLM_PROVIDER -- not a class picked at import time, so the
+    concrete implementation can be switched with no code change. Defaults to
+    Groq (faster to deploy: no local model to host); "ollama" runs fully
+    local instead, "none" skips the LLM step entirely.
+    """
+
+    provider = os.getenv("VIBE_LLM_PROVIDER", "groq").strip().lower()
+    if provider == "groq":
+        # Read the same way app.core.security reads SECRET_KEY: required at
+        # startup, but only in this branch -- "ollama"/"none" never need it.
+        if not os.getenv("GROQ_API_KEY", "").strip():
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Check your .env file, or set "
+                "VIBE_LLM_PROVIDER=ollama or VIBE_LLM_PROVIDER=none instead."
+            )
+        return GroqVibeUnderstander()
+    if provider == "ollama":
+        return OllamaVibeUnderstander()
+    if provider == "none":
+        return DeterministicOnlyVibeUnderstander()
+    raise RuntimeError(
+        f"Unknown VIBE_LLM_PROVIDER={provider!r}; expected 'groq', 'ollama', or 'none'."
+    )
+
 
 # Stateless singletons: every implementation only takes a `db: Session` per
 # call, so one shared instance per process is enough.
-_vibe_understander = DeterministicVibeUnderstander()
+_vibe_understander = _build_vibe_understander()
 _catalog_retriever = CatalogTrackRetriever()
 _audius_retriever = AudiusCandidateRetriever()
 _segment_selector = LibrosaSegmentSelector()

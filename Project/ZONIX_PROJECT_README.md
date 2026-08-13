@@ -52,29 +52,35 @@ Adminer is excluded from normal startup:
 docker compose --profile tools up -d postgres adminer
 ```
 
-The prompt parser has a deterministic fallback. To additionally run the local
-Ollama classifier, start the profile and explicitly download the configured
-model (the repository does not download multi-gigabyte models automatically):
+The prompt parser has a deterministic fallback either way. Which LLM (if any)
+refines it is `VIBE_LLM_PROVIDER` in `.env`:
 
-```powershell
-docker compose --profile ai up -d ollama
-docker compose exec ollama ollama pull qwen2.5:3b
-```
+- **`groq`** (default) — hosted, OpenAI-compatible, no container to run.
+  Set `GROQ_API_KEY` and start the stack normally.
+- **`ollama`** — fully local. Start the profile and explicitly pull the
+  configured model once (the repository does not download multi-gigabyte
+  models automatically):
 
-After the pull succeeds, set these two values in `.env`, then start the stack:
+  ```powershell
+  docker compose --profile ai up -d ollama
+  docker compose exec ollama ollama pull qwen3:8b
+  ```
 
-```dotenv
-OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:3b
-```
+  `OLLAMA_BASE_URL`/`OLLAMA_MODEL` already default to `http://ollama:11434` /
+  `qwen3:8b`, so only the provider needs setting in `.env`:
 
-```powershell
-docker compose --profile ai up --build
-```
+  ```dotenv
+  VIBE_LLM_PROVIDER=ollama
+  ```
 
-If Ollama is missing, unavailable, slow, or returns invalid JSON, prompt
-classification safely falls back to deterministic rules. Only catalog tracks
-can become playable results.
+  ```powershell
+  docker compose --profile ai up --build
+  ```
+- **`none`** — skip the LLM step entirely; deterministic rules only.
+
+If the configured provider is missing, unavailable, slow, or returns invalid
+JSON, prompt classification safely falls back to deterministic rules. Only
+catalog tracks can become playable results.
 
 ## Architecture
 
@@ -86,7 +92,7 @@ browser
                  -> PostgreSQL
                  -> named attachment volume
                  -> Audius search (controlled local fallback)
-                 -> Ollama (optional intent classification)
+                 -> Groq or Ollama (optional intent classification)
 ```
 
 The frontend uses `/api` rather than a hardcoded localhost backend. Nginx
@@ -167,8 +173,9 @@ end-to-end. The AI-DJ request path (session start, feedback, mix generation)
 is now one consolidated, swappable pipeline. See
 [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full stage-by-stage writeup,
 including exactly which parts are deterministic versus the one
-schema-constrained Ollama call, and what's deliberately left for later (a real
-trained ranking model, if one is ever wanted).
+schema-constrained LLM call (Groq by default, or Ollama for a fully local
+setup -- switchable via `VIBE_LLM_PROVIDER`), and what's deliberately left
+for later (a real trained ranking model, if one is ever wanted).
 
 ## Course-feedback status and next milestones
 
@@ -178,7 +185,7 @@ trained ranking model, if one is ever wanted).
 | Long-term memory | Authenticated feedback is persisted as user preference strength and exposed on the profile UI | Verify that preferences improve ranked results with a labeled evaluation |
 | Hallucination robustness | Provider/local catalog boundaries and deterministic fallback; offline silence/catalog-integrity metrics | Compute silence features for the production catalog and reject every unknown segment ID at the API boundary |
 | Upload job queue | Raw single and JSON-base64 batch upload endpoints, type/signature/size validation, bounded parallel priority queue, status polling, protected media, UI uploader, and persistent file volume | Add durable Redis-backed job state, retries/cancellation/progress, codec decoding, object storage, and restart/load tests |
-| Local LLM | Optional Ollama intent parser with deterministic fallback | Benchmark the chosen model and add bounded concurrency/load tests; never let LLM text create catalog records |
+| LLM intent parsing | Optional Groq (default) or Ollama intent parser, switchable via `VIBE_LLM_PROVIDER`, with deterministic fallback | Benchmark the chosen model and add bounded concurrency/load tests; never let LLM text create catalog records |
 | Community/communication | Friends, search/discovery, public profiles, mix feed/library, native mix sharing, Friends/Explore/Discussions feeds, posts/comments/votes, anonymity in Discussions, protected attachments, friend-only DMs, durable notifications, block/report infrastructure, and WebSocket UI are implemented | Expand browser E2E to mutating flows against live PostgreSQL; add accessibility tests, moderation review UI, shared Redis WebSocket pub/sub, pagination/load tests, and later collaborative mixes |
 | CI/CD/deployment | Reproducible CI/container builds and a secrets-gated Azure/GHCR deployment template | Configure the supplied host/domain and protected secrets, perform the first deploy, test rollback, and add an external uptime check |
 

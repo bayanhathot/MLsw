@@ -18,6 +18,21 @@ x-backend-environment: &backend-environment
   UPLOAD_QUEUE_CAPACITY: ${UPLOAD_QUEUE_CAPACITY:-32}
   UPLOAD_JOB_TTL_SECONDS: ${UPLOAD_JOB_TTL_SECONDS:-3600}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
+  # Groq is the production default: no local model to host. Set
+  # VIBE_LLM_PROVIDER=ollama (and point OLLAMA_BASE_URL at a self-hosted
+  # instance) to run fully local instead, or "none" to skip the LLM step.
+  VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-groq}
+  GROQ_API_KEY: "${GROQ_API_KEY:-}"
+  GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+  GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+  GROQ_TIMEOUT_SECONDS: ${GROQ_TIMEOUT_SECONDS:-5}
+  GROQ_MAX_CONCURRENCY: ${GROQ_MAX_CONCURRENCY:-4}
+  # Defaults match the "ollama" service below, so VIBE_LLM_PROVIDER=ollama
+  # works with no further configuration once qwen3:8b is pulled.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+  OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-5}
+  OLLAMA_MAX_CONCURRENCY: ${OLLAMA_MAX_CONCURRENCY:-4}
 
 services:
   postgres:
@@ -58,6 +73,27 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Fully local, opt-in alternative to Groq for VibeUnderstander refinement
+  # (VIBE_LLM_PROVIDER=ollama). Runs regardless of which provider is
+  # selected, same as postgres; nothing calls it unless that env var is set.
+  # qwen3:8b is not bundled in the image and must be pulled once after the
+  # volume is first created: `docker compose exec ollama ollama pull qwen3:8b`.
+  ollama:
+    image: ollama/ollama:0.11.4
+    volumes:
+      - ollama_data:/root/.ollama
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   backend:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
     environment: *backend-environment
@@ -81,6 +117,8 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -139,5 +177,6 @@ services:
 volumes:
   postgres_data:
   uploads_data:
+  ollama_data:
   caddy_data:
   caddy_config:

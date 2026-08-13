@@ -64,3 +64,51 @@ def test_valid_llm_classification_cannot_replace_catalog_search_text(monkeypatch
     intent = prompt_parser.parse_prompt("calm lofi")
     assert intent.genres == ["lofi"]
     assert intent.search_query == "calm lofi"
+
+
+def test_groq_parser_uses_deterministic_fallback_when_llm_fails(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_MODEL", "test-model")
+
+    def invalid(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"invented_track":"Never Existed"}'}}]},
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", invalid)
+    intent = prompt_parser.parse_prompt_groq("energetic house workout")
+    assert intent.energy == "high"
+    assert intent.genres == ["house"]
+    assert "Never Existed" not in intent.search_query
+
+
+def test_groq_parser_without_api_key_falls_back_without_a_network_call(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError("parse_prompt_groq must not call out with no API key configured")
+
+    monkeypatch.setattr(httpx.Client, "post", unexpected_call)
+    intent = prompt_parser.parse_prompt_groq("calm lofi")
+    assert intent.energy == "low"
+    assert intent.genres == ["lofi"]
+
+
+def test_valid_groq_classification_cannot_replace_catalog_search_text(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_MODEL", "test-model")
+    raw = '{"mood":"calm","energy":"low","vocals":"less","genres":["lofi","fakegenre"],"search_query":"Invented Song"}'
+
+    def valid(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": raw}}]},
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", valid)
+    intent = prompt_parser.parse_prompt_groq("calm lofi")
+    assert intent.genres == ["lofi"]
+    assert intent.search_query == "calm lofi"
