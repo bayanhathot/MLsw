@@ -18,9 +18,12 @@ Behavior:
 
 This service only fetches candidate tracks -- it never creates catalog
 records. AudiusCandidateRetriever (pipeline/audius_retriever.py) wraps it
-behind the same CandidateRetriever interface as the local catalog, and
-CatalogTrackRetriever is used as a safety-net fallback when a search returns
-no results (see pipeline/dependencies.py). Provider failures (HTTP errors,
+behind the same CandidateRetriever interface as the local catalog. Mixes
+primary-retrieve from here and fall back to the catalog when a search
+returns nothing (mix_service._retrieve_with_fallback); sessions
+primary-retrieve from the catalog and fall back to here the other direction
+(orchestrator.retrieve_candidates_with_fallback, session_manager.py) --
+see AI_DJ_PIPELINE.md for the full picture. Provider failures (HTTP errors,
 timeouts, malformed payloads) are caught below and degrade to an empty
 result list rather than raising, the same fail-open pattern as the optional
 Ollama VibeUnderstander implementation.

@@ -55,12 +55,12 @@ docker compose --profile tools up -d postgres adminer
 The prompt parser has a deterministic fallback either way. Which LLM (if any)
 refines it is `VIBE_LLM_PROVIDER` in `.env`:
 
-- **`ollama`** (default) — fully local, the sole LLM option. Start the
-  profile and explicitly pull the configured model once (the repository does
-  not download multi-gigabyte models automatically):
+- **`ollama`** (default) — fully local, the sole LLM option. The `ollama`
+  container already starts with a plain `docker compose up` (no profile
+  flag needed); explicitly pull the configured model once (the repository
+  does not download multi-gigabyte models automatically):
 
   ```powershell
-  docker compose --profile ai up -d ollama
   docker compose exec ollama ollama pull qwen3:8b
   ```
 
@@ -72,7 +72,7 @@ refines it is `VIBE_LLM_PROVIDER` in `.env`:
   ```
 
   ```powershell
-  docker compose --profile ai up --build
+  docker compose up --build
   ```
 - **`none`** — skip the LLM step entirely; deterministic rules only.
 

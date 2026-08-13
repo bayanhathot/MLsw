@@ -151,8 +151,9 @@ enable it silently in production.
   the trusted proxy replaces forwarding headers.
 - Ollama is the default (and only) LLM provider, gated behind
   `VIBE_LLM_PROVIDER=ollama`; set `VIBE_LLM_PROVIDER=none` to skip the LLM
-  step entirely. See the root guide for the exact profile and model-pull
-  commands — no multi-gigabyte model downloads happen automatically.
+  step entirely. The `ollama` container already starts by default with
+  `docker compose up`; see the root guide for the model-pull command — no
+  multi-gigabyte model downloads happen automatically.
 
 For full architecture, deployment prerequisites, current limitations, and the
 MLOps roadmap, use [the canonical project guide](../ZONIX_PROJECT_README.md).

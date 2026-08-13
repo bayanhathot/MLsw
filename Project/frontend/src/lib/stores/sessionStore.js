@@ -4,6 +4,7 @@ import { writable } from 'svelte/store';
 
 import { APP_STATES } from '../constants/appStates.js';
 import {
+	advanceSession as apiAdvanceSession,
 	sendFeedback as apiSendFeedback,
 	startSession as apiStartSession,
 	stopSession as apiStopSession
@@ -60,6 +61,71 @@ function createSessionStore() {
 		startController = null;
 		stopController = null;
 		feedbackController = null;
+	}
+
+	/**
+	 * Continues the session onto its next track/segment with no user input --
+	 * called automatically from mediaEnded() below. Shares sendFeedback's
+	 * controller/version slot on purpose: explicit coaching feedback sent
+	 * while an advance is in flight bumps feedbackVersion, so the advance's
+	 * result is discarded when it lands and feedback's own result wins --
+	 * coaching still interrupts and redirects mid-loop, exactly as it
+	 * already does between two feedback calls.
+	 */
+	async function advance() {
+		if (
+			latestState.status !== APP_STATES.PLAYING ||
+			latestState.isFeedbackPending ||
+			!latestState.session?.id
+		) {
+			return false;
+		}
+
+		const sessionId = latestState.session.id;
+		const requestVersion = ++feedbackVersion;
+		const lifecycleAtRequest = lifecycleVersion;
+		feedbackController = new AbortController();
+		update((state) => ({
+			...state,
+			isFeedbackPending: true,
+			currentStep: 'Finding the next track'
+		}));
+
+		try {
+			const session = await apiAdvanceSession({ sessionId, signal: feedbackController.signal });
+			if (
+				requestVersion !== feedbackVersion ||
+				latestState.session?.id !== sessionId ||
+				lifecycleAtRequest !== lifecycleVersion
+			) {
+				return false;
+			}
+
+			update((state) => ({
+				...state,
+				session,
+				isFeedbackPending: false,
+				pendingFeedback: null,
+				hasEnded: false,
+				playbackRequested: true,
+				isPlaybackBuffering: true,
+				currentStep: 'Zone active'
+			}));
+			return true;
+		} catch (error) {
+			if (requestVersion === feedbackVersion && latestState.session?.id === sessionId) {
+				update((state) => ({
+					...state,
+					isFeedbackPending: false,
+					pendingFeedback: null,
+					hasEnded: true,
+					playbackError: `Could not advance to the next track: ${messageFrom(error)}`
+				}));
+			}
+			return false;
+		} finally {
+			feedbackController = null;
+		}
 	}
 
 	return {
@@ -321,7 +387,14 @@ function createSessionStore() {
 				hasEnded: true,
 				currentStep: 'Session finished'
 			}));
+			// Continuous session: keep going onto the next track with no user
+			// input required, unless something (stop, a new prompt) already
+			// ended the session by the time this resolves -- advance() itself
+			// re-checks status/session id before applying its result.
+			void advance();
 		},
+
+		advance,
 
 		/** @param {string} message */
 		mediaError(message) {

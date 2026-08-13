@@ -1,6 +1,52 @@
+from pathlib import Path
+
 from conftest import register_and_login
 
 from app.database.models.session import DJSession, UserPreference
+
+_DEMO_WAV_BYTES = (
+    Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
+).read_bytes()
+
+# Audius defaults to "nothing found" for every test via conftest.py's
+# clean_database autouse fixture, so every session-creating test below
+# reaches the local-catalog fallback deterministically and offline unless it
+# explicitly overrides that with _patch_audius (below).
+
+
+def _wassouf_tracks():
+    """Three distinct real-shaped Audius candidates for one named artist --
+    enough to prove a session rotates through more than one when advancing,
+    not just repeats whatever it started on."""
+
+    return [
+        {
+            "title": f"Wassouf Track {index}",
+            "artist": "George Wassouf",
+            "audio_url": f"https://audio.example/wassouf-{index}",
+            "cover_url": None,
+            "duration": 180,
+            "source": "audius",
+            "source_track_id": f"wassouf-{index}",
+        }
+        for index in range(1, 4)
+    ]
+
+
+def _patch_audius(monkeypatch, tracks):
+    """Both the retrieval step and AudioRenderer's remote download are
+    patched, matching tests/test_mixes.py's pattern, so a session with an
+    Audius candidate renders a real, network-free composite instead of
+    degrading to a pass-through because the fake example.test URLs aren't
+    reachable."""
+
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: _DEMO_WAV_BYTES
+    )
 
 
 def test_session_is_unique_persistent_and_feedback_changes_selection(client, db_session):
@@ -71,13 +117,172 @@ def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
     assert neutral.json()["vibeLabel"] == "Gym energy"
 
 
-def test_named_artist_with_no_catalog_match_is_reported_plainly(client):
+def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
     response = client.post(
         "/sessions/start",
         json={"prompt": "play something by Zzzqx Nonexistent Artist Ptrxk"},
     )
     assert response.status_code == 422
     assert "catalog" in response.json()["detail"].lower()
+    assert "audius" in response.json()["detail"].lower()
+
+
+def test_named_artist_is_served_directly_by_audius_as_the_primary_retriever(
+    client, monkeypatch, db_session
+):
+    """Audius is sessions' primary retriever now (matching Mixes), so a
+    named artist absent from the tiny local catalog is served on the first
+    try -- this is no longer a fallback."""
+
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    response = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nowPlaying"]["artist"] == "George Wassouf"
+    assert body["audioUrl"].startswith("/api/media/renders/")
+
+    session = db_session.query(DJSession).filter_by(id=body["id"]).one()
+    assert session.retriever_name == "audius"
+    assert session.pipeline_trace_json["candidate_retriever"]["name"] == "audius"
+    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+
+
+def test_generic_vibe_prompt_with_no_artist_now_reaches_audius_first(
+    client, monkeypatch, db_session
+):
+    """The actual bug this priority swap fixes: a generic vibe/genre
+    request (no named artist) used to hit the small local catalog and never
+    reach Audius at all, because the catalog's no-artist path always
+    returns *something* (a mood-bucket row, or any row as a last resort).
+    Audius must now be tried first for this case too."""
+
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    response = client.post(
+        "/sessions/start", json={"prompt": "chill lofi beats for studying"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # Not one of the 4 seeded local demo tracks.
+    assert body["nowPlaying"]["artist"] == "George Wassouf"
+
+    session = db_session.query(DJSession).filter_by(id=body["id"]).one()
+    assert session.retriever_name == "audius"
+    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+
+
+def test_when_audius_finds_nothing_catalog_serves_as_the_fallback(client, db_session):
+    """The other half of the same priority: Audius defaults to no results
+    via the autouse fixture above, so this exercises the fallback
+    direction -- catalog only serves because Audius, tried first, came back
+    empty, not because it was tried first."""
+
+    response = client.post("/sessions/start", json={"prompt": "hard gym workout"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["vibeLabel"] == "Gym energy"
+
+    session = db_session.query(DJSession).filter_by(id=body["id"]).one()
+    assert session.retriever_name == "catalog"
+    assert session.pipeline_trace_json["candidate_retriever"]["name"] == "catalog"
+    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
+
+
+def test_advance_continues_without_input_and_rotates_through_candidates(client, monkeypatch):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+
+    seen_titles = {session["nowPlaying"]["title"]}
+    for _ in range(2):
+        advanced = client.post(f"/sessions/{session['id']}/advance")
+        assert advanced.status_code == 200
+        seen_titles.add(advanced.json()["nowPlaying"]["title"])
+
+    # All 3 candidates got a turn -- this isn't just replaying the same top
+    # match every time.
+    assert len(seen_titles) == 3
+
+    # The pool is now exhausted (3 candidates, 3 already played this
+    # session): advancing again must not error, and loops rather than
+    # getting stuck -- "continuously advance ... looping indefinitely".
+    looped = client.post(f"/sessions/{session['id']}/advance")
+    assert looped.status_code == 200
+    assert looped.json()["nowPlaying"]["title"] in seen_titles
+
+
+def test_advance_rejects_a_stopped_session(client):
+    session = client.post("/sessions/start", json={"prompt": "smooth focus music"}).json()
+    assert client.post(f"/sessions/{session['id']}/stop").status_code == 200
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 409
+
+
+def test_advance_on_an_unknown_session_is_404(client):
+    assert client.post("/sessions/nope/advance").status_code == 404
+
+
+def test_advance_leaves_session_unchanged_when_nothing_matches(client, monkeypatch):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+
+    # Simulate Audius going unreachable mid-session for an artist that was
+    # never in the catalog either -- advance must not error out a live
+    # session, just leave it exactly where it was.
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    assert response.json()["nowPlaying"]["title"] == session["nowPlaying"]["title"]
+
+
+def test_feedback_keeps_using_audius_on_every_re_resolution(client, monkeypatch):
+    """Coaching feedback must keep re-resolving through Audius on every
+    request, not just the one that created the session -- not regress to a
+    pinned retriever lookup."""
+
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    feedback = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+    )
+    assert feedback.status_code == 200
+    assert feedback.json()["nowPlaying"]["artist"] == "George Wassouf"
+
+
+def test_feedback_self_heals_from_catalog_fallback_to_audius(client, monkeypatch, db_session):
+    """Requirement: the existing self-healing re-resolution still works with
+    the swapped order. A session that started via the catalog fallback
+    (Audius had nothing then) must pick Audius back up on the very next
+    feedback-triggered re-resolution once Audius starts returning results --
+    each resolution tries Audius fresh, nothing is pinned to how the session
+    started."""
+
+    session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
+    # Served by the catalog fallback (Audius defaults to no results via the
+    # autouse fixture above).
+    assert session["vibeLabel"] == "Gym energy"
+
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    feedback = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+    )
+    assert feedback.status_code == 200
+    assert feedback.json()["nowPlaying"]["artist"] == "George Wassouf"
+
+    healed = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert healed.retriever_name == "audius"
+    assert healed.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 
 def test_reasoning_and_next_direction_reflect_feedback_history(client):

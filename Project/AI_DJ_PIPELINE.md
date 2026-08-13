@@ -87,9 +87,22 @@ Deterministic, everywhere, with no exceptions:
   `session_manager._initial_track` used, now run against real rows instead of
   a dict. `AudiusCandidateRetriever` just forwards the query text to Audius's
   own search. Below `ARTIST_MATCH_THRESHOLD` (default `0.3`), the catalog
-  retriever returns nothing rather than guessing — the caller reports that
-  plainly (`422` for a session naming an unmatched artist; mixes fall back to
-  a neutral catalog pick so mix creation never hard-fails).
+  retriever returns nothing rather than guessing.
+- **Audius-to-catalog fallback.** The local catalog is a small seed/upload
+  set, not a real music library -- most requests never name an artist at
+  all, and even a named one is often genuinely absent from it, which is
+  expected, not an error condition. Both sessions and mixes are two-tier and
+  share the same priority: Audius first, and only fall through to the local
+  catalog when Audius plainly finds nothing. Sessions go through
+  `orchestrator.retrieve_candidates_with_fallback`
+  (`session_manager._resolve_and_render`); mixes have their own equivalent,
+  `mix_service._retrieve_with_fallback` (pre-existing, unaffected by this).
+  A session only reports `422` when *neither* retriever finds anything —
+  never a silent substitute, and never a fabricated local match. Which
+  retriever actually served is recorded on `DJSession.retriever_name` per
+  resolution (it can change between "audius" and "catalog" from one
+  resolution to the next -- see below), and in the debug panel's
+  `candidate_retriever.fell_back` trace field.
 - **Segment selection.** `LibrosaSegmentSelector` reads a cached
   BPM/key/segment analysis (see below) or, for anything without one — an
   Audius preview, or a catalog upload still mid-analysis — uses the whole
@@ -102,9 +115,29 @@ Deterministic, everywhere, with no exceptions:
 - **Real-time coaching** ("more energy" / "less vocals" / "smoother") mutates
   the session's stored `PromptIntent` with the same blunt, deterministic
   jumps the old code used (e.g. "more energy" always sets `energy="high"`),
-  then re-runs the pipeline through whichever `CandidateRetriever` originally
-  served that session (`DJSession.retriever_name`) — so it works the same
-  whether that's the catalog or Audius.
+  then re-runs the two-tier Audius-then-catalog resolution described above
+  fresh every time — not pinned to whichever retriever served initially, so
+  it recovers automatically if Audius was briefly down at session start but
+  is back by the time feedback runs (or vice versa). Since feedback never
+  changes `intent.artist`/`search_query`, whatever Audius found or didn't
+  find initially still holds on every subsequent feedback call the same way
+  it did initially.
+- **Continuous advancing.** A session keeps playing without further input:
+  when the current track/segment finishes, the frontend calls
+  `POST /sessions/{id}/advance` automatically (`sessionStore.mediaEnded` ->
+  `sessionStore.advance`, `session_manager.advance_session`), which re-runs
+  the same Audius-then-catalog resolution against the session's *current,
+  unmutated* intent, skipping whichever tracks the session already played
+  recently (`DJSession.played_track_keys_json`, capped at the last 10) so it
+  rotates through the candidate pool instead of repeating the same top
+  match. Once every recent candidate has had a turn, it loops rather than
+  erroring — that's the point of "continuous" for a small candidate pool.
+  Explicit coaching feedback still redirects the session immediately if it
+  arrives mid-loop: both endpoints just commit to the same `DJSession` row,
+  so whichever request's commit lands last wins, no special locking needed.
+  `advance` never mutates intent itself and is a no-op (200, session
+  unchanged) if nothing currently matches -- e.g. Audius momentarily
+  unreachable -- rather than ending the session outright.
 - **Learned preferences.** `UserPreference` rows still record which coaching
   command a user favors, but they now bias the *next session's initial
   intent* (e.g. nudging `energy` toward `"high"`) instead of pointing at a
@@ -131,22 +164,21 @@ redeploy of a different image.
 An `ollama` service (image `ollama/ollama:0.11.4`, a named volume at
 `/root/.ollama` so pulled models survive redeploys, no published port —
 only `backend` reaches it, over the internal Compose network) is defined in
-both `docker-compose.yml` (dev, behind the `ai` profile) and
-`docker-compose.prod.yml` (always started, same as `postgres`). In both
-files `backend`'s `depends_on` deliberately does **not** wait on ollama's
-healthcheck: `VIBE_LLM_PROVIDER=ollama` is the default, but the LLM step
-stays optional at every call site (`prompt_parser.parse_prompt` fails open to
-the deterministic parse), so booting the API must never block on the model
-container being healthy. Starting the `ollama` service by itself does not
-change behavior — that's still `VIBE_LLM_PROVIDER` — it just makes the
-`ollama` option usable once a model is pulled.
+both `docker-compose.yml` (dev) and `docker-compose.prod.yml` (prod), and
+starts automatically with a plain `docker compose up` in both -- no profile
+flag needed. In both files `backend`'s `depends_on` deliberately does **not**
+wait on ollama's healthcheck: `VIBE_LLM_PROVIDER=ollama` is the default, but
+the LLM step stays optional at every call site (`prompt_parser.parse_prompt`
+fails open to the deterministic parse), so booting the API must never block
+on the model container being healthy. The `ollama` container running by
+itself does not change behavior — that's still `VIBE_LLM_PROVIDER` — it just
+means the `ollama` option is already up and usable once a model is pulled.
 
 To use it:
 
 1. Pull the model once (not part of the CI/CD pipeline — a manual,
    one-time step per environment, same as any other model artifact):
    ```powershell
-   docker compose --profile ai up -d ollama   # dev only; prod always runs it
    docker compose exec ollama ollama pull qwen3:8b
    ```
 2. Leave `VIBE_LLM_PROVIDER` unset or set it to `ollama`
@@ -193,14 +225,20 @@ correctness requirement.
   instead of a fixed list.
 - The old Audius-only mix path is now `AudiusCandidateRetriever`, an
   interface-conforming wrapper around the unchanged `audius_service.py`.
-- Both endpoints route through the same `retrieve_candidates` helper
-  (`pipeline/orchestrator.py`) and the same `SegmentSelector`/
+- Both endpoints route through the same `SegmentSelector`/
   `TransitionPlanner`/`AudioRenderer` instances — one code path, not two.
-  Sessions default to the catalog retriever and mixes to Audius (preserving
-  each surface's existing behavior); mixes additionally fall back to the
-  catalog retriever if Audius returns nothing, mirroring the old
+  Sessions and mixes both primary-retrieve from Audius and fall back to the
+  catalog when Audius returns nothing: `orchestrator.
+  retrieve_candidates_with_fallback` for sessions, and `mix_service.
+  _retrieve_with_fallback` for mixes (which also drops any artist filter as
+  an absolute last resort, since a mix must never hard-fail the way a
+  session can plainly report "no match" — mirroring the old
   `local_demo_track()` safety net, just backed by real data instead of one
-  hardcoded dict.
+  hardcoded dict). A generic vibe/genre request with no named artist -- most
+  requests -- used to hit the catalog's always-returns-something no-artist
+  path and never reach Audius at all for sessions; Audius going first for
+  both surfaces now is what actually makes it answer what was asked instead
+  of looping the same handful of local demo tracks.
 
 ## The new upload endpoint and analysis job
 

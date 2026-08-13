@@ -12,13 +12,14 @@ x-backend-environment: &backend-environment
   ROOT_PATH: ${ROOT_PATH:-/api}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
   TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
-  # "none" here keeps local dev zero-friction (no LLM call, no ollama
-  # container needed); the app itself defaults to "ollama", the sole LLM
-  # option, when this is unset entirely.
+  # "none" here keeps local dev zero-friction (no LLM call made, even
+  # though the ollama container below now starts by default); the app
+  # itself defaults to "ollama", the sole LLM option, when this is unset
+  # entirely.
   VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-none}
-  # Defaults match the "ollama" service (the `ai` profile) below, so
-  # VIBE_LLM_PROVIDER=ollama works with no further configuration once
-  # qwen3:8b is pulled: `docker compose exec ollama ollama pull qwen3:8b`.
+  # Defaults match the "ollama" service below, so VIBE_LLM_PROVIDER=ollama
+  # works with no further configuration once qwen3:8b is pulled:
+  # `docker compose exec ollama ollama pull qwen3:8b`.
   OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
   OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
   OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-5}
@@ -137,7 +138,6 @@ services:
 
   ollama:
     image: ollama/ollama:0.11.4
-    profiles: ["ai"]
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:

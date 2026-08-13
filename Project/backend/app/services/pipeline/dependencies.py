@@ -2,9 +2,15 @@
 
 Swapping a stage's implementation later is a one-line change to the provider
 function it's bound to here -- nothing that calls Depends(get_x) needs to
-change. Sessions default to the catalog retriever and mixes default to
-Audius, matching each surface's existing behavior; either can be repointed
-independently.
+change. Sessions and mixes both primary-retrieve from Audius and fall back
+to the local catalog only when Audius finds nothing (session_manager.py /
+mix_service.py): the local catalog is a tiny seed/upload set, a poor primary
+source for a generic vibe/genre request (most requests never name an
+artist), so Audius -- which can actually answer what was asked -- goes
+first for both surfaces. get_session_candidate_retriever() and
+get_mix_candidate_retriever() happen to return the same Audius singleton
+today; each is free to diverge to a different implementation later without
+the other, or the caller, changing.
 """
 
 import logging
@@ -68,20 +74,19 @@ _segment_selector = LibrosaSegmentSelector()
 _transition_planner = DeterministicTransitionPlanner()
 _audio_renderer = PydubAudioRenderer()
 
-# Looked up by DJSession.retriever_name so feedback re-invokes whichever
-# CandidateRetriever originally served that session (requirement 4).
-CANDIDATE_RETRIEVERS: dict[str, CandidateRetriever] = {
-    _catalog_retriever.name: _catalog_retriever,
-    _audius_retriever.name: _audius_retriever,
-}
-
 
 def get_vibe_understander() -> VibeUnderstander:
     return _vibe_understander
 
 
 def get_session_candidate_retriever() -> CandidateRetriever:
-    return _catalog_retriever
+    """Sessions' primary retriever. Audius, not the local catalog: a
+    session most often names no artist at all (a generic vibe/genre
+    request), and the local catalog is a handful of seed/upload rows, not a
+    real answer to that -- see get_catalog_candidate_retriever() for the
+    fallback this surface falls through to when Audius comes back empty."""
+
+    return _audius_retriever
 
 
 def get_mix_candidate_retriever() -> CandidateRetriever:
@@ -89,8 +94,9 @@ def get_mix_candidate_retriever() -> CandidateRetriever:
 
 
 def get_catalog_candidate_retriever() -> CandidateRetriever:
-    """Direct access to the catalog retriever, used as mixes' safety-net
-    fallback when the primary (Audius) retriever comes back empty."""
+    """Direct access to the catalog retriever, used as both sessions' and
+    mixes' safety-net fallback when the primary (Audius) retriever comes
+    back empty."""
 
     return _catalog_retriever
 

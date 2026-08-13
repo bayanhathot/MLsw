@@ -11,6 +11,7 @@ from app.schemas import SessionFeedbackRequest, SessionRead, StartSessionRequest
 from app.services import session_manager
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
+    get_catalog_candidate_retriever,
     get_segment_selector,
     get_session_candidate_retriever,
     get_transition_planner,
@@ -47,6 +48,7 @@ def start_session(
     db: Session = Depends(get_db),
     vibe: VibeUnderstander = Depends(get_vibe_understander),
     retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
+    fallback_retriever: CandidateRetriever = Depends(get_catalog_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
@@ -58,6 +60,7 @@ def start_session(
             current_user.id if current_user else None,
             vibe=vibe,
             retriever=retriever,
+            fallback_retriever=fallback_retriever,
             selector=selector,
             planner=planner,
             renderer=renderer,
@@ -82,6 +85,8 @@ def send_feedback(
     _: None = Depends(write_rate_limit),
     current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
+    retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
+    fallback_retriever: CandidateRetriever = Depends(get_catalog_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
@@ -90,7 +95,46 @@ def send_feedback(
     if session.status == "stopped":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session is already stopped.")
     return session_manager.apply_feedback(
-        db, session, request.feedback, selector=selector, planner=planner, renderer=renderer
+        db,
+        session,
+        request.feedback,
+        retriever=retriever,
+        fallback_retriever=fallback_retriever,
+        selector=selector,
+        planner=planner,
+        renderer=renderer,
+    )
+
+
+@router.post("/{session_id}/advance", response_model=SessionRead)
+def advance_session(
+    session_id: str,
+    _: None = Depends(write_rate_limit),
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+    retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
+    fallback_retriever: CandidateRetriever = Depends(get_catalog_candidate_retriever),
+    selector: SegmentSelector = Depends(get_segment_selector),
+    planner: TransitionPlanner = Depends(get_transition_planner),
+    renderer: AudioRenderer = Depends(get_audio_renderer),
+):
+    """Called automatically by the frontend when the current track/segment
+    finishes -- continues the session onto the next one matching its
+    current intent, with no user input required. Explicit feedback
+    (POST .../feedback) still redirects the session immediately; this only
+    ever continues in the same direction."""
+
+    session = _existing(db, session_id, current_user)
+    if session.status == "stopped":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session is already stopped.")
+    return session_manager.advance_session(
+        db,
+        session,
+        retriever=retriever,
+        fallback_retriever=fallback_retriever,
+        selector=selector,
+        planner=planner,
+        renderer=renderer,
     )
 
 

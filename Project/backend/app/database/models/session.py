@@ -25,8 +25,11 @@ class DJSession(Base):
     prompt: Mapped[str] = mapped_column(String(300), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="playing")
     vibe_label: Mapped[str] = mapped_column(String(100), nullable=False)
-    # Name of the CandidateRetriever bound for this session's lifetime, e.g.
-    # "catalog" or "audius" -- feedback re-invokes this same one.
+    # Name of whichever CandidateRetriever actually served the current
+    # track ("catalog" or "audius") -- informational, not pinned: every
+    # resolution tries catalog first and falls through to Audius only when
+    # catalog finds nothing, so this can change from one resolution to the
+    # next (see session_manager._resolve_and_render).
     retriever_name: Mapped[str] = mapped_column(String(40), nullable=False)
     # The current, feedback-mutated PromptIntent for this session.
     intent_json: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -39,6 +42,10 @@ class DJSession(Base):
     # (routers/debug.py); never read by the ordinary session flow, so it's
     # nullable and safe to leave unset on older rows.
     pipeline_trace_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Composite "source:source_track_id" keys of recently-played tracks
+    # (capped, see session_manager._PLAYED_TRACK_HISTORY), so continuous
+    # advancing doesn't immediately repeat whatever just played.
+    played_track_keys_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     selected_feedback: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

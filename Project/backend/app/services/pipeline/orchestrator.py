@@ -28,3 +28,32 @@ def retrieve_candidates(
             f"No {retriever.name} candidate matched this request closely enough."
         )
     return candidates
+
+
+def retrieve_candidates_with_fallback(
+    db: Session,
+    intent: PromptIntent,
+    primary: CandidateRetriever,
+    fallback: CandidateRetriever,
+    *,
+    limit: int = 5,
+) -> tuple[list[Track], CandidateRetriever]:
+    """Tries `primary` first; only falls through to `fallback` when primary
+    plainly found nothing (an empty list is never silently replaced with an
+    unrelated result -- same "report plainly" guarantee as
+    retrieve_candidates, just with one more retriever to try before giving
+    up). Returns which retriever actually served the candidates, since
+    callers persist that alongside the result (e.g. DJSession.retriever_name)
+    so a later re-resolution knows what actually served last time. Raises
+    NoMatchingCandidate only when both retrievers come back empty."""
+
+    try:
+        return retrieve_candidates(db, intent, primary, limit=limit), primary
+    except NoMatchingCandidate:
+        pass
+    try:
+        return retrieve_candidates(db, intent, fallback, limit=limit), fallback
+    except NoMatchingCandidate:
+        raise NoMatchingCandidate(
+            f"No {primary.name} or {fallback.name} candidate matched this request closely enough."
+        ) from None

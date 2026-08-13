@@ -92,6 +92,22 @@ export async function sendFeedback({ sessionId, feedback, signal }) {
 }
 
 /**
+ * Continues a still-playing session onto its next track/segment with no
+ * mutation to the session's intent -- called automatically when the current
+ * one finishes, not by explicit user feedback (see sendFeedback above).
+ *
+ * @param {{ sessionId: string, signal?: AbortSignal }} params
+ */
+export async function advanceSession({ sessionId, signal }) {
+	const response = await apiRequest(`/sessions/${encodeURIComponent(sessionId)}/advance`, {
+		method: 'POST',
+		signal
+	});
+
+	return normalizeSession(response, '');
+}
+
+/**
  * @param {{ sessionId: string, signal?: AbortSignal }} params
  */
 export function stopSession({ sessionId, signal }) {

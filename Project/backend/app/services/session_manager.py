@@ -23,7 +23,7 @@ from app.schemas import (
     SessionRead,
     Track,
 )
-from app.services.pipeline.dependencies import CANDIDATE_RETRIEVERS, get_vibe_understander
+from app.services.pipeline.dependencies import get_vibe_understander
 from app.services.pipeline.interfaces import (
     AudioRenderer,
     CandidateRetriever,
@@ -31,8 +31,14 @@ from app.services.pipeline.interfaces import (
     TransitionPlanner,
     VibeUnderstander,
 )
-from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates
+from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
+
+# How many recently-played tracks a session remembers to avoid immediately
+# repeating one when advancing (requirement: continuous playback should work
+# through a candidate pool, not loop the same track back-to-back). Capped so
+# this never grows unbounded across a long-running session.
+_PLAYED_TRACK_HISTORY = 10
 
 COVER_URL = "/brand/zonix-logo.svg"
 
@@ -109,6 +115,10 @@ def _role_for(track: Track) -> str:
     return _ROLE_BY_BUCKET.get(track.vibe or "", "Now playing")
 
 
+def _track_key(track: Track) -> str:
+    return f"{track.source}:{track.source_track_id}"
+
+
 def _selected_moment_text(segment: SelectedSegment) -> str:
     where = (
         "the track's detected chorus/hook"
@@ -131,13 +141,15 @@ def _resolve_and_render(
     db: Session,
     intent: PromptIntent,
     retriever: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
     selector: SegmentSelector,
     planner: TransitionPlanner,
     renderer: AudioRenderer,
     *,
     previous_segment: SelectedSegment | None,
     prefers_smoother: bool,
-) -> tuple[Track, SelectedSegment, dict, dict, dict]:
+    exclude_track_keys: frozenset[str] = frozenset(),
+) -> tuple[Track, SelectedSegment, dict, dict, dict, CandidateRetriever]:
     """Runs CandidateRetriever -> SegmentSelector -> TransitionPlanner ->
     AudioRenderer for one session-sized (single track) resolution and
     returns the pieces needed to persist SessionState, plus a pipeline_trace
@@ -145,11 +157,27 @@ def _resolve_and_render(
     stages and a short result from each -- read by the internal debug panel
     (routers/debug.py). The caller fills in the vibe_understander stage,
     since understand() may or may not have been called this resolution
-    (feedback re-resolves without a new LLM call). Raises NoMatchingCandidate
-    when the retriever plainly found nothing."""
+    (feedback re-resolves without a new LLM call).
 
-    candidates = retrieve_candidates(db, intent, retriever, limit=5)
-    track = candidates[0]
+    `retriever` is tried first; `fallback_retriever` only runs when
+    `retriever` plainly finds nothing (e.g. Audius is unreachable, or its
+    search for a named artist comes back empty) -- never a substitute for
+    "found something, but the user already heard it". `exclude_track_keys`
+    skips already-played candidates within whichever retriever's results
+    actually came back, so a session can advance through a real candidate
+    pool instead of replaying the same top match; if every candidate is
+    excluded, the top match plays again rather than raising, since "loop
+    indefinitely" is the point once a
+    session's pool is exhausted. Raises NoMatchingCandidate only when both
+    retrievers come back empty."""
+
+    candidates, served_by = retrieve_candidates_with_fallback(
+        db, intent, retriever, fallback_retriever, limit=5
+    )
+    track = next(
+        (candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys),
+        candidates[0],
+    )
     segment = selector.select(db, track)
     transition = planner.plan(previous_segment, segment, prefers_smoother=prefers_smoother)
     rendered = renderer.render([segment], [transition])
@@ -169,8 +197,9 @@ def _resolve_and_render(
     }
     pipeline_trace = {
         "candidate_retriever": {
-            "implementation": type(retriever).__name__,
-            "name": retriever.name,
+            "implementation": type(served_by).__name__,
+            "name": served_by.name,
+            "fell_back": served_by is not retriever,
             "candidate_count": len(candidates),
             "selected_track": {
                 "source": track.source,
@@ -200,7 +229,7 @@ def _resolve_and_render(
         },
         "resolved_at": utc_now().isoformat(),
     }
-    return track, segment, now_playing, reasoning, pipeline_trace
+    return track, segment, now_playing, reasoning, pipeline_trace, served_by
 
 
 def serialize_session(session: DJSession) -> SessionRead:
@@ -255,13 +284,14 @@ def create_session(
     *,
     vibe: VibeUnderstander,
     retriever: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
     selector: SegmentSelector,
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> SessionRead:
     intent = _initial_intent(prompt, db, user_id, vibe)
-    _, _, now_playing, reasoning, pipeline_trace = _resolve_and_render(
-        db, intent, retriever, selector, planner, renderer,
+    track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
+        db, intent, retriever, fallback_retriever, selector, planner, renderer,
         previous_segment=None, prefers_smoother=False,
     )
     pipeline_trace["vibe_understander"] = {
@@ -276,11 +306,12 @@ def create_session(
         prompt=prompt,
         status="playing",
         vibe_label=now_playing["segment"]["track"]["vibe_label"] or "Balanced opener",
-        retriever_name=retriever.name,
+        retriever_name=served_by.name,
         intent_json=intent.model_dump(mode="json"),
         now_playing_json=now_playing,
         reasoning_json=reasoning,
         pipeline_trace_json=pipeline_trace,
+        played_track_keys_json=[_track_key(track)],
     )
     db.add(session)
     db.commit()
@@ -298,6 +329,8 @@ def apply_feedback(
     session: DJSession,
     feedback: str,
     *,
+    retriever: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
     selector: SegmentSelector,
     planner: TransitionPlanner,
     renderer: AudioRenderer,
@@ -326,11 +359,18 @@ def apply_feedback(
 
     resolved_again = False
     if mutated is not current_intent or prefers_smoother:
-        retriever = CANDIDATE_RETRIEVERS[session.retriever_name]
+        # Always try Audius-then-catalog fresh, rather than trusting
+        # session.retriever_name as a pinned choice: if Audius genuinely has
+        # nothing for this intent, that stays true on every re-resolution
+        # (feedback only mutates energy/vocals, never the artist/query), so
+        # this naturally keeps re-falling through to the catalog exactly
+        # when the original resolution needed to -- and recovers gracefully
+        # if Audius was down at creation but is back by the time feedback
+        # runs, or vice versa.
         previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
         try:
-            _, _, now_playing, reasoning, pipeline_trace = _resolve_and_render(
-                db, mutated, retriever, selector, planner, renderer,
+            track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
+                db, mutated, retriever, fallback_retriever, selector, planner, renderer,
                 previous_segment=previous_segment, prefers_smoother=prefers_smoother,
             )
             # Feedback mutates the stored intent with fixed keyword rules
@@ -346,7 +386,11 @@ def apply_feedback(
             session.now_playing_json = now_playing
             session.reasoning_json = reasoning
             session.pipeline_trace_json = pipeline_trace
+            session.retriever_name = served_by.name
             session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
+            session.played_track_keys_json = (
+                (session.played_track_keys_json or []) + [_track_key(track)]
+            )[-_PLAYED_TRACK_HISTORY:]
             resolved_again = True
         except NoMatchingCandidate:
             # Nothing matched the mutated intent closely enough; keep the
@@ -372,6 +416,63 @@ def apply_feedback(
     db.refresh(session)
     if resolved_again:
         notify_pipeline_debug_change()
+    return serialize_session(session)
+
+
+def advance_session(
+    db: Session,
+    session: DJSession,
+    *,
+    retriever: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
+    selector: SegmentSelector,
+    planner: TransitionPlanner,
+    renderer: AudioRenderer,
+) -> SessionRead:
+    """Continues a still-playing session onto the next track/segment
+    matching its current (unmutated) intent once the current one finishes --
+    the continuous, no-input-required loop this pipeline was built around.
+    Called automatically by the frontend on media-ended, not by user action,
+    so it never mutates intent the way feedback does; it only rotates
+    through the same candidate pool feedback would use, skipping whatever
+    the session already played recently so it doesn't immediately repeat.
+
+    Explicit coaching feedback (apply_feedback) still wins if the two race:
+    both are ordinary commits to the same DJSession row, so whichever
+    request's commit lands last is what persists -- no special locking
+    needed, same as any other concurrent write to one row."""
+
+    intent = PromptIntent.model_validate(session.intent_json)
+    previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
+    exclude = frozenset(session.played_track_keys_json or [])
+    try:
+        track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
+            db, intent, retriever, fallback_retriever, selector, planner, renderer,
+            previous_segment=previous_segment, prefers_smoother=False,
+            exclude_track_keys=exclude,
+        )
+    except NoMatchingCandidate:
+        # Nothing to advance to (e.g. Audius briefly unreachable); leave the
+        # session on its current track rather than ending it outright.
+        return serialize_session(session)
+
+    pipeline_trace["vibe_understander"] = {
+        "implementation": type(get_vibe_understander()).__name__,
+        "invoked": False,
+        "intent": intent.model_dump(mode="json"),
+    }
+    session.now_playing_json = now_playing
+    session.reasoning_json = reasoning
+    session.pipeline_trace_json = pipeline_trace
+    session.retriever_name = served_by.name
+    session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
+    session.played_track_keys_json = (
+        (session.played_track_keys_json or []) + [_track_key(track)]
+    )[-_PLAYED_TRACK_HISTORY:]
+
+    db.commit()
+    db.refresh(session)
+    notify_pipeline_debug_change()
     return serialize_session(session)
 
 
