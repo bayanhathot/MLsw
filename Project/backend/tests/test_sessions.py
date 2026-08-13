@@ -147,8 +147,11 @@ def test_named_artist_is_served_directly_by_audius_as_the_primary_retriever(
     assert body["audioUrl"].startswith("/api/media/renders/")
 
     session = db_session.query(DJSession).filter_by(id=body["id"]).one()
-    assert session.retriever_name == "audius"
-    assert session.pipeline_trace_json["candidate_retriever"]["name"] == "audius"
+    # AUDIUS_RETRIEVER defaults to "multi_query" (VIBE_RECOMMENDATION_DESIGN.md
+    # section 8), so the primary retriever's name is "audius_multi_query", not
+    # the older single-query retriever's plain "audius".
+    assert session.retriever_name == "audius_multi_query"
+    assert session.pipeline_trace_json["candidate_retriever"]["name"] == "audius_multi_query"
     assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 
@@ -171,7 +174,7 @@ def test_generic_vibe_prompt_with_no_artist_now_reaches_audius_first(
     assert body["nowPlaying"]["artist"] == "George Wassouf"
 
     session = db_session.query(DJSession).filter_by(id=body["id"]).one()
-    assert session.retriever_name == "audius"
+    assert session.retriever_name == "audius_multi_query"
     assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 
@@ -281,7 +284,7 @@ def test_feedback_self_heals_from_catalog_fallback_to_audius(client, monkeypatch
     assert feedback.json()["nowPlaying"]["artist"] == "George Wassouf"
 
     healed = db_session.query(DJSession).filter_by(id=session["id"]).one()
-    assert healed.retriever_name == "audius"
+    assert healed.retriever_name == "audius_multi_query"
     assert healed.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 

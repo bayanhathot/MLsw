@@ -17,7 +17,7 @@ import logging
 import os
 
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
-from app.services.pipeline.audius_retriever import AudiusCandidateRetriever
+from app.services.pipeline.audius_retriever import AudiusCandidateRetriever, MultiQueryAudiusRetriever
 from app.services.pipeline.catalog_retriever import CatalogTrackRetriever
 from app.services.pipeline.interfaces import (
     AudioRenderer,
@@ -65,11 +65,30 @@ def _build_vibe_understander() -> VibeUnderstander:
     )
 
 
+def _build_audius_retriever() -> CandidateRetriever:
+    """Which Audius retrieval strategy runs is a runtime setting --
+    AUDIUS_RETRIEVER -- not a class picked at import time, mirroring
+    VIBE_LLM_PROVIDER above. If the multi-query path (see
+    VIBE_RECOMMENDATION_DESIGN.md) ever behaves worse in practice, it's a
+    one-env-var rollback to the original single-query retriever, not a
+    revert.
+    """
+
+    mode = os.getenv("AUDIUS_RETRIEVER", "multi_query").strip().lower()
+    if mode == "multi_query":
+        return MultiQueryAudiusRetriever()
+    if mode == "single_query":
+        return AudiusCandidateRetriever()
+    raise RuntimeError(
+        f"Unknown AUDIUS_RETRIEVER={mode!r}; expected 'multi_query' or 'single_query'."
+    )
+
+
 # Stateless singletons: every implementation only takes a `db: Session` per
 # call, so one shared instance per process is enough.
 _vibe_understander = _build_vibe_understander()
 _catalog_retriever = CatalogTrackRetriever()
-_audius_retriever = AudiusCandidateRetriever()
+_audius_retriever = _build_audius_retriever()
 _segment_selector = LibrosaSegmentSelector()
 _transition_planner = DeterministicTransitionPlanner()
 _audio_renderer = PydubAudioRenderer()

@@ -26,10 +26,12 @@ class DJSession(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="playing")
     vibe_label: Mapped[str] = mapped_column(String(100), nullable=False)
     # Name of whichever CandidateRetriever actually served the current
-    # track ("catalog" or "audius") -- informational, not pinned: every
-    # resolution tries catalog first and falls through to Audius only when
-    # catalog finds nothing, so this can change from one resolution to the
-    # next (see session_manager._resolve_and_render).
+    # track ("catalog", or whichever Audius retriever name is configured --
+    # e.g. "audius_multi_query", see AUDIUS_RETRIEVER in
+    # pipeline/dependencies.py) -- informational, not pinned: every
+    # resolution tries Audius first and falls through to the catalog only
+    # when Audius finds nothing, so this can change from one resolution to
+    # the next (see session_manager._resolve_and_render).
     retriever_name: Mapped[str] = mapped_column(String(40), nullable=False)
     # The current, feedback-mutated PromptIntent for this session.
     intent_json: Mapped[dict] = mapped_column(JSON, nullable=False)

@@ -100,8 +100,9 @@ Deterministic, everywhere, with no exceptions:
   A session only reports `422` when *neither* retriever finds anything —
   never a silent substitute, and never a fabricated local match. Which
   retriever actually served is recorded on `DJSession.retriever_name` per
-  resolution (it can change between "audius" and "catalog" from one
-  resolution to the next -- see below), and in the debug panel's
+  resolution (it can change between "catalog" and whichever Audius retriever
+  name is configured -- e.g. "audius_multi_query" -- from one resolution to
+  the next -- see below), and in the debug panel's
   `candidate_retriever.fell_back` trace field.
 - **Segment selection.** `LibrosaSegmentSelector` reads a cached
   BPM/key/segment analysis (see below) or, for anything without one — an
