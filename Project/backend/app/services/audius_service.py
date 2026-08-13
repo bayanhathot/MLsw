@@ -1,47 +1,41 @@
-"""
-Audius service for Zonix.
+"""Audius service for Zonix.
 
 This service is responsible for communicating with the external Audius API.
 
 Why this file exists:
 - The router should not directly contain external API logic.
 - This file keeps Audius-specific code separated from FastAPI route code.
-- The rest of the backend can call search_tracks() without knowing the raw Audius API format.
+- The rest of the backend can call search_tracks() without knowing the raw
+  Audius API format.
 
-Current MVP behavior:
+Behavior:
 1. Receive a user prompt, for example: "chill electronic focus".
 2. Send the prompt to Audius track search.
 3. Receive raw Audius track data.
-4. Extract only the fields Zonix needs:
-   - track id
-   - title
-   - artist
-   - duration
-   - cover image
-   - stream URL
+4. Extract only the fields Zonix needs: track id, title, artist, duration,
+   cover image, stream URL.
 5. Return a clean list of track dictionaries.
 
-Important:
-This service does not create real song segments yet.
-It only fetches candidate tracks. The mix router later converts each track
-into a simple 45-second segment for the MVP.
-
-Future improvements:
-- Add better prompt-to-tag mapping.
-- Filter by genre, mood, or duration.
-- Handle Audius provider failures more gracefully.
-- Save fetched tracks into PostgreSQL.
-- Use real audio analysis to find the best song moments.
+This service only fetches candidate tracks -- it never creates catalog
+records. AudiusCandidateRetriever (pipeline/audius_retriever.py) wraps it
+behind the same CandidateRetriever interface as the local catalog, and
+CatalogTrackRetriever is used as a safety-net fallback when a search returns
+no results (see pipeline/dependencies.py). Provider failures (HTTP errors,
+timeouts, malformed payloads) are caught below and degrade to an empty
+result list rather than raising, the same fail-open pattern as the optional
+Ollama VibeUnderstander implementation.
 """
 
 import logging
+import os
 from urllib.parse import quote
 
 import httpx
 
-# Base URL for the Audius Discovery API.
-# We use it to search for tracks and build playable stream URLs.
-AUDIUS_API_BASE = "https://discoveryprovider.audius.co/v1"
+# Base URL for the Audius Discovery API. Overridable so a self-hosted or
+# alternate discovery node can be swapped in without a code change, matching
+# how OLLAMA_BASE_URL is configured.
+AUDIUS_API_BASE = os.getenv("AUDIUS_API_BASE", "https://discoveryprovider.audius.co/v1").rstrip("/")
 APP_NAME = "Zonix"
 logger = logging.getLogger(__name__)
 

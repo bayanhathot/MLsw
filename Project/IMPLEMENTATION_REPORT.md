@@ -1,5 +1,10 @@
 # Music Identity implementation report
 
+> **Point-in-time snapshot.** Written when Music Identity analytics first
+> shipped; test counts and coverage figures below are from that run, not the
+> current state. See [MUSIC_IDENTITY.md](MUSIC_IDENTITY.md) for the
+> maintained data-flow/architecture reference.
+
 ## Delivered
 
 - Raw, idempotent listening-event persistence with server-resolved metadata.

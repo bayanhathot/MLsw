@@ -1,6 +1,7 @@
 /** API functions and response normalization for persistent community mixes. */
 
-import { apiRequest, backendMediaUrl } from './api.js';
+import { apiRequest } from './api.js';
+import { normalizeSegment } from './segment.js';
 
 /**
  * @param {unknown} value
@@ -12,25 +13,7 @@ export function normalizeMix(value) {
 	}
 
 	const raw = /** @type {Record<string, any>} */ (value);
-	const segments = Array.isArray(raw.segments)
-		? raw.segments.map((segment, index) => ({
-				id: segment.id ?? index,
-				position: Number(segment.position ?? index + 1),
-				title: String(segment.title || `Segment ${index + 1}`),
-				artist: String(segment.artist || 'Unknown artist'),
-				audioUrl: backendMediaUrl(segment.audioUrl ?? segment.audio_url),
-				coverUrl: String(segment.coverUrl ?? segment.cover_url ?? ''),
-				startSecond: Number(segment.startSecond ?? segment.start_second ?? 0),
-				endSecond: Number(segment.endSecond ?? segment.end_second ?? 0),
-				transitionToNext: String(
-					segment.transitionToNext ?? segment.transition_to_next ?? 'crossfade'
-				),
-				source: String(segment.source ?? ''),
-				sourceTrackId: String(segment.sourceTrackId ?? segment.source_track_id ?? ''),
-				genre: String(segment.genre ?? ''),
-				vibe: String(segment.vibe ?? '')
-			}))
-		: [];
+	const segments = Array.isArray(raw.segments) ? raw.segments.map(normalizeSegment) : [];
 
 	return {
 		id: Number(raw.id),

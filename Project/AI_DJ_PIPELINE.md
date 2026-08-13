@@ -10,7 +10,7 @@ serves both `POST /sessions/start` / `POST /sessions/{id}/feedback` and
 prompt
   |
   v
-VibeUnderstander        deterministic keyword parse + optional Groq/Ollama refine
+VibeUnderstander        deterministic keyword parse + optional Ollama refine
   |  (PromptIntent: mood, energy, vocals, genres, artist, search_query)
   v
 CandidateRetriever      catalog (Postgres, fuzzy artist match) or Audius
@@ -118,73 +118,66 @@ runtime setting, **`VIBE_LLM_PROVIDER`**, resolved once at process startup in
 
 | `VIBE_LLM_PROVIDER` | Implementation | Calls | Requires |
 | --- | --- | --- | --- |
-| `groq` (default) | `GroqVibeUnderstander` | `prompt_parser.parse_prompt_groq` | `GROQ_API_KEY` |
-| `ollama` | `OllamaVibeUnderstander` | `prompt_parser.parse_prompt` | `OLLAMA_BASE_URL` + `OLLAMA_MODEL` |
+| `ollama` (default) | `OllamaVibeUnderstander` | `prompt_parser.parse_prompt` | `OLLAMA_BASE_URL` + `OLLAMA_MODEL` |
 | `none` | `DeterministicOnlyVibeUnderstander` | nothing — calls `deterministic_parse` directly | — |
 
-**Why Groq is the default:** it's a hosted, OpenAI-compatible API — there's no
-model to pull, no GPU/CPU capacity to provision, and no `ollama` container to
-keep warm, so a fresh deployment works the moment `GROQ_API_KEY` is set.
-**Why Ollama is kept, not replaced:** it has no external API dependency — for
-anyone who'd rather not send prompt text to a third party, or wants to keep
-working with no internet access. Switching between them (or turning the LLM
-step off entirely) is one environment variable — no code change, no redeploy
-of a different image.
+Ollama is the sole LLM option: it's fully local, so there's no hosted-API key
+to provision and no prompt text ever leaves the deployment. Turning the LLM
+step off entirely (`none`) is one environment variable — no code change, no
+redeploy of a different image.
 
-### Running with Ollama instead of Groq
+### Running with Ollama
 
 An `ollama` service (image `ollama/ollama:0.11.4`, a named volume at
 `/root/.ollama` so pulled models survive redeploys, no published port —
 only `backend` reaches it, over the internal Compose network) is defined in
 both `docker-compose.yml` (dev, behind the `ai` profile) and
-`docker-compose.prod.yml` (always started, same as `postgres`; `backend`'s
-`depends_on` waits on its healthcheck — `ollama list` — before starting, the
-same pattern used for the other backend dependencies). Starting it does not
-by itself change which provider serves requests — that's still
-`VIBE_LLM_PROVIDER`, which defaults to `groq` — it just makes the `ollama`
-option available to switch to.
+`docker-compose.prod.yml` (always started, same as `postgres`). In both
+files `backend`'s `depends_on` deliberately does **not** wait on ollama's
+healthcheck: `VIBE_LLM_PROVIDER=ollama` is the default, but the LLM step
+stays optional at every call site (`prompt_parser.parse_prompt` fails open to
+the deterministic parse), so booting the API must never block on the model
+container being healthy. Starting the `ollama` service by itself does not
+change behavior — that's still `VIBE_LLM_PROVIDER` — it just makes the
+`ollama` option usable once a model is pulled.
 
-To actually switch:
+To use it:
 
 1. Pull the model once (not part of the CI/CD pipeline — a manual,
    one-time step per environment, same as any other model artifact):
    ```powershell
+   docker compose --profile ai up -d ollama   # dev only; prod always runs it
    docker compose exec ollama ollama pull qwen3:8b
    ```
-2. Set `VIBE_LLM_PROVIDER=ollama` (`OLLAMA_BASE_URL`/`OLLAMA_MODEL` already
-   default to `http://ollama:11434` / `qwen3:8b` in both compose files, so no
-   further configuration is needed unless a different host or model is
-   wanted).
+2. Leave `VIBE_LLM_PROVIDER` unset or set it to `ollama`
+   (`OLLAMA_BASE_URL`/`OLLAMA_MODEL` already default to
+   `http://ollama:11434` / `qwen3:8b` in both compose files, so no further
+   configuration is needed unless a different host or model is wanted). To
+   turn the LLM step off instead, set `VIBE_LLM_PROVIDER=none`.
 3. Restart the `backend` service.
 
 `OllamaVibeUnderstander.understand` calls `prompt_parser.parse_prompt`, which
 `POST`s to `{OLLAMA_BASE_URL}/api/generate` with `model: "qwen3:8b"`,
-`format: PromptIntent.model_json_schema()`, and `stream: false` — the same
-JSON-schema-constrained request `parse_prompt_groq` makes against Groq, just
-against a different host and wire format.
+`format: PromptIntent.model_json_schema()`, and `stream: false` — a JSON
+schema (not just an instruction) constrains Ollama's decoding, so a response
+that doesn't validate against `PromptIntent` simply can't come back.
 
-Both providers are held to the exact same contract, enforced by a shared
-guardrail helper (`prompt_parser._apply_guardrails`) that both
-`parse_prompt` (Ollama) and `parse_prompt_groq` (Groq) call before returning:
-structurally constrained output (Ollama's `format` field is
-`PromptIntent.model_json_schema()`; Groq's `response_format` is a
-`json_schema`-typed response using the same schema), so a response that
-doesn't validate against `PromptIntent` simply can't come back — combined
-with the existing `pydantic.ValidationError` catch, any malformed output
-falls back to the deterministic parse. Even on a valid response, the
-deterministic pass still wins on `search_query` (always the raw prompt text)
-and `artist` (the LLM's guess is only used if the deterministic regex found
-nothing), and `genres` is filtered to a fixed allowlist — neither LLM can
-classify intent beyond that, and neither can inject an invented catalog entry
-into what gets searched for. If the configured provider isn't reachable,
-times out, returns something that fails validation, or its concurrency limit
-is full, both `parse_prompt` and `parse_prompt_groq` transparently return the
-deterministic result; nothing else in the pipeline changes.
-
-`GROQ_API_KEY` is required only when `VIBE_LLM_PROVIDER=groq` — read the same
-way `app.core.security` reads `SECRET_KEY`: at startup, raising a clear
-`RuntimeError` if it's missing, rather than failing confusingly on the first
-request. `ollama` and `none` never need it.
+A guardrail helper (`prompt_parser._apply_guardrails`) runs on every
+successful response before it's used: combined with the schema constraint and
+the existing `pydantic.ValidationError` catch, any malformed output falls
+back to the deterministic parse. Even on a valid response, the deterministic
+pass still wins on `search_query` (always the raw prompt text) and `artist`
+(the LLM's guess is only used if the deterministic regex found nothing), and
+`genres` is filtered to a fixed allowlist — the LLM can't classify intent
+beyond that, and can't inject an invented catalog entry into what gets
+searched for. If Ollama isn't reachable, times out, returns something that
+fails validation, or its concurrency limit is full, `parse_prompt`
+transparently returns the deterministic result; nothing else in the pipeline
+changes. A missing/incomplete `OLLAMA_BASE_URL`/`OLLAMA_MODEL` at startup logs
+one warning (`pipeline/dependencies.py`) rather than crashing the app —
+mirroring how `app.core.security` requires `SECRET_KEY`, but choosing to warn
+instead of raising, since this is an optional refinement step, not a
+correctness requirement.
 
 ## How the two old engines became one interface
 

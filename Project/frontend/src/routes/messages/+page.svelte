@@ -15,7 +15,7 @@
 	} from '$lib/services/messagingApi.js';
 	import { deleteAttachment } from '$lib/services/uploadApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
-	import { parseUtcDate } from '$lib/utils/dates.js';
+	import { formatUtcDate } from '$lib/utils/dates.js';
 
 	/** @type {import('$lib/types.js').Conversation[]} */
 	let conversations = $state([]);
@@ -177,10 +177,9 @@
 
 	/** @param {string} value */
 	function labelTime(value) {
-		const date = parseUtcDate(value);
-		return Number.isNaN(date.getTime())
-			? ''
-			: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		return formatUtcDate(value, (date) =>
+			date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+		);
 	}
 </script>
 

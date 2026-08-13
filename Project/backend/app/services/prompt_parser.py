@@ -1,12 +1,12 @@
-"""Optional LLM-refined prompt parsing (Groq or Ollama) with a deterministic
+"""Optional LLM-refined prompt parsing (Ollama) with a deterministic
 fallback.
 
 The LLM may classify intent, but it is never allowed to invent playable
 tracks.  Catalog candidates always come from Audius or the known local demo.
-Which provider (if any) `pipeline.vibe`'s VibeUnderstander calls is a
-startup-time choice made in `pipeline/dependencies.py`; the two `parse_prompt*`
-functions below are independent and each falls back to `deterministic_parse`
-on their own.
+Whether the VibeUnderstander in `pipeline.vibe` calls out to Ollama at all is
+a startup-time choice made in `pipeline/dependencies.py`; `parse_prompt`
+below falls back to `deterministic_parse` on its own whenever Ollama isn't
+configured, unreachable, or returns something invalid.
 """
 
 import json
@@ -33,7 +33,6 @@ ALLOWED_GENRES = {
     "techno",
 }
 _ollama_slots = BoundedSemaphore(max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "4")))))
-_groq_slots = BoundedSemaphore(max(1, min(16, int(os.getenv("GROQ_MAX_CONCURRENCY", "4")))))
 
 # Matches "by/like/similar to/reminds me of <name>" so a named artist can be
 # forwarded to CandidateRetriever's fuzzy catalog search. This is only ever a
@@ -88,9 +87,9 @@ def _apply_guardrails(intent: PromptIntent, fallback: PromptIntent) -> PromptInt
     the source for the search text, preventing invented song names from being
     promoted to catalog records. The regex-extracted artist wins over the
     LLM's guess for the same reason; the LLM's guess is only used when the
-    deterministic pass found nothing. Both parse_prompt (Ollama) and
-    parse_prompt_groq apply this identically, so neither provider can
-    override anything CandidateRetriever depends on.
+    deterministic pass found nothing. parse_prompt (Ollama) applies this
+    before returning, so the LLM can never override anything
+    CandidateRetriever depends on.
     """
 
     intent.genres = [genre.lower() for genre in intent.genres if genre.lower() in ALLOWED_GENRES]
@@ -135,55 +134,5 @@ def parse_prompt(prompt: str) -> PromptIntent:
         return fallback
     finally:
         _ollama_slots.release()
-
-    return _apply_guardrails(intent, fallback)
-
-
-def parse_prompt_groq(prompt: str) -> PromptIntent:
-    """Deterministic parse, optionally refined by a call to Groq's hosted API.
-
-    Mirrors parse_prompt's Ollama flow exactly (same instruction, same
-    guardrails, same fail-open-to-deterministic behavior) but calls Groq's
-    OpenAI-compatible chat-completions endpoint and asks for a JSON-schema
-    constrained response instead of Ollama's `format` field -- the same
-    "structurally guaranteed valid, not just instructed" guarantee.
-    """
-
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
-    base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
-    fallback = deterministic_parse(prompt)
-    if not api_key or not model:
-        return fallback
-
-    if not _groq_slots.acquire(timeout=0.05):
-        return fallback
-    try:
-        timeout_seconds = max(0.5, min(10.0, float(os.getenv("GROQ_TIMEOUT_SECONDS", "3.0"))))
-        with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
-            response = client.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": _refinement_instruction(prompt)}],
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "prompt_intent",
-                            "schema": PromptIntent.model_json_schema(),
-                        },
-                    },
-                },
-            )
-            response.raise_for_status()
-        payload = response.json()
-        raw = payload["choices"][0]["message"]["content"]
-        decoded = json.loads(raw) if isinstance(raw, str) else raw
-        intent = PromptIntent.model_validate(decoded)
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, ValidationError):
-        return fallback
-    finally:
-        _groq_slots.release()
 
     return _apply_guardrails(intent, fallback)

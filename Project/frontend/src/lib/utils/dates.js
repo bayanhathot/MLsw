@@ -19,3 +19,18 @@ export function parseUtcDate(iso) {
 
 	return new Date(hasTimezone ? iso : `${iso}Z`);
 }
+
+/**
+ * Parses a backend UTC timestamp and formats it, or returns `fallback` when
+ * the value is missing/unparseable. Centralizes the parse-then-guard pattern
+ * every per-feature date label (forum posts, profile hero, music identity,
+ * message timestamps) otherwise repeats individually.
+ * @param {string} iso
+ * @param {(date: Date) => string} format
+ * @param {string} [fallback]
+ * @returns {string}
+ */
+export function formatUtcDate(iso, format, fallback = '') {
+	const date = parseUtcDate(iso);
+	return Number.isNaN(date.getTime()) ? fallback : format(date);
+}

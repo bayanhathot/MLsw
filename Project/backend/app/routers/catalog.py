@@ -34,16 +34,16 @@ _MAX_AUDIO_BYTES = 10 * 1024 * 1024
 _STORE_WAIT_SECONDS = 5.0
 
 
-async def _read_limited(file: UploadFile, maximum_bytes: int) -> bytes:
-    body = bytearray()
+async def _iter_upload_file(file: UploadFile, chunk_size: int = 65536):
     while True:
-        chunk = await file.read(65536)
+        chunk = await file.read(chunk_size)
         if not chunk:
             break
-        body.extend(chunk)
-        if len(body) > maximum_bytes:
-            raise HTTPException(status_code=413, detail="File is too large.")
-    return bytes(body)
+        yield chunk
+
+
+async def _read_limited(file: UploadFile, maximum_bytes: int) -> bytes:
+    return await uq.read_limited_stream(_iter_upload_file(file), maximum_bytes)
 
 
 def _probe_duration_seconds(path: Path) -> int:

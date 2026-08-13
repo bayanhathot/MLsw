@@ -2,7 +2,9 @@
 
 CI (tests, build, and publishing images to GHCR) runs automatically on every
 push to `main` and needs no VM access at all — that part is complete and
-does not require anything below.
+does not require anything below. The workflow lives only at
+`.github/workflows/zonix-ci-cd.yml`, the one path GitHub Actions reads;
+don't keep a second copy of it here, it will silently drift.
 
 The separate "Deploy to Azure VM" job only runs when repository variable
 `VM_DEPLOY_ENABLED` equals `true`. It is intentionally left unset for now:

@@ -6,7 +6,7 @@
 	import ListeningDNA from './ListeningDNA.svelte';
 	import VibePatterns from './VibePatterns.svelte';
 	import PrivacyToggle from './PrivacyToggle.svelte';
-	import { parseUtcDate } from '$lib/utils/dates.js';
+	import { formatUtcDate } from '$lib/utils/dates.js';
 
 	/** @type {{ identity: Record<string, any>, isOwner?: boolean, privacyBusy?: boolean, periodBusy?: boolean, onPrivacyChange?: (value: 'private'|'friends'|'public') => void, onPeriodChange?: (value: '7d'|'30d'|'6m'|'all') => void }} */
 	let {
@@ -43,10 +43,12 @@
 	}
 	/** @param {string} value */
 	function dateLabel(value) {
-		const date = parseUtcDate(value);
-		return Number.isNaN(date.getTime())
-			? 'Recently'
-			: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+		return formatUtcDate(
+			value,
+			(date) =>
+				date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+			'Recently'
+		);
 	}
 </script>
 

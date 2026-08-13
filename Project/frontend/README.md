@@ -18,12 +18,17 @@ The production image serves the static build with unprivileged Nginx. Nginx prox
 ## User routes
 
 - `/` — prompt-driven AI DJ session and media-event-driven player.
-- `/feed` — published mixes with full segment playback, likes, and saves.
+- `/feed` — Discover: published mixes with full segment playback, likes, and saves.
 - `/library` — authenticated draft generation, editing, publishing, and saved mixes.
-- `/forum` — public discussions with authenticated posts, anonymous mode, attachments, comments, and reversible votes.
-- `/social` — authenticated direct messages, attachments, durable notifications, and live notification refresh.
-- `/profile` — authenticated profile and the forum activity metrics supplied by the backend.
+- `/community` — Friends / Explore / Discussions / People: posts, anonymous mode, attachments, comments, reversible votes, and the social graph.
+- `/messages` — authenticated direct messages, attachments, durable notifications, and live notification refresh.
+- `/users/[username]` — public listener profiles; `/profile` is the authenticated owner view with Music Identity analytics.
 - `/login` and `/register` — HTTP-only cookie authentication.
+
+`/forum` and `/social` still exist only as compatibility redirects to
+`/community` and `/messages` respectively — see
+[SOCIAL_PRODUCT_V3.md](../SOCIAL_PRODUCT_V3.md) for the full navigation
+rationale.
 
 ## Quality gates
 

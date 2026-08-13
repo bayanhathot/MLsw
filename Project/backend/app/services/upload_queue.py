@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+from collections.abc import AsyncIterable
 from itertools import count
 from pathlib import Path
 from queue import Full, PriorityQueue
@@ -10,7 +11,26 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 logger = logging.getLogger(__name__)
+
+
+async def read_limited_stream(chunks: AsyncIterable[bytes], maximum_bytes: int) -> bytes:
+    """Read an async byte-chunk stream without ever buffering past the limit.
+
+    Shared by every upload path (catalog tracks, forum/message/DM
+    attachments) that needs a hard body-size cap enforced while streaming,
+    rather than after a full read.
+    """
+
+    body = bytearray()
+    async for chunk in chunks:
+        if len(body) + len(chunk) > maximum_bytes:
+            raise HTTPException(status_code=413, detail="File is too large.")
+        body.extend(chunk)
+    return bytes(body)
+
 
 # Sentinel job_id prefix for analysis-only tasks pushed onto the same
 # worker pool (requirement 5: reuse this queue, don't build a second async

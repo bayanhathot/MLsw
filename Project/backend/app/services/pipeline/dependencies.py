@@ -7,6 +7,7 @@ Audius, matching each surface's existing behavior; either can be repointed
 independently.
 """
 
+import logging
 import os
 
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
@@ -21,37 +22,40 @@ from app.services.pipeline.interfaces import (
 )
 from app.services.pipeline.segment_selector import LibrosaSegmentSelector
 from app.services.pipeline.transition_planner import DeterministicTransitionPlanner
-from app.services.pipeline.vibe import (
-    DeterministicOnlyVibeUnderstander,
-    GroqVibeUnderstander,
-    OllamaVibeUnderstander,
-)
+from app.services.pipeline.vibe import DeterministicOnlyVibeUnderstander, OllamaVibeUnderstander
+
+logger = logging.getLogger(__name__)
 
 
 def _build_vibe_understander() -> VibeUnderstander:
     """Which LLM (if any) refines the deterministic parse is a runtime
     setting -- VIBE_LLM_PROVIDER -- not a class picked at import time, so the
     concrete implementation can be switched with no code change. Defaults to
-    Groq (faster to deploy: no local model to host); "ollama" runs fully
-    local instead, "none" skips the LLM step entirely.
+    Ollama, the sole LLM option (fully local, no hosted-API dependency);
+    "none" skips the LLM step entirely.
     """
 
-    provider = os.getenv("VIBE_LLM_PROVIDER", "groq").strip().lower()
-    if provider == "groq":
-        # Read the same way app.core.security reads SECRET_KEY: required at
-        # startup, but only in this branch -- "ollama"/"none" never need it.
-        if not os.getenv("GROQ_API_KEY", "").strip():
-            raise RuntimeError(
-                "GROQ_API_KEY is not set. Check your .env file, or set "
-                "VIBE_LLM_PROVIDER=ollama or VIBE_LLM_PROVIDER=none instead."
-            )
-        return GroqVibeUnderstander()
+    provider = os.getenv("VIBE_LLM_PROVIDER", "ollama").strip().lower()
     if provider == "ollama":
+        # A missing/incomplete config here must not crash the whole app:
+        # parse_prompt already fails open to the deterministic parse on
+        # every call when OLLAMA_BASE_URL/OLLAMA_MODEL are unset or the
+        # request fails/times out (same as Audius being unavailable), so the
+        # optional LLM step degrading gracefully must not depend on
+        # remembering to also set VIBE_LLM_PROVIDER=none, and must never
+        # gate startup on the ollama container's health (see
+        # docker-compose.prod.yml's backend service).
+        if not os.getenv("OLLAMA_BASE_URL", "").strip() or not os.getenv("OLLAMA_MODEL", "").strip():
+            logger.warning(
+                "VIBE_LLM_PROVIDER=ollama but OLLAMA_BASE_URL/OLLAMA_MODEL "
+                "are not fully set; prompt classification will use the "
+                "deterministic parse only."
+            )
         return OllamaVibeUnderstander()
     if provider == "none":
         return DeterministicOnlyVibeUnderstander()
     raise RuntimeError(
-        f"Unknown VIBE_LLM_PROVIDER={provider!r}; expected 'groq', 'ollama', or 'none'."
+        f"Unknown VIBE_LLM_PROVIDER={provider!r}; expected 'ollama' or 'none'."
     )
 
 

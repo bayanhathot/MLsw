@@ -23,7 +23,13 @@ from app.database.models.user import User
 from app.routers.auth import get_current_user, get_optional_current_user
 from app.schemas import AttachmentRead, UploadBatchRequest, UploadJobRead
 from app.services import forum_service, social_service
-from app.services.upload_queue import ALLOWED_TYPES, UPLOAD_DIR, upload_queue, validate_upload
+from app.services.upload_queue import (
+    ALLOWED_TYPES,
+    UPLOAD_DIR,
+    read_limited_stream,
+    upload_queue,
+    validate_upload,
+)
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 logger = logging.getLogger(__name__)
@@ -53,14 +59,7 @@ def _decode_filename(value: str) -> str:
 
 
 async def _read_limited_body(request: Request, maximum_bytes: int) -> bytes:
-    """Read an ASGI body without ever accumulating more than the limit."""
-
-    body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > maximum_bytes:
-            raise HTTPException(status_code=413, detail="File is too large.")
-        body.extend(chunk)
-    return bytes(body)
+    return await read_limited_stream(request.stream(), maximum_bytes)
 
 
 def _public_job(db: Session, job: dict, current_user: User) -> UploadJobRead:

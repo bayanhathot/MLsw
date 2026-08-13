@@ -1,5 +1,5 @@
 <script>
-	import { parseUtcDate } from '$lib/utils/dates.js';
+	import { formatUtcDate } from '$lib/utils/dates.js';
 
 	/** @type {{ username: string, displayName?: string, avatarUrl?: string, bio?: string, memberSince?: string, isOwner?: boolean, onEdit?: () => void }} */
 	let {
@@ -15,10 +15,9 @@
 
 	/** @param {string} value */
 	function memberDate(value) {
-		const date = parseUtcDate(value);
-		return Number.isNaN(date.getTime())
-			? ''
-			: date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+		return formatUtcDate(value, (date) =>
+			date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+		);
 	}
 </script>
 

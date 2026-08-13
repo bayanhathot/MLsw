@@ -1,6 +1,7 @@
 /** Canonical frontend API adapter for the `/sessions` workflow. */
 
 import { apiRequest, backendMediaUrl } from './api.js';
+import { normalizeSegment } from './segment.js';
 
 /**
  * @param {unknown} value
@@ -25,21 +26,7 @@ export function normalizeSession(value, fallbackPrompt) {
 
 	const raw = /** @type {Record<string, any>} */ (value);
 	const rawSegments = Array.isArray(raw.segments) ? raw.segments : [];
-	const segments = rawSegments.map((segment, index) => ({
-		id: segment.id ?? index,
-		position: Number(segment.position ?? index + 1),
-		title: text(segment.title, `Segment ${index + 1}`),
-		artist: text(segment.artist, 'Unknown artist'),
-		audioUrl: backendMediaUrl(text(segment.audioUrl ?? segment.audio_url)),
-		coverUrl: text(segment.coverUrl ?? segment.cover_url),
-		startSecond: Number(segment.startSecond ?? segment.start_second ?? 0),
-		endSecond: Number(segment.endSecond ?? segment.end_second ?? 0),
-		transitionToNext: text(segment.transitionToNext ?? segment.transition_to_next, 'crossfade'),
-		source: text(segment.source),
-		sourceTrackId: text(segment.sourceTrackId ?? segment.source_track_id),
-		genre: text(segment.genre),
-		vibe: text(segment.vibe)
-	}));
+	const segments = rawSegments.map(normalizeSegment);
 	const firstSegment = segments[0];
 	const rawNowPlaying = raw.nowPlaying ?? raw.now_playing ?? {};
 	const vibeLabel = text(raw.vibeLabel ?? raw.vibe_label, text(raw.status, 'Your mix'));

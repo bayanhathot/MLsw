@@ -97,9 +97,9 @@ The per-file limit is 10 MiB and the decoded batch limit is 7 MiB.
 optionally classify a bounded set of moods, energy levels, vocals, and
 genres, but its output cannot invent playable catalog items. Invalid,
 unavailable, or timed-out LLM responses fall back to deterministic parsing.
-Which provider runs is `VIBE_LLM_PROVIDER` (`groq` by default, or `ollama` /
-`none`) — see [AI_DJ_PIPELINE.md](../AI_DJ_PIPELINE.md) for the full
-breakdown of both.
+Which provider runs is `VIBE_LLM_PROVIDER` (`ollama` by default -- the sole
+LLM option -- or `none`) — see [AI_DJ_PIPELINE.md](../AI_DJ_PIPELINE.md) for
+the full breakdown.
 
 `audius_service.py` searches the external catalog defensively. Provider errors
 or malformed nested fields produce a controlled local fallback instead of a
@@ -149,10 +149,10 @@ enable it silently in production.
   row has not yet been materialized.
 - Set `TRUST_PROXY_HEADERS=true` only when direct backend access is blocked and
   the trusted proxy replaces forwarding headers.
-- Groq (the default LLM provider) only needs `GROQ_API_KEY` set. Ollama is
-  opt-in (`VIBE_LLM_PROVIDER=ollama`); see the root guide for the exact
-  profile and model-pull commands — no multi-gigabyte model downloads happen
-  automatically.
+- Ollama is the default (and only) LLM provider, gated behind
+  `VIBE_LLM_PROVIDER=ollama`; set `VIBE_LLM_PROVIDER=none` to skip the LLM
+  step entirely. See the root guide for the exact profile and model-pull
+  commands — no multi-gigabyte model downloads happen automatically.
 
 For full architecture, deployment prerequisites, current limitations, and the
 MLOps roadmap, use [the canonical project guide](../ZONIX_PROJECT_README.md).

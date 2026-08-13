@@ -16,7 +16,7 @@
 	import { reportContent } from '$lib/services/socialApi.js';
 	import { getMix } from '$lib/services/mixApi.js';
 	import { playerStore } from '$lib/stores/playerStore.js';
-	import { parseUtcDate } from '$lib/utils/dates.js';
+	import { formatUtcDate } from '$lib/utils/dates.js';
 
 	/** @typedef {import('$lib/types.js').ForumPost} ForumPost */
 	/** @typedef {import('$lib/types.js').ForumComment} ForumComment */
@@ -62,10 +62,11 @@
 
 	/** @param {string} value */
 	function formatDate(value) {
-		const date = parseUtcDate(value);
-		return Number.isNaN(date.getTime())
-			? 'Recently'
-			: date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+		return formatUtcDate(
+			value,
+			(date) => date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }),
+			'Recently'
+		);
 	}
 
 	async function toggleComments() {

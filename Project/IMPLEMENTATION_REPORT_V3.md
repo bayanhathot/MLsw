@@ -1,5 +1,10 @@
 # Zonix V3 Implementation Report
 
+> **Point-in-time snapshot.** Written when the V3 social/community features
+> first shipped; test counts and coverage figures below are from that run,
+> not the current state. See [SOCIAL_PRODUCT_V3.md](SOCIAL_PRODUCT_V3.md)
+> for the maintained architecture reference.
+
 ## Goal
 
 Move Zonix closer to a coherent music-social product while deliberately postponing ML/AI model development.

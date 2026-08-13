@@ -211,11 +211,8 @@ def health():
 def model_info():
     """Describe the configured selection implementation without overstating it."""
 
-    provider = os.getenv("VIBE_LLM_PROVIDER", "groq").strip().lower()
-    if provider == "groq":
-        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
-        configured = bool(os.getenv("GROQ_API_KEY", "").strip())
-    elif provider == "ollama":
+    provider = os.getenv("VIBE_LLM_PROVIDER", "ollama").strip().lower()
+    if provider == "ollama":
         model = os.getenv("OLLAMA_MODEL", "").strip()
         configured = bool(os.getenv("OLLAMA_BASE_URL", "").strip() and model)
     else:

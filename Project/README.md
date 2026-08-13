@@ -8,10 +8,10 @@ deterministic `TransitionPlanner` -> pydub/ffmpeg `AudioRenderer`) — see
 [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full write-up. It is not a
 trained music model: candidate ordering is deterministic string similarity,
 keyword rules, and BPM/key arithmetic throughout, with one optional,
-schema-constrained LLM call (Groq by default, or a fully local Ollama model)
+schema-constrained LLM call (a fully local Ollama model, the sole LLM option)
 for prompt classification.
 
-## Quick startt
+## Quick start
 
 ```powershell
 Copy-Item .env.example .env
@@ -37,7 +37,7 @@ migrations, and then starts the API and UI.
 | Music Identity analytics, raw listening events, period filters, and private/friends/public visibility | Implemented full-stack infrastructure; Listening DNA ML intentionally deferred |
 | Bounded upload queue and persistent attachment volume | Implemented prototype; queue state is process-local |
 | Trained ranking/recommendation model | Deliberately not implemented; see [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) |
-| LLM prompt refinement | Implemented; Groq (default, hosted) or Ollama (local, `VIBE_LLM_PROVIDER`) |
+| LLM prompt refinement | Implemented; Ollama (local, sole option, `VIBE_LLM_PROVIDER`) or off (`none`) |
 | CI | Installed at repository root; the first hosted run is still pending |
 | Azure CD | Template only; VM, DNS, secrets, and first deployment are external prerequisites |
 

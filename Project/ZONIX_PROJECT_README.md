@@ -55,11 +55,9 @@ docker compose --profile tools up -d postgres adminer
 The prompt parser has a deterministic fallback either way. Which LLM (if any)
 refines it is `VIBE_LLM_PROVIDER` in `.env`:
 
-- **`groq`** (default) — hosted, OpenAI-compatible, no container to run.
-  Set `GROQ_API_KEY` and start the stack normally.
-- **`ollama`** — fully local. Start the profile and explicitly pull the
-  configured model once (the repository does not download multi-gigabyte
-  models automatically):
+- **`ollama`** (default) — fully local, the sole LLM option. Start the
+  profile and explicitly pull the configured model once (the repository does
+  not download multi-gigabyte models automatically):
 
   ```powershell
   docker compose --profile ai up -d ollama
@@ -92,7 +90,7 @@ browser
                  -> PostgreSQL
                  -> named attachment volume
                  -> Audius search (controlled local fallback)
-                 -> Groq or Ollama (optional intent classification)
+                 -> Ollama (optional, local intent classification)
 ```
 
 The frontend uses `/api` rather than a hardcoded localhost backend. Nginx
@@ -160,9 +158,11 @@ lightweight reproducible ML baseline, production build and Chromium route
 smoke tests, Compose validation, and both container builds. Its first hosted
 result requires a push or pull request. Protect `main` and require these checks
 before merging.
-Backend coverage is gated at 80% (the current implementation run is 88.49%). Ratchet
-the gate upward as WebSocket and queue internals gain deterministic tests
-rather than weakening it when coverage falls.
+Backend coverage is gated at 80% (currently around 87-88%; run
+`pytest --cov=app --cov-report=term-missing` for the exact figure rather than
+trusting a number pinned in this doc). Ratchet the gate upward as WebSocket
+and queue internals gain deterministic tests rather than weakening it when
+coverage falls.
 
 ## AI-DJ pipeline
 
@@ -173,9 +173,10 @@ end-to-end. The AI-DJ request path (session start, feedback, mix generation)
 is now one consolidated, swappable pipeline. See
 [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full stage-by-stage writeup,
 including exactly which parts are deterministic versus the one
-schema-constrained LLM call (Groq by default, or Ollama for a fully local
-setup -- switchable via `VIBE_LLM_PROVIDER`), and what's deliberately left
-for later (a real trained ranking model, if one is ever wanted).
+schema-constrained LLM call (a fully local Ollama model, the sole LLM
+option -- toggle it off via `VIBE_LLM_PROVIDER=none`), and what's
+deliberately left for later (a real trained ranking model, if one is ever
+wanted).
 
 ## Course-feedback status and next milestones
 
@@ -185,7 +186,7 @@ for later (a real trained ranking model, if one is ever wanted).
 | Long-term memory | Authenticated feedback is persisted as user preference strength and exposed on the profile UI | Verify that preferences improve ranked results with a labeled evaluation |
 | Hallucination robustness | Provider/local catalog boundaries and deterministic fallback; offline silence/catalog-integrity metrics | Compute silence features for the production catalog and reject every unknown segment ID at the API boundary |
 | Upload job queue | Raw single and JSON-base64 batch upload endpoints, type/signature/size validation, bounded parallel priority queue, status polling, protected media, UI uploader, and persistent file volume | Add durable Redis-backed job state, retries/cancellation/progress, codec decoding, object storage, and restart/load tests |
-| LLM intent parsing | Optional Groq (default) or Ollama intent parser, switchable via `VIBE_LLM_PROVIDER`, with deterministic fallback | Benchmark the chosen model and add bounded concurrency/load tests; never let LLM text create catalog records |
+| LLM intent parsing | Optional, local-only Ollama intent parser (sole LLM option), switchable off via `VIBE_LLM_PROVIDER=none`, with deterministic fallback | Benchmark the chosen model and add bounded concurrency/load tests; never let LLM text create catalog records |
 | Community/communication | Friends, search/discovery, public profiles, mix feed/library, native mix sharing, Friends/Explore/Discussions feeds, posts/comments/votes, anonymity in Discussions, protected attachments, friend-only DMs, durable notifications, block/report infrastructure, and WebSocket UI are implemented | Expand browser E2E to mutating flows against live PostgreSQL; add accessibility tests, moderation review UI, shared Redis WebSocket pub/sub, pagination/load tests, and later collaborative mixes |
 | CI/CD/deployment | Reproducible CI/container builds and a secrets-gated Azure/GHCR deployment template | Configure the supplied host/domain and protected secrets, perform the first deploy, test rollback, and add an external uptime check |
 

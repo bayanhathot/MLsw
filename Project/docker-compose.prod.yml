@@ -18,15 +18,10 @@ x-backend-environment: &backend-environment
   UPLOAD_QUEUE_CAPACITY: ${UPLOAD_QUEUE_CAPACITY:-32}
   UPLOAD_JOB_TTL_SECONDS: ${UPLOAD_JOB_TTL_SECONDS:-3600}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
-  # Groq is the production default: no local model to host. Set
-  # VIBE_LLM_PROVIDER=ollama (and point OLLAMA_BASE_URL at a self-hosted
-  # instance) to run fully local instead, or "none" to skip the LLM step.
-  VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-groq}
-  GROQ_API_KEY: "${GROQ_API_KEY:-}"
-  GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
-  GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
-  GROQ_TIMEOUT_SECONDS: ${GROQ_TIMEOUT_SECONDS:-5}
-  GROQ_MAX_CONCURRENCY: ${GROQ_MAX_CONCURRENCY:-4}
+  # Ollama is the sole LLM option and the production default: fully local,
+  # no hosted-API key to provision. Set VIBE_LLM_PROVIDER=none to skip the
+  # LLM step entirely instead.
+  VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-ollama}
   # Defaults match the "ollama" service below, so VIBE_LLM_PROVIDER=ollama
   # works with no further configuration once qwen3:8b is pulled.
   OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
@@ -73,9 +68,9 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # Fully local, opt-in alternative to Groq for VibeUnderstander refinement
-  # (VIBE_LLM_PROVIDER=ollama). Runs regardless of which provider is
-  # selected, same as postgres; nothing calls it unless that env var is set.
+  # Fully local VibeUnderstander refinement (VIBE_LLM_PROVIDER=ollama, the
+  # default). Runs regardless of which provider is selected, same as
+  # postgres, so it's ready even if VIBE_LLM_PROVIDER=none is set instead.
   # qwen3:8b is not bundled in the image and must be pulled once after the
   # volume is first created: `docker compose exec ollama ollama pull qwen3:8b`.
   ollama:
@@ -117,8 +112,11 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-      ollama:
-        condition: service_healthy
+      # Deliberately NOT gated on ollama's healthcheck: even though it's now
+      # the default provider, the LLM step is still optional at every call
+      # site (prompt_parser.parse_prompt fails open to the deterministic
+      # parse). Requiring ollama to be healthy here would turn that optional
+      # refinement into a hard dependency for booting at all.
     healthcheck:
       test:
         - CMD
