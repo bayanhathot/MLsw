@@ -46,6 +46,10 @@ def clean_database(tmp_path, monkeypatch):
     # validation tests never write runtime media into the source tree.
     monkeypatch.setattr("app.services.upload_queue.UPLOAD_DIR", tmp_path)
     monkeypatch.setattr("app.routers.uploads.UPLOAD_DIR", tmp_path)
+    # The catalog-track analysis job runs on a queue worker thread and opens
+    # its own session (there's no per-request Depends(get_db) there); point
+    # it at the same in-memory test database instead of the real one.
+    monkeypatch.setattr("app.database.database.SessionLocal", TestingSessionLocal)
     auth_rate_limit.reset()
     write_rate_limit.reset()
     with TestingSessionLocal() as db:

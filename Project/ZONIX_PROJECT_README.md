@@ -158,23 +158,17 @@ Backend coverage is gated at 80% (the current implementation run is 88.49%). Rat
 the gate upward as WebSocket and queue internals gain deterministic tests
 rather than weakening it when coverage falls.
 
-## ML/MLOps baseline
+## AI-DJ pipeline
 
-See [ML_PIPELINE.md](ML_PIPELINE.md). In short:
-
-```powershell
-python -m venv .ml-venv
-.\.ml-venv\Scripts\Activate.ps1
-python -m pip install --requirement requirements-ml.txt
-dvc repro
-dvc metrics show
-mlflow ui --backend-store-uri ./mlruns
-```
-
-The sample catalog is synthetic and its metrics are only a pipeline smoke test.
-There is no configured DVC remote, no production dataset, and no promoted model
-artifact. Real experiments must record licensed-data provenance, Git revision,
-parameters, metrics, and artifacts in MLflow.
+The offline DVC/MLflow tag-overlap ranking baseline (`ml_pipeline.py`) has been
+removed: nothing in the running app ever called it, and this project has no
+ranking/scoring stage by design -- candidate ordering is deterministic
+end-to-end. The AI-DJ request path (session start, feedback, mix generation)
+is now one consolidated, swappable pipeline. See
+[AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full stage-by-stage writeup,
+including exactly which parts are deterministic versus the one
+schema-constrained Ollama call, and what's deliberately left for later (a real
+trained ranking model, if one is ever wanted).
 
 ## Course-feedback status and next milestones
 

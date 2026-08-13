@@ -1,6 +1,7 @@
 """Parallel priority queue for bounded media validation and storage."""
 
 import hashlib
+import logging
 import os
 from itertools import count
 from pathlib import Path
@@ -8,6 +9,14 @@ from queue import Full, PriorityQueue
 from threading import Event, Lock, Thread
 from time import monotonic
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+# Sentinel job_id prefix for analysis-only tasks pushed onto the same
+# worker pool (requirement 5: reuse this queue, don't build a second async
+# system). These never occupy self._jobs -- there's nothing for a client to
+# poll, the caller already has the catalog_track_id it queued.
+_ANALYZE_PREFIX = "analyze:"
 
 ALLOWED_TYPES = {
     "image/jpeg": ("image", ".jpg", 8 * 1024 * 1024),
@@ -83,7 +92,14 @@ class UploadQueue:
         if workers > 0:
             Thread(target=self._cleanup_worker, name="zonix-upload-cleanup", daemon=True).start()
 
-    def _new_job(self, owner_id: int, filename: str, content_type: str, priority: int) -> dict:
+    def _new_job(
+        self,
+        owner_id: int,
+        filename: str,
+        content_type: str,
+        priority: int,
+        storage_subdir: str = "",
+    ) -> dict:
         job_id = f"upload_{uuid4().hex}"
         return {
             "job_id": job_id,
@@ -91,6 +107,9 @@ class UploadQueue:
             "filename": filename.replace("\\", "/").rsplit("/", 1)[-1],
             "content_type": content_type.split(";", 1)[0].strip().lower(),
             "priority": priority,
+            # "" stores at UPLOAD_DIR root (attachments); a subdirectory name
+            # (e.g. "catalog") keeps other upload kinds in their own namespace.
+            "storage_subdir": storage_subdir,
             "status": "queued",
             "error": None,
             "result": None,
@@ -144,7 +163,15 @@ class UploadQueue:
         while not self._cleanup_wakeup.wait(interval):
             self._prune()
 
-    def submit(self, owner_id: int, filename: str, content_type: str, data: bytes, priority: int) -> dict:
+    def submit(
+        self,
+        owner_id: int,
+        filename: str,
+        content_type: str,
+        data: bytes,
+        priority: int,
+        storage_subdir: str = "",
+    ) -> dict:
         with self._submission_lock:
             self._prune()
             with self._lock:
@@ -152,12 +179,24 @@ class UploadQueue:
                     raise Full
             if self._queue.full():
                 raise Full
-            job = self._new_job(owner_id, filename, content_type, priority)
+            job = self._new_job(owner_id, filename, content_type, priority, storage_subdir)
             job_id = job["job_id"]
             with self._lock:
                 self._jobs[job_id] = job
             self._queue.put_nowait((-priority, next(self._sequence), job_id, data))
         return self.public(job_id)
+
+    def submit_analysis(self, catalog_track_id: int, priority: int = 5) -> None:
+        """Queue a post-store analysis task on the same worker pool.
+
+        Fire-and-forget: there is no job status to poll here, the caller
+        already holds the catalog_track_id it queued and can read the
+        CatalogTrack row's analysis_status directly once it wants to know.
+        """
+
+        self._queue.put_nowait(
+            (-priority, next(self._sequence), f"{_ANALYZE_PREFIX}{catalog_track_id}", None)
+        )
 
     def submit_many(self, items: list[tuple[int, str, str, bytes, int]]) -> list[dict]:
         """Atomically accept a batch or enqueue none of it."""
@@ -204,14 +243,19 @@ class UploadQueue:
     def _worker(self) -> None:
         while True:
             _, _, job_id, data = self._queue.get()
+            if job_id.startswith(_ANALYZE_PREFIX):
+                self._run_analysis(job_id[len(_ANALYZE_PREFIX):])
+                self._queue.task_done()
+                continue
             with self._lock:
                 job = self._jobs[job_id]
                 job["status"] = "processing"
             try:
                 kind, extension, _ = validate_upload(job["filename"], job["content_type"], data)
                 storage_name = f"{uuid4().hex}{extension}"
-                UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                path = UPLOAD_DIR / storage_name
+                target_dir = UPLOAD_DIR / job["storage_subdir"] if job["storage_subdir"] else UPLOAD_DIR
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path = target_dir / storage_name
                 path.write_bytes(data)
                 result = {
                     "kind": kind,
@@ -229,6 +273,19 @@ class UploadQueue:
                     job["error"] = str(exc)
             finally:
                 self._queue.task_done()
+
+    @staticmethod
+    def _run_analysis(catalog_track_id_text: str) -> None:
+        try:
+            catalog_track_id = int(catalog_track_id_text)
+            # Imported lazily so importing this module never pulls in
+            # librosa's heavy dependency tree unless an analysis task
+            # actually runs.
+            from app.services.audio_analysis import analyze_catalog_track
+
+            analyze_catalog_track(catalog_track_id)
+        except Exception:
+            logger.exception("Catalog track analysis job failed for id=%s", catalog_track_id_text)
 
 
 upload_queue = UploadQueue(

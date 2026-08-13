@@ -1,8 +1,14 @@
 # Zonix
 
 Zonix is a SvelteKit, FastAPI, and PostgreSQL prototype for prompt-guided DJ
-sessions. It currently has a working UI/API/database vertical slice; it is not
-yet a trained music model or a real audio-transition engine.
+sessions. Session start/feedback and mix generation are routed through one
+consolidated, swappable AI-DJ pipeline (`VibeUnderstander` -> deterministic
+catalog/Audius `CandidateRetriever` -> librosa `SegmentSelector` ->
+deterministic `TransitionPlanner` -> pydub/ffmpeg `AudioRenderer`) — see
+[AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full write-up. It is not a
+trained music model: candidate ordering is deterministic string similarity,
+keyword rules, and BPM/key arithmetic throughout, with one optional,
+schema-constrained Ollama call for prompt classification.
 
 ## Quick startt
 
@@ -19,27 +25,32 @@ migrations, and then starts the API and UI.
 | --- | --- |
 | Svelte UI, player controls, and cookie-auth client | Implemented |
 | FastAPI auth, CSRF origin guard, and rate limits | Implemented |
-| Persistent sessions, feedback, and user preferences | Implemented |
-| Audius mix planning with a controlled local fallback | Implemented prototype |
+| Persistent sessions, feedback, and user preferences | Implemented, retriever-agnostic (works against catalog or Audius) |
+| Consolidated AI-DJ pipeline: catalog + Audius candidate retrieval, librosa segment selection, deterministic transition planning | Implemented |
+| Real pydub/ffmpeg audio rendering and crossfading (mixes + sessions) | Implemented |
+| Catalog track upload (album/artist/lyrics + audio) with async BPM/key/segment analysis | Implemented |
+| Fuzzy artist-name catalog search (Postgres pg_trgm, pure-Python fallback) | Implemented |
 | Mix library/feed, publishing, likes, and saves | Implemented UI/API vertical slice |
 | Community: Friends/Explore/Discussions/People, posts/comments/votes, native mix sharing, and attachments | Implemented UI/API vertical slice |
 | Social-first public profiles, mutual friends, search/discovery, friend-only DMs, live/durable notifications, block/report | Implemented UI/API vertical slice |
 | Music Identity analytics, raw listening events, period filters, and private/friends/public visibility | Implemented full-stack infrastructure; Listening DNA ML intentionally deferred |
 | Bounded upload queue and persistent attachment volume | Implemented prototype; queue state is process-local |
-| Real audio segmentation/crossfading | Not implemented |
-| Trained prompt-to-segment model | Not implemented |
-| DVC/MLflow evaluation | Runnable scaffold using synthetic data, not model evidence |
+| Trained ranking/recommendation model | Deliberately not implemented; see [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) |
 | Local LLM | Scaffolded; Ollama model pull and host resources are external prerequisites |
 | CI | Installed at repository root; the first hosted run is still pending |
 | Azure CD | Template only; VM, DNS, secrets, and first deployment are external prerequisites |
 
 The complete architecture, commands, limitations, security notes, and roadmap
-are in [ZONIX_PROJECT_README.md](ZONIX_PROJECT_README.md). Music Identity data flow, privacy,
-future ML integration points, and a debugging checklist are in [MUSIC_IDENTITY.md](MUSIC_IDENTITY.md). The V3 social-product architecture and debugging flow are in [SOCIAL_PRODUCT_V3.md](SOCIAL_PRODUCT_V3.md), with an implementation summary in [IMPLEMENTATION_REPORT_V3.md](IMPLEMENTATION_REPORT_V3.md). The offline baseline
-is documented in [ML_PIPELINE.md](ML_PIPELINE.md), and deployment prerequisites
-are in [deploy/README.md](deploy/README.md). Generated dependencies and caches
-have been removed from the current Git index; the cleanup record and optional
-history-rewrite notes are in
+are in [ZONIX_PROJECT_README.md](ZONIX_PROJECT_README.md). The AI-DJ pipeline
+(stages, why each is swappable, deterministic-vs-Ollama breakdown, and what's
+deferred) is in [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md). Music Identity data
+flow, privacy, future ML integration points, and a debugging checklist are in
+[MUSIC_IDENTITY.md](MUSIC_IDENTITY.md). The V3 social-product architecture and
+debugging flow are in [SOCIAL_PRODUCT_V3.md](SOCIAL_PRODUCT_V3.md), with an
+implementation summary in [IMPLEMENTATION_REPORT_V3.md](IMPLEMENTATION_REPORT_V3.md).
+Deployment prerequisites are in [deploy/README.md](deploy/README.md).
+Generated dependencies and caches have been removed from the current Git
+index; the cleanup record and optional history-rewrite notes are in
 [deploy/TRACKED_ARTIFACT_CLEANUP.md](deploy/TRACKED_ARTIFACT_CLEANUP.md).
 
 To add clearly labelled sample forum records to a local demo only, run the

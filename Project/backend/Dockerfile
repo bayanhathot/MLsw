@@ -6,6 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# ffmpeg: AudioRenderer (pydub) shells out to it to decode/crossfade/export
+# audio. libsndfile1: the analysis job's librosa/soundfile read path.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir --requirement requirements.txt
 

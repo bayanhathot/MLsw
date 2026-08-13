@@ -22,6 +22,21 @@ from app.schemas import (
 )
 from app.services import forum_service, mix_service, social_service
 from app.services.notification_service import notification_hub
+from app.services.pipeline.dependencies import (
+    get_audio_renderer,
+    get_catalog_candidate_retriever,
+    get_mix_candidate_retriever,
+    get_segment_selector,
+    get_transition_planner,
+    get_vibe_understander,
+)
+from app.services.pipeline.interfaces import (
+    AudioRenderer,
+    CandidateRetriever,
+    SegmentSelector,
+    TransitionPlanner,
+    VibeUnderstander,
+)
 
 router = APIRouter(prefix="/mixes", tags=["mixes"])
 
@@ -49,10 +64,26 @@ def start_mix(
     _: None = Depends(write_rate_limit),
     current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
+    vibe: VibeUnderstander = Depends(get_vibe_understander),
+    retriever: CandidateRetriever = Depends(get_mix_candidate_retriever),
+    catalog_fallback: CandidateRetriever = Depends(get_catalog_candidate_retriever),
+    selector: SegmentSelector = Depends(get_segment_selector),
+    planner: TransitionPlanner = Depends(get_transition_planner),
+    renderer: AudioRenderer = Depends(get_audio_renderer),
 ):
-    """Create a persisted mix; provider failures use the known local demo."""
+    """Create a persisted mix; provider failures fall back to the catalog."""
 
-    return mix_service.create_mix(db, request.prompt, current_user.id if current_user else None)
+    return mix_service.create_mix(
+        db,
+        request.prompt,
+        current_user.id if current_user else None,
+        vibe=vibe,
+        retriever=retriever,
+        catalog_fallback=catalog_fallback,
+        selector=selector,
+        planner=planner,
+        renderer=renderer,
+    )
 
 
 @router.get("/feed", response_model=list[MixFeedItem])

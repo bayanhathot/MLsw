@@ -1,4 +1,10 @@
+from pathlib import Path
+
 from conftest import register_and_login
+
+_DEMO_WAV_BYTES = (
+    Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
+).read_bytes()
 
 
 def sample_tracks():
@@ -24,24 +30,57 @@ def sample_tracks():
     ]
 
 
+def _patch_audius(monkeypatch, tracks):
+    """Both the retrieval step and AudioRenderer's remote download are
+    patched, so mixes with Audius candidates render a real (deterministic,
+    network-free) composite instead of degrading to a pass-through because
+    the fake example.test URLs aren't reachable."""
+
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: _DEMO_WAV_BYTES
+    )
+
+
 def test_mix_persists_and_provider_empty_uses_safe_fallback(client, monkeypatch):
-    monkeypatch.setattr("app.services.mix_service.search_tracks", lambda prompt, limit=5: [])
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
     response = client.post("/mixes/start", json={"prompt": "unknown mood"})
     assert response.status_code == 200
     body = response.json()
     assert body["session_id"].startswith("mix_")
-    assert body["segments"][0]["source"] == "local-demo"
-    assert body["segments"][0]["audio_url"] == "/api/static/audio/zonix-demo.wav"
+    # Audius came back empty, so mix_service fell back to the real catalog
+    # (mood-bucket matched), not a single hardcoded local-demo dict anymore.
+    assert body["segments"][0]["source"] == "catalog"
+    assert body["segments"][0]["audio_url"].startswith("/api/media/renders/")
+
+
+def test_mix_renders_a_real_crossfaded_composite_across_tracks(client, monkeypatch):
+    _patch_audius(monkeypatch, sample_tracks())
+    mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
+    assert len(mix["segments"]) == 2
+    first, second = mix["segments"]
+    # Both segments point at the same rendered composite file, not their
+    # original per-track URLs -- a real crossfade actually happened.
+    assert first["audio_url"] == second["audio_url"]
+    assert first["audio_url"].startswith("/api/media/renders/")
+    assert first["audio_url"].endswith(".wav")
+    assert first["end_second"] > first["start_second"]
+    assert second["end_second"] > second["start_second"]
+    assert first["transition_to_next"] == "crossfade"
+    assert second["transition_to_next"] == "end"
 
 
 def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
-    monkeypatch.setattr("app.services.mix_service.search_tracks", lambda prompt, limit=5: sample_tracks())
+    _patch_audius(monkeypatch, sample_tracks())
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
     mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
     assert len(mix["segments"]) == 2
-    assert mix["segments"][0]["end_second"] == 45
-    assert mix["segments"][1]["end_second"] == 20
     assert client.post(f"/mixes/{mix['id']}/publish").status_code == 200
 
     assert second_client.post(f"/mixes/{mix['id']}/like").json()["like_count"] == 1
@@ -60,7 +99,7 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
 
 
 def test_blocked_owner_hides_direct_mix_access(client, second_client, monkeypatch):
-    monkeypatch.setattr("app.services.mix_service.search_tracks", lambda prompt, limit=5: sample_tracks())
+    _patch_audius(monkeypatch, sample_tracks())
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
     mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
@@ -72,7 +111,7 @@ def test_blocked_owner_hides_direct_mix_access(client, second_client, monkeypatc
 
 
 def test_mine_and_saved_endpoints_return_the_correct_library_subsets(client, second_client, monkeypatch):
-    monkeypatch.setattr("app.services.mix_service.search_tracks", lambda prompt, limit=5: sample_tracks())
+    _patch_audius(monkeypatch, sample_tracks())
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
     mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
@@ -83,3 +122,17 @@ def test_mine_and_saved_endpoints_return_the_correct_library_subsets(client, sec
     assert client.get("/mixes/saved").json() == []
     assert second_client.get("/mixes/mine").json() == []
     assert [item["id"] for item in second_client.get("/mixes/saved").json()] == [mix["id"]]
+
+
+def test_named_artist_with_no_audius_or_catalog_match_still_falls_back_safely(client, monkeypatch):
+    """Mixes must never hard-fail the way a session can plainly report "no
+    match": even a named artist with nothing anywhere still yields a mix."""
+
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
+    response = client.post(
+        "/mixes/start", json={"prompt": "play something by Zzzqx Nonexistent Artist"}
+    )
+    assert response.status_code == 200
+    assert response.json()["segments"]

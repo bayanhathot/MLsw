@@ -1,42 +1,89 @@
-"""Business logic for generated, persisted, and social mixes."""
+"""Business logic for generated, persisted, and social mixes.
+
+Routed through the same pipeline sessions use (VibeUnderstander ->
+CandidateRetriever -> SegmentSelector -> TransitionPlanner -> AudioRenderer);
+mixes default to the Audius retriever with the local catalog as a safety net,
+matching this surface's existing behavior (old local_demo_track() fallback).
+"""
 
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import public_api_url
 from app.database.models.mix import Mix, MixSegment
 from app.database.models.mix_social import MixLike, SavedMix
-from app.services.audius_service import search_tracks
-from app.services.prompt_parser import parse_prompt
+from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
+from app.services.pipeline.interfaces import (
+    AudioRenderer,
+    CandidateRetriever,
+    SegmentSelector,
+    TransitionPlanner,
+    VibeUnderstander,
+)
+
+MAX_MIX_TRACKS = 5
 
 
-def local_demo_track() -> dict:
-    return {
-        "title": "Zonix Demo Track",
-        "artist": "Zonix Demo Catalog",
-        "audio_url": public_api_url("/static/audio/zonix-demo.wav"),
-        "cover_url": "/brand/zonix-logo.svg",
-        "duration": 60,
-        "source": "local-demo",
-        "source_track_id": "zonix-demo-v1",
-        "genre": "Zonix demo",
-        "mood": "Balanced",
-    }
+def _retrieve_with_fallback(
+    db: Session,
+    intent: PromptIntent,
+    retriever: CandidateRetriever,
+    catalog_fallback: CandidateRetriever,
+    *,
+    limit: int,
+) -> list[Track]:
+    """Mixes must never hard-fail the way a session can plainly report "no
+    match": this mirrors the old local_demo_track() safety net, just backed
+    by the real catalog instead of one hardcoded dict."""
+
+    tracks = retriever.retrieve(db, intent, limit=limit)
+    if tracks:
+        return tracks
+    tracks = catalog_fallback.retrieve(db, intent, limit=1)
+    if tracks:
+        return tracks
+    # Absolute last resort: drop any artist filter so an unmatched named
+    # artist still resolves to *something* playable for a mix.
+    neutral_intent = intent.model_copy(update={"artist": None})
+    return catalog_fallback.retrieve(db, neutral_intent, limit=1)
 
 
-def create_mix(db: Session, prompt: str, owner_id: int | None = None) -> Mix:
-    intent = parse_prompt(prompt)
-    tracks = search_tracks(intent.search_query, limit=5)
-    tracks = [
-        track
-        for track in tracks
-        if isinstance(track, dict)
-        and isinstance(track.get("audio_url"), str)
-        and track["audio_url"].strip()
-        and isinstance(track.get("source_track_id"), (str, int))
-    ] or [local_demo_track()]
+def _plan_transitions(
+    segments: list[SelectedSegment], planner: TransitionPlanner
+) -> list[TransitionPlan]:
+    return [
+        planner.plan(segments[index], segments[index + 1], prefers_smoother=False)
+        for index in range(len(segments) - 1)
+    ]
+
+
+def create_mix(
+    db: Session,
+    prompt: str,
+    owner_id: int | None,
+    *,
+    vibe: VibeUnderstander,
+    retriever: CandidateRetriever,
+    catalog_fallback: CandidateRetriever,
+    selector: SegmentSelector,
+    planner: TransitionPlanner,
+    renderer: AudioRenderer,
+) -> Mix:
+    intent = vibe.understand(prompt)
+    tracks = _retrieve_with_fallback(
+        db, intent, retriever, catalog_fallback, limit=MAX_MIX_TRACKS
+    )
+
+    segments = [selector.select(db, track) for track in tracks]
+    transitions = _plan_transitions(segments, planner)
+    rendered = renderer.render(segments, transitions)
+
+    # A composite render carries a real offset per input segment; a
+    # pass-through only ever safely describes one track's worth of audio.
+    kept_segments = segments if not rendered.is_pass_through else segments[:1]
+    offsets = rendered.offsets if not rendered.is_pass_through else rendered.offsets[:1]
+
     session_id = f"mix_{uuid4().hex}"
     mix = Mix(
         session_id=session_id,
@@ -44,31 +91,36 @@ def create_mix(db: Session, prompt: str, owner_id: int | None = None) -> Mix:
         title=prompt[:120],
         prompt=prompt,
         status="draft",
-        cover_url=tracks[0].get("cover_url"),
+        cover_url=tracks[0].cover_url,
     )
     db.add(mix)
     try:
         db.flush()
-        for position, track in enumerate(tracks, start=1):
-            try:
-                duration = max(1, int(track.get("duration") or 60))
-            except (TypeError, ValueError):
-                duration = 60
+        position = 0
+        for index, (segment, (start_second, end_second)) in enumerate(zip(kept_segments, offsets)):
+            if end_second <= start_second:
+                continue
+            position += 1
+            track = segment.track
             db.add(
                 MixSegment(
                     mix_id=mix.id,
                     position=position,
-                    title=str(track.get("title") or "Unknown title")[:255],
-                    artist=str(track.get("artist") or "Unknown artist")[:255],
-                    audio_url=str(track["audio_url"]),
-                    cover_url=track.get("cover_url"),
-                    start_second=0,
-                    end_second=min(45, duration),
-                    transition_to_next="crossfade" if position < len(tracks) else "end",
-                    source=str(track.get("source") or "unknown")[:50],
-                    source_track_id=str(track.get("source_track_id") or uuid4().hex)[:255],
-                    genre=(str(track.get("genre")).strip()[:100] if track.get("genre") else None),
-                    vibe=(str(track.get("mood") or intent.mood).strip()[:100] if (track.get("mood") or intent.mood) else None),
+                    title=track.title[:255],
+                    artist=track.artist[:255],
+                    audio_url=rendered.audio_url,
+                    cover_url=track.cover_url,
+                    start_second=start_second,
+                    end_second=end_second,
+                    transition_to_next=(
+                        "crossfade"
+                        if not rendered.is_pass_through and index < len(kept_segments) - 1
+                        else "end"
+                    ),
+                    source=track.source[:50],
+                    source_track_id=str(track.source_track_id)[:255],
+                    genre=(track.genre or None),
+                    vibe=(track.vibe_label or track.vibe or intent.mood or None),
                 )
             )
         db.commit()

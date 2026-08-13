@@ -1,6 +1,7 @@
 """Import every model so SQLAlchemy and Alembic see complete metadata."""
 
 from app.database.models.attachment import Attachment
+from app.database.models.catalog import CatalogTrack
 from app.database.models.forum import ForumComment, ForumCommentVote, ForumPost, ForumPostVote
 from app.database.models.messaging import DirectMessage, Notification
 from app.database.models.music_identity import ListeningEvent, UserMusicProfile
@@ -13,6 +14,7 @@ from app.database.models.user import User
 
 __all__ = [
     "User",
+    "CatalogTrack",
     "DJSession",
     "SessionFeedback",
     "UserPreference",

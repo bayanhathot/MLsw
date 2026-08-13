@@ -512,4 +512,65 @@ class PromptIntent(BaseModel):
     energy: Literal["low", "medium", "high"]
     vocals: Literal["less", "neutral", "more"]
     genres: list[str] = Field(max_length=5)
+    artist: str | None = Field(default=None, max_length=120)
     search_query: str = Field(min_length=1, max_length=120)
+
+
+# ---------------------------------------------------------------------------
+# AI-DJ pipeline contracts: VibeUnderstander -> CandidateRetriever ->
+# SegmentSelector -> TransitionPlanner -> AudioRenderer.
+#
+# These are internal service-layer data shapes (not all are returned directly
+# from an endpoint), kept in this module per its "single schema module"
+# convention. `Track.local_path` is a server-side filesystem path and must
+# never be included when building a public API response model.
+# ---------------------------------------------------------------------------
+
+
+class Track(BaseModel):
+    source: Literal["catalog", "audius"]
+    source_track_id: str
+    title: str
+    artist: str
+    album: str | None = None
+    audio_url: str
+    cover_url: str | None = None
+    duration_seconds: int = Field(ge=0)
+    genre: str | None = None
+    vibe: str | None = None
+    vibe_label: str | None = None
+    catalog_track_id: int | None = None
+    local_path: str | None = None
+
+
+class SelectedSegment(BaseModel):
+    track: Track
+    start_second: int = Field(ge=0)
+    end_second: int = Field(ge=0)
+    method: Literal["chorus_detection", "whole_clip"]
+    bpm: float | None = None
+    musical_key: str | None = None
+
+
+class TransitionPlan(BaseModel):
+    crossfade_ms: int = Field(ge=0)
+    style: Literal["crossfade", "cut"]
+    notes: str
+
+
+class RenderedAudio(BaseModel):
+    audio_url: str
+    offsets: list[tuple[int, int]]
+    is_pass_through: bool = False
+
+
+class CatalogTrackRead(BaseModel):
+    id: int
+    title: str
+    artist: str
+    album: str | None = None
+    genre: str | None = None
+    duration_seconds: int
+    analysis_status: Literal["pending", "completed", "failed", "not_applicable"]
+    audio_url: str
+    created_at: datetime

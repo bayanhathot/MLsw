@@ -8,7 +8,10 @@ def test_session_is_unique_persistent_and_feedback_changes_selection(client, db_
     second = client.post("/sessions/start", json={"prompt": "smooth focus music"})
     assert first.status_code == second.status_code == 200
     assert first.json()["id"] != second.json()["id"]
-    assert first.json()["audioUrl"] == "/api/static/audio/zonix-demo.wav"
+    # AudioRenderer actually rendered a trimmed clip rather than serving the
+    # original file untouched.
+    assert first.json()["audioUrl"].startswith("/api/media/renders/")
+    assert first.json()["audioUrl"].endswith(".wav")
     assert db_session.query(DJSession).count() == 2
 
     session_id = first.json()["id"]
@@ -47,6 +50,9 @@ def test_owned_session_is_private_and_preference_is_remembered(client, second_cl
     assert client.get("/users/me/preferences").json() == [
         {"feedback": "less_vocals", "score": 1, "count": 1}
     ]
+    # "less_vocals" biases the next neutral prompt's intent toward low
+    # energy + fewer vocals, which lands on the same "focus" catalog bucket
+    # the old hardcoded PREFERENCE_TRACKS mapping pointed it at.
     assert client.post("/sessions/start", json={"prompt": "a balanced mix"}).json()["vibeLabel"] == "Deep work focus"
 
 
@@ -60,6 +66,27 @@ def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
     assert response.status_code == 200
 
     preference = db_session.query(UserPreference).filter_by(user_id=user["id"]).one()
-    assert preference.feedback == "energy"
+    assert preference.feedback == "reinforce:high:neutral"
     neutral = client.post("/sessions/start", json={"prompt": "a balanced mix"})
     assert neutral.json()["vibeLabel"] == "Gym energy"
+
+
+def test_named_artist_with_no_catalog_match_is_reported_plainly(client):
+    response = client.post(
+        "/sessions/start",
+        json={"prompt": "play something by Zzzqx Nonexistent Artist Ptrxk"},
+    )
+    assert response.status_code == 422
+    assert "catalog" in response.json()["detail"].lower()
+
+
+def test_reasoning_and_next_direction_reflect_feedback_history(client):
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    assert "Give feedback" in session["reasoning"]["nextDirection"]
+    assert session["reasoning"]["selectedMoment"]
+    assert session["reasoning"]["transitionPlan"]
+
+    feedback = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "Smoother please"}
+    ).json()
+    assert "Smoother please" in feedback["reasoning"]["nextDirection"]

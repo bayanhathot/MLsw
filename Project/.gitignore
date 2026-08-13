@@ -39,12 +39,6 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 
-# Local MLOps state. Pipeline definitions and committed metrics stay visible.
-.dvc/cache/
-.dvc/tmp/
-mlruns/
-mlartifacts/
-ranked_segments.json
 backend/app/static/audio/demo.mp3
 
 # Runtime logs and scratch files.

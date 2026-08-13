@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -10,13 +10,12 @@ from app.core.time import utc_now
 
 
 class DJSession(Base):
+    """Persists a live SessionState: the mutated Intent plus whichever
+    CandidateRetriever/segment/transition it currently resolves to."""
+
     __tablename__ = "dj_sessions"
     __table_args__ = (
         CheckConstraint("status IN ('playing', 'stopped')", name="ck_dj_session_status"),
-        CheckConstraint(
-            "track_key IN ('energy', 'vocals', 'focus', 'smooth')",
-            name="ck_dj_session_track_key",
-        ),
     )
 
     id: Mapped[str] = mapped_column(String(48), primary_key=True)
@@ -26,7 +25,15 @@ class DJSession(Base):
     prompt: Mapped[str] = mapped_column(String(300), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="playing")
     vibe_label: Mapped[str] = mapped_column(String(100), nullable=False)
-    track_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Name of the CandidateRetriever bound for this session's lifetime, e.g.
+    # "catalog" or "audius" -- feedback re-invokes this same one.
+    retriever_name: Mapped[str] = mapped_column(String(40), nullable=False)
+    # The current, feedback-mutated PromptIntent for this session.
+    intent_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Serialized NowPlayingRead-shaped data for the current track/segment.
+    now_playing_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Serialized ReasoningRead-shaped data (selectedMoment/transitionPlan/nextDirection).
+    reasoning_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     selected_feedback: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

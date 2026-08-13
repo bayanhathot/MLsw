@@ -31,6 +31,8 @@ from sqlalchemy.orm import Session
 from app.database.database import get_db
 from app.core.config import cors_origins
 from app.routers.auth import router as auth_router
+from app.routers.catalog import router as catalog_router
+from app.routers.media import router as media_router
 from app.routers.sessions import router as sessions_router
 from app.routers.mixes import router as mixes_router
 from app.routers.forum import router as forum_router
@@ -135,6 +137,8 @@ app.include_router(messaging_router)
 app.include_router(listening_router)
 app.include_router(uploads_router)
 app.include_router(social_router)
+app.include_router(catalog_router)
+app.include_router(media_router)
 
 
 # ---------------------------------------------------------

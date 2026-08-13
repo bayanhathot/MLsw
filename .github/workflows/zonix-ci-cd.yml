@@ -55,6 +55,14 @@ jobs:
             Project/backend/requirements.txt
             Project/backend/requirements-dev.txt
 
+      # AudioRenderer (pydub) shells out to ffmpeg for anything beyond plain
+      # WAV, and the analysis job's librosa/soundfile path uses it for
+      # compressed catalog uploads. ubuntu-latest ships it already; installed
+      # explicitly so this doesn't silently start failing on a runner-image change.
+      - name: Ensure ffmpeg is available
+        run: |
+          command -v ffmpeg >/dev/null || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+
       - name: Install backend dependencies
         run: python -m pip install --requirement requirements-dev.txt
 
@@ -124,34 +132,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  ml-baseline:
-    name: ML baseline smoke test
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: Project
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install lightweight pipeline parser
-        run: python -m pip install PyYAML==6.0.3
-
-      - name: Reproduce deterministic baseline metrics
-        run: python ml_pipeline.py --skip-mlflow
-
-      - name: Verify committed metrics are reproducible
-        run: git diff --exit-code -- metrics.json
-
   container-builds:
     name: Container builds
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-checks, ml-baseline]
+    needs: [backend-tests, frontend-checks]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

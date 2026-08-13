@@ -10,7 +10,6 @@ from app.database.models.mix import Mix, MixSegment
 from app.database.models.music_identity import ListeningEvent
 from app.database.models.session import DJSession
 from app.schemas import ListeningEventCreate
-from app.services.session_manager import TRACKS
 
 # Tolerate ordinary clock skew between the client and server; anything beyond
 # this is treated as an impossible/future timestamp that could corrupt
@@ -84,6 +83,10 @@ def _mix_context(db: Session, request: ListeningEventCreate, user_id: int) -> di
 
 
 def _session_context(db: Session, request: ListeningEventCreate, user_id: int) -> dict:
+    """Reads whatever the session's persisted SessionState currently holds,
+    regardless of which CandidateRetriever produced it -- there's no more
+    fixed TRACKS lookup to diverge from the mix path (requirement 10)."""
+
     if request.session_id is None:
         raise HTTPException(status_code=422, detail="A session_id is required.")
     session = db.query(DJSession).filter(DJSession.id == request.session_id).first()
@@ -91,24 +94,30 @@ def _session_context(db: Session, request: ListeningEventCreate, user_id: int) -
         raise HTTPException(status_code=404, detail="Session not found.")
     if session.user_id != user_id:
         raise HTTPException(status_code=403, detail="Session belongs to another user.")
-    track = TRACKS.get(session.track_key)
-    if track is None:
+
+    segment = (session.now_playing_json or {}).get("segment") or {}
+    track = segment.get("track") or {}
+    if not track:
         raise HTTPException(status_code=409, detail="Session track is no longer available.")
+
+    start_second = int(segment.get("start_second") or 0)
+    end_second = int(segment.get("end_second") or start_second)
+    segment_length = max(1, end_second - start_second)
     return {
         "session_id": session.id,
         "mix_id": None,
         "segment_id": None,
-        "source": "local-demo",
-        "source_track_id": f"zonix-demo-v1:{session.track_key}",
-        "track_title": track["title"],
-        "artist_name": track["artist"],
-        "genre": "Zonix demo",
-        "vibe": track["vibe"],
-        "track_duration_seconds": 60,
-        "segment_start_second": 0,
-        "segment_end_second": 60,
-        "expected_seconds": 60,
-        "metadata_json": {"session_prompt": session.prompt, "track_key": session.track_key},
+        "source": track.get("source") or "catalog",
+        "source_track_id": str(track.get("source_track_id") or session.id),
+        "track_title": track.get("title") or "Unknown title",
+        "artist_name": track.get("artist") or "Unknown artist",
+        "genre": track.get("genre"),
+        "vibe": track.get("vibe_label") or track.get("vibe") or session.vibe_label,
+        "track_duration_seconds": max(end_second, segment_length),
+        "segment_start_second": start_second,
+        "segment_end_second": end_second,
+        "expected_seconds": segment_length,
+        "metadata_json": {"session_prompt": session.prompt, "retriever": session.retriever_name},
     }
 
 
