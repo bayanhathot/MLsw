@@ -75,8 +75,10 @@ services:
   # Fully local VibeUnderstander refinement (VIBE_LLM_PROVIDER=ollama, the
   # default). Runs regardless of which provider is selected, same as
   # postgres, so it's ready even if VIBE_LLM_PROVIDER=none is set instead.
-  # qwen3:8b is not bundled in the image and must be pulled once after the
-  # volume is first created: `docker compose exec ollama ollama pull qwen3:8b`.
+  # qwen3:8b is not bundled in the image; deploy/remote-deploy.sh pulls it
+  # automatically after this service comes up (idempotent, safe on every
+  # deploy). Manual pull is only needed outside that script, e.g. a local
+  # `docker compose up`: `docker compose exec ollama ollama pull qwen3:8b`.
   ollama:
     image: ollama/ollama:0.11.4
     volumes:
