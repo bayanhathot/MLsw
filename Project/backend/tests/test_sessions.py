@@ -117,6 +117,24 @@ def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
     assert neutral.json()["vibeLabel"] == "Gym energy"
 
 
+def test_feedback_mutates_intent_but_never_touches_original_intent(client, db_session):
+    session = client.post("/sessions/start", json={"prompt": "a balanced mix"}).json()
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert row.original_intent_json["energy"] == "medium"
+    assert row.intent_json["energy"] == "medium"
+
+    response = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+    )
+    assert response.status_code == 200
+
+    db_session.refresh(row)
+    # intent_json mutates on feedback...
+    assert row.intent_json["energy"] == "high"
+    # ...but original_intent_json, set once at creation, never does.
+    assert row.original_intent_json["energy"] == "medium"
+
+
 def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(client, monkeypatch):
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []

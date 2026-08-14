@@ -124,6 +124,15 @@ def _role_for(track: Track) -> str:
     return _ROLE_BY_BUCKET.get(track.vibe or "", "Now playing")
 
 
+def _effective_original_intent(session: DJSession) -> dict:
+    """original_intent_json is None on sessions created before this column
+    existed -- intent_json (as of this resolution) is the best available
+    stand-in for "the session's original intent" on those rows, rather than
+    treating the absence as an error anywhere this gets read."""
+
+    return session.original_intent_json or session.intent_json
+
+
 def _track_key(track: Track) -> str:
     return f"{track.source}:{track.source_track_id}"
 
@@ -319,6 +328,8 @@ def create_session(
         "implementation": type(vibe).__name__,
         "invoked": True,
         "intent": intent.model_dump(mode="json"),
+        # Current == original at creation time, by definition.
+        "original_intent": intent.model_dump(mode="json"),
     }
 
     session = DJSession(
@@ -329,6 +340,7 @@ def create_session(
         vibe_label=now_playing["segment"]["track"]["vibe_label"] or "Balanced opener",
         retriever_name=served_by.name,
         intent_json=intent.model_dump(mode="json"),
+        original_intent_json=intent.model_dump(mode="json"),
         now_playing_json=now_playing,
         reasoning_json=reasoning,
         pipeline_trace_json=pipeline_trace,
@@ -405,6 +417,9 @@ def apply_feedback(
                 "implementation": type(get_vibe_understander()).__name__,
                 "invoked": False,
                 "intent": mutated.model_dump(mode="json"),
+                # Read before intent_json is reassigned below -- apply_feedback
+                # never writes to original_intent_json, only intent_json mutates.
+                "original_intent": _effective_original_intent(session),
             }
             session.intent_json = mutated.model_dump(mode="json")
             session.now_playing_json = now_playing
@@ -488,6 +503,10 @@ def advance_session(
         "implementation": type(get_vibe_understander()).__name__,
         "invoked": False,
         "intent": intent.model_dump(mode="json"),
+        # advance_session never mutates intent, so this is unchanged from
+        # whatever apply_feedback last wrote (or the true original, if
+        # feedback was never used this session).
+        "original_intent": _effective_original_intent(session),
     }
     session.now_playing_json = now_playing
     session.reasoning_json = reasoning

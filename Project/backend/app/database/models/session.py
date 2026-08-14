@@ -35,6 +35,13 @@ class DJSession(Base):
     retriever_name: Mapped[str] = mapped_column(String(40), nullable=False)
     # The current, feedback-mutated PromptIntent for this session.
     intent_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # The session's initial PromptIntent, set once at creation and never
+    # touched again by apply_feedback/advance_session (unlike intent_json,
+    # which mutates) -- internal debugging state only (see
+    # session_manager._effective_original_intent for how rows created
+    # before this column existed fall back to intent_json instead of
+    # erroring), not a public API field.
+    original_intent_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Serialized NowPlayingRead-shaped data for the current track/segment.
     now_playing_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Serialized ReasoningRead-shaped data (selectedMoment/transitionPlan/nextDirection).
