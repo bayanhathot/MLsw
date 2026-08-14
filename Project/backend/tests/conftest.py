@@ -21,6 +21,7 @@ from app.core.rate_limit import auth_rate_limit, write_rate_limit
 from app.database.base import Base
 from app.database.database import get_db
 from app.main import app
+from app.services import audius_service
 
 test_engine = create_engine(
     "sqlite+pysqlite://",
@@ -66,6 +67,14 @@ def clean_database(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
     )
+    # audius_service.search_tracks (the real one, wrapped separately from
+    # the retriever-level monkeypatch above) caches results in module-level
+    # state keyed only on (query, limit) -- tests that call it directly
+    # (test_external_services.py) would otherwise leak cache entries into
+    # each other across the whole run, e.g. two different tests both
+    # querying "focus" at the default limit. Reset it before every test.
+    audius_service._search_cache.clear()
+    audius_service._last_cache_lookup["hit"] = None
     auth_rate_limit.reset()
     write_rate_limit.reset()
     with TestingSessionLocal() as db:

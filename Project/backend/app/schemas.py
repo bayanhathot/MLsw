@@ -540,6 +540,7 @@ class Track(BaseModel):
     genre: str | None = None
     vibe: str | None = None
     vibe_label: str | None = None
+    tags: str | None = None
     catalog_track_id: int | None = None
     local_path: str | None = None
 

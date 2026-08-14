@@ -237,9 +237,18 @@ def _apply_guardrails(intent: PromptIntent, fallback: PromptIntent) -> PromptInt
 def parse_prompt(prompt: str) -> PromptIntent:
     """Deterministic parse, optionally refined by a local Ollama model."""
 
+    fallback = deterministic_parse(prompt)
+    if fallback.artist_mode == "required" and fallback.artist:
+        # QueryPlanner already prioritizes the artist alone in this case
+        # (build_queries' required_artist branch), regardless of whatever
+        # mood/energy/genres the LLM would additionally refine -- calling
+        # Ollama here is pure wasted latency. Every other case (genre-only,
+        # vibe-only, reference-mode, no artist) still gets refined normally;
+        # those are exactly where the LLM materially helps.
+        return fallback
+
     base_url = os.getenv("OLLAMA_BASE_URL", "").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "").strip()
-    fallback = deterministic_parse(prompt)
     if not base_url or not model:
         return fallback
 

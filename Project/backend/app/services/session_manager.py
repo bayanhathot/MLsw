@@ -40,6 +40,15 @@ from app.services.pipeline_debug_service import notify_pipeline_debug_change
 # this never grows unbounded across a long-running session.
 _PLAYED_TRACK_HISTORY = 10
 
+# How many ranked candidates _resolve_and_render asks a CandidateRetriever
+# for. Deliberately larger than _PLAYED_TRACK_HISTORY: the exclude-scan
+# below needs real fresh alternatives to fall through to once a session has
+# played a few tracks, not just the exact number it's trying to avoid
+# repeating. CatalogTrackRetriever (only ~4 seed rows) just returns fewer
+# than this, same as it always has -- retrieve()'s contract has never
+# guaranteed exactly `limit` results.
+_CANDIDATE_LIMIT = 15
+
 COVER_URL = "/brand/zonix-logo.svg"
 
 _ENERGY_LEVELS = ["low", "medium", "high"]
@@ -172,7 +181,7 @@ def _resolve_and_render(
     retrievers come back empty."""
 
     candidates, served_by = retrieve_candidates_with_fallback(
-        db, intent, retriever, fallback_retriever, limit=5
+        db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT
     )
     track = next(
         (candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys),
@@ -195,6 +204,12 @@ def _resolve_and_render(
         "selectedMoment": _selected_moment_text(segment),
         "transitionPlan": transition.notes,
     }
+    # Both best-effort only: neither CatalogTrackRetriever nor the
+    # single-query Audius retriever compute a score breakdown, and only the
+    # two Audius retrievers make any search_tracks calls at all -- both are
+    # None/missing whenever `served_by` doesn't expose the attribute.
+    score_breakdown = getattr(served_by, "last_candidate_scores", {}).get(_track_key(track))
+    cache_hit = getattr(served_by, "last_cache_hit", None)
     pipeline_trace = {
         "candidate_retriever": {
             "implementation": type(served_by).__name__,
@@ -207,6 +222,8 @@ def _resolve_and_render(
                 "title": track.title,
                 "artist": track.artist,
             },
+            "score_breakdown": score_breakdown,
+            "cache_hit": cache_hit,
         },
         "segment_selector": {
             "implementation": type(selector).__name__,

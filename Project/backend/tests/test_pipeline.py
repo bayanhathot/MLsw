@@ -265,8 +265,67 @@ def test_rank_by_metadata_prefers_genre_match_over_a_slightly_better_raw_rank():
     # alone would swamp every other signal) and the genre weight decides.
     filler = [f"filler-{i}" for i in range(8)]
     fused_order = filler[:4] + ["better_rank_no_genre", "worse_rank_genre_match"] + filler[4:]
-    ranked = _rank_by_metadata(pool, fused_order, intent)
+    ranked, _breakdown = _rank_by_metadata(pool, fused_order, intent)
     assert ranked[0] == "worse_rank_genre_match"
+
+
+def test_rank_by_metadata_does_not_bottom_rank_a_candidate_with_no_metadata_at_all():
+    # A candidate with no genre/mood/tags at all (just a real Audius title
+    # and stream URL) must not be artificially penalized by missing
+    # sub-scores counting as 0 -- if its RRF retrieval confidence is strong,
+    # its total should reflect that alone, not get dragged down by signals
+    # it simply has no data for.
+    intent = _intent(genres=["lofi"], mood="chill", energy="high")
+    pool = {
+        "no_metadata_top_rank": _track(source_track_id="1", genre=None, vibe=None, tags=None),
+        "full_metadata_bottom_rank": _track(source_track_id="2", genre="rock", vibe="Angry", tags="metal,rock"),
+    }
+    # no_metadata_top_rank is far ahead in the fused order (strong retrieval
+    # confidence); full_metadata_bottom_rank is far behind, and its metadata
+    # doesn't match the intent at all either.
+    fused_order = ["no_metadata_top_rank"] + [f"filler-{i}" for i in range(8)] + ["full_metadata_bottom_rank"]
+    ranked, breakdown = _rank_by_metadata(pool, fused_order, intent)
+
+    assert ranked[0] == "no_metadata_top_rank"
+    # The only available signal for it is retrieval -- its total must equal
+    # that signal exactly (a weighted average of one item is that item),
+    # not something lower because absent signals were folded in as zeros.
+    assert breakdown["no_metadata_top_rank"]["total"] == breakdown["no_metadata_top_rank"]["retrieval"]
+    assert breakdown["no_metadata_top_rank"]["genre"] is None
+    assert breakdown["no_metadata_top_rank"]["mood"] is None
+    assert breakdown["no_metadata_top_rank"]["tag"] is None
+
+
+def test_rank_by_metadata_required_artist_match_outranks_a_better_rrf_rank():
+    intent = _intent(artist="George Wassouf", artist_mode="required")
+    pool = {
+        "better_rank_wrong_artist": _track(source_track_id="1", artist="Someone Else Entirely"),
+        "worse_rank_matching_artist": _track(source_track_id="2", artist="George Wassouf"),
+    }
+    fused_order = ["better_rank_wrong_artist"] + [f"filler-{i}" for i in range(8)] + ["worse_rank_matching_artist"]
+    ranked, breakdown = _rank_by_metadata(pool, fused_order, intent)
+
+    assert ranked[0] == "worse_rank_matching_artist"
+    assert breakdown["worse_rank_matching_artist"]["artist_match"] == 1.0
+    assert breakdown["better_rank_wrong_artist"]["artist_match"] < 1.0
+
+
+def test_rank_by_metadata_scores_always_stay_within_0_and_1():
+    intent = _intent(
+        genres=["lofi", "jazz"], mood="chill", energy="high",
+        artist="George Wassouf", artist_mode="required",
+    )
+    pool = {
+        "a": _track(source_track_id="1", genre="lofi", vibe="Peaceful", tags="chill,lofi,study", artist="George Wassouf"),
+        "b": _track(source_track_id="2", genre="rock", vibe="Angry", tags="metal", artist="Totally Different"),
+        "c": _track(source_track_id="3", genre=None, vibe=None, tags=None, artist="Nobody In Particular"),
+    }
+    fused_order = list(pool.keys())
+    _ranked, breakdown = _rank_by_metadata(pool, fused_order, intent)
+    for key, scores in breakdown.items():
+        for name, value in scores.items():
+            if value is not None:
+                assert 0.0 <= value <= 1.0, (key, name, value)
 
 
 # --- MultiQueryAudiusRetriever, end-to-end (no real network calls) ---------
@@ -294,6 +353,33 @@ def test_multi_query_retriever_dedupes_across_queries_and_respects_limit(db_sess
     assert len(results) == 2
     ids = [track.source_track_id for track in results]
     assert len(ids) == len(set(ids))  # deduped -- "shared-1" was returned by two queries
+
+
+def test_multi_query_retriever_returns_more_than_five_candidates_for_a_normal_vibe_prompt(db_session, monkeypatch):
+    # Regression test for the raised CANDIDATES_PER_QUERY/MIN_POOL_SIZE
+    # defaults: a normal vibe prompt with room in `limit` should surface a
+    # real pool of alternatives, not just enough to fill the old default of
+    # 5 -- session_manager's exclude-scan needs headroom over
+    # _PLAYED_TRACK_HISTORY to have fresh tracks left to fall through to.
+    def fake_search_tracks(query, limit=5):
+        return [
+            {
+                "title": f"{query} track {i}",
+                "artist": "Artist",
+                "audio_url": f"https://audio.example/{query}-{i}",
+                "source_track_id": f"{query}-{i}",
+                "duration": 100,
+                "genre": "lofi",
+            }
+            for i in range(limit)
+        ]
+
+    monkeypatch.setattr(audius_retriever, "search_tracks", fake_search_tracks)
+    intent = _intent(genres=["lofi"], mood="chill", search_query="chill lofi beats for coding")
+    retriever = MultiQueryAudiusRetriever()
+    results = retriever.retrieve(db_session, intent, limit=15)
+
+    assert len(results) > 5
 
 
 def test_multi_query_retriever_returns_empty_list_when_audius_finds_nothing(db_session, monkeypatch):

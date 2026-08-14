@@ -31,6 +31,8 @@ Ollama VibeUnderstander implementation.
 
 import logging
 import os
+import time
+from threading import Lock
 from urllib.parse import quote
 
 import httpx
@@ -41,6 +43,64 @@ import httpx
 AUDIUS_API_BASE = os.getenv("AUDIUS_API_BASE", "https://discoveryprovider.audius.co/v1").rstrip("/")
 APP_NAME = "Zonix"
 logger = logging.getLogger(__name__)
+
+# Short-TTL, bounded search cache in front of the real Audius call. A single
+# MultiQueryAudiusRetriever resolution often repeats a query another recent
+# resolution already made (the same genre/mood terms recur across prompts),
+# so this is a pure latency optimization -- a miss, an expired entry, or any
+# internal cache error all transparently fall through to a real call; a hit
+# never outlives AUDIUS_SEARCH_CACHE_TTL_SECONDS. Plain Lock-guarded module
+# state, the same idiom prompt_parser.py already uses for _ollama_slots /
+# _last_ollama_call, not a new dependency.
+AUDIUS_SEARCH_CACHE_TTL_SECONDS = float(os.getenv("AUDIUS_SEARCH_CACHE_TTL_SECONDS", "75"))
+AUDIUS_SEARCH_CACHE_MAX_ENTRIES = int(os.getenv("AUDIUS_SEARCH_CACHE_MAX_ENTRIES", "200"))
+
+_search_cache_lock = Lock()
+# key -> (expires_at, results). Regular dicts preserve insertion order, which
+# the oldest-first eviction in _cache_put relies on -- not a full LRU, just
+# enough to keep this bounded without extra bookkeeping.
+_search_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+
+# Debug-panel observability only, mirroring prompt_parser's
+# _last_ollama_call / get_last_ollama_call: whether the most recent
+# search_tracks call in this process was served from cache. Never consulted
+# by search_tracks itself -- only real calls update it.
+_last_cache_lookup_lock = Lock()
+_last_cache_lookup: dict = {"hit": None}
+
+
+def _record_cache_lookup(hit: bool) -> None:
+    with _last_cache_lookup_lock:
+        _last_cache_lookup["hit"] = hit
+
+
+def get_last_search_cache_hit() -> bool | None:
+    """A shallow read so callers can't mutate the shared tracker. None means
+    no search_tracks call has happened yet in this process."""
+
+    with _last_cache_lookup_lock:
+        return _last_cache_lookup["hit"]
+
+
+def _cache_get(key: tuple[str, int]) -> list[dict] | None:
+    with _search_cache_lock:
+        entry = _search_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, results = entry
+        if time.monotonic() >= expires_at:
+            # Expired -- drop it so a stale entry never lingers past its TTL.
+            del _search_cache[key]
+            return None
+        return results
+
+
+def _cache_put(key: tuple[str, int], results: list[dict]) -> None:
+    with _search_cache_lock:
+        if key not in _search_cache and len(_search_cache) >= AUDIUS_SEARCH_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(_search_cache))
+            del _search_cache[oldest_key]
+        _search_cache[key] = (time.monotonic() + AUDIUS_SEARCH_CACHE_TTL_SECONDS, results)
 
 
 def _optional_text(value) -> str | None:
@@ -73,6 +133,42 @@ def get_artwork_url(artwork: dict | None) -> str | None:
 
 
 def search_tracks(prompt: str, limit: int = 5) -> list[dict]:
+    """
+    Search Audius tracks by user prompt, served from a short-TTL cache when
+    possible (see the cache section above) -- callers never need to know
+    whether a given result came from cache or a live call.
+    """
+
+    key = (prompt, limit)
+    try:
+        cached = _cache_get(key)
+    except Exception as exc:  # cache mechanics must never break retrieval
+        cached = None
+        logger.warning("Audius search cache lookup failed, calling Audius directly: %s", exc)
+
+    if cached is not None:
+        _record_cache_lookup(True)
+        return cached
+
+    results = _search_tracks_uncached(prompt, limit)
+
+    _record_cache_lookup(False)
+    # Only successful, non-empty results are cached: an empty list here is
+    # indistinguishable from "Audius genuinely has nothing" and "the call
+    # just failed" (_search_tracks_uncached returns [] for both), and
+    # caching a transient-failure-shaped empty result would mean a brief
+    # provider hiccup "poisons" this query for up to the full TTL instead of
+    # the very next call recovering immediately.
+    if results:
+        try:
+            _cache_put(key, results)
+        except Exception as exc:  # a failed cache write must not affect the result
+            logger.warning("Audius search cache store failed (result still returned): %s", exc)
+
+    return results
+
+
+def _search_tracks_uncached(prompt: str, limit: int = 5) -> list[dict]:
     """
     Search Audius tracks by user prompt.
 
