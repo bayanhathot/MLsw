@@ -3,6 +3,7 @@ from pathlib import Path
 from conftest import register_and_login
 
 from app.database.models.session import DJSession, UserPreference
+from app.services.pipeline.audius_retriever import MultiQueryAudiusRetriever
 
 _DEMO_WAV_BYTES = (
     Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
@@ -31,6 +32,43 @@ def _wassouf_tracks():
         }
         for index in range(1, 4)
     ]
+
+
+def _many_wassouf_tracks(count):
+    """Same shape as _wassouf_tracks, but a caller-chosen count -- tests of
+    the candidate-pool cache's exhaustion threshold need a pool big enough
+    that a couple of advance() calls don't run it down to a forced refresh
+    on their own."""
+
+    return [
+        {
+            "title": f"Wassouf Track {index}",
+            "artist": "George Wassouf",
+            "audio_url": f"https://audio.example/wassouf-{index}",
+            "cover_url": None,
+            "duration": 180,
+            "source": "audius",
+            "source_track_id": f"wassouf-{index}",
+        }
+        for index in range(1, count + 1)
+    ]
+
+
+def _count_retrieve_calls(monkeypatch):
+    """Wraps MultiQueryAudiusRetriever.retrieve so tests can assert on how
+    many times it was *actually* called -- the session_candidate_pool cache
+    exists precisely to make that number lower than the number of
+    start/feedback/advance requests."""
+
+    calls = {"count": 0}
+    original_retrieve = MultiQueryAudiusRetriever.retrieve
+
+    def counting_retrieve(self, *args, **kwargs):
+        calls["count"] += 1
+        return original_retrieve(self, *args, **kwargs)
+
+    monkeypatch.setattr(MultiQueryAudiusRetriever, "retrieve", counting_retrieve)
+    return calls
 
 
 def _patch_audius(monkeypatch, tracks):
@@ -253,6 +291,64 @@ def test_advance_persists_played_artists_alongside_played_track_keys(client, mon
     row = db_session.query(DJSession).filter_by(id=session["id"]).one()
     assert row.played_artists_json == ["George Wassouf"] * len(row.played_track_keys_json)
     assert len(row.played_artists_json) == len(row.played_track_keys_json) == 3
+
+
+def test_advance_reuses_the_cached_candidate_pool_when_intent_is_unchanged(client, monkeypatch):
+    # 10 candidates -- comfortably more than _CANDIDATE_POOL_REFRESH_THRESHOLD
+    # (3) even after a couple of advances, so this isolates "does an
+    # unchanged intent reuse the cache" from the separate exhaustion-refresh
+    # behavior covered below.
+    _patch_audius(monkeypatch, _many_wassouf_tracks(10))
+    calls = _count_retrieve_calls(monkeypatch)
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1  # create_session's one real retrieval
+
+    assert client.post(f"/sessions/{session['id']}/advance").status_code == 200
+    assert client.post(f"/sessions/{session['id']}/advance").status_code == 200
+
+    # Both advances reused the pool cached at creation -- the intent never
+    # changed, so no additional retrieve() call was needed.
+    assert calls["count"] == 1
+
+
+def test_advance_refreshes_the_pool_once_fresh_candidates_drop_below_threshold(client, monkeypatch):
+    # Exactly 3 candidates (== _CANDIDATE_POOL_REFRESH_THRESHOLD): after the
+    # first one plays at creation, only 2 unplayed candidates remain in the
+    # cached pool -- below the threshold -- so the very next advance() must
+    # force a real retrieval even though the intent hasn't changed at all.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    assert client.post(f"/sessions/{session['id']}/advance").status_code == 200
+    assert calls["count"] == 2  # forced refresh: only 2 fresh candidates were left
+
+
+def test_feedback_that_changes_energy_invalidates_the_cached_pool(client, monkeypatch):
+    _patch_audius(monkeypatch, _many_wassouf_tracks(10))
+    calls = _count_retrieve_calls(monkeypatch)
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    feedback = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+    )
+    assert feedback.status_code == 200
+    # "More energy" mutates intent.energy, which is part of the cache
+    # fingerprint -- the mutated intent can never hit the pool cached under
+    # the old fingerprint, forcing a real retrieval rather than serving a
+    # pool ranked for the session's original (lower-energy) intent.
+    assert calls["count"] == 2
 
 
 def test_advance_rejects_a_stopped_session(client):

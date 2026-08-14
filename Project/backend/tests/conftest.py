@@ -21,7 +21,7 @@ from app.core.rate_limit import auth_rate_limit, write_rate_limit
 from app.database.base import Base
 from app.database.database import get_db
 from app.main import app
-from app.services import audius_service
+from app.services import audius_service, session_candidate_pool
 
 test_engine = create_engine(
     "sqlite+pysqlite://",
@@ -75,6 +75,15 @@ def clean_database(tmp_path, monkeypatch):
     # querying "focus" at the default limit. Reset it before every test.
     audius_service._search_cache.clear()
     audius_service._last_cache_lookup["hit"] = None
+    # session_candidate_pool is keyed by session_id, which is a random uuid4
+    # per test so entries themselves never collide across tests -- but
+    # leftover entries from earlier tests (created under the real, higher
+    # SESSION_CANDIDATE_POOL_MAX_ENTRIES) skew any test that monkeypatches
+    # that constant down to verify eviction behavior: put()'s one-in-one-out
+    # eviction only prevents a dict from *growing* past its current limit,
+    # it doesn't shrink one that was already over a newly-lowered limit.
+    # Reset it before every test for the same reason as the Audius cache.
+    session_candidate_pool._pools.clear()
     auth_rate_limit.reset()
     write_rate_limit.reset()
     with TestingSessionLocal() as db:

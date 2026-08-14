@@ -33,6 +33,7 @@ from app.services.pipeline.interfaces import (
 )
 from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
+from app.services import session_candidate_pool
 
 # How many recently-played tracks a session remembers to avoid immediately
 # repeating one when advancing (requirement: continuous playback should work
@@ -48,6 +49,12 @@ _PLAYED_TRACK_HISTORY = 10
 # than this, same as it always has -- retrieve()'s contract has never
 # guaranteed exactly `limit` results.
 _CANDIDATE_LIMIT = 15
+
+# Below this many still-fresh (not in exclude_track_keys) candidates, a hit
+# on session_candidate_pool is treated as too thin to keep serving from --
+# a real retrieval refreshes the pool instead of letting advance() grind
+# down to repeats before the next natural refresh (a fingerprint change).
+_CANDIDATE_POOL_REFRESH_THRESHOLD = 3
 
 COVER_URL = "/brand/zonix-logo.svg"
 
@@ -164,6 +171,7 @@ def _resolve_and_render(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
     *,
+    session_id: str,
     previous_segment: SelectedSegment | None,
     prefers_smoother: bool,
     exclude_track_keys: frozenset[str] = frozenset(),
@@ -191,11 +199,45 @@ def _resolve_and_render(
     exclude_track_keys -- a ranking-capable retriever penalizes (doesn't
     filter) a candidate whose artist is in it, so it can still surface as a
     fallback rather than disappearing outright. Raises NoMatchingCandidate
-    only when both retrievers come back empty."""
+    only when both retrievers come back empty.
 
-    candidates, served_by = retrieve_candidates_with_fallback(
-        db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
-    )
+    Before running a real retrieval, checks session_candidate_pool for a
+    pool already ranked under `intent`'s current fingerprint. A hit is only
+    used if it still has more than _CANDIDATE_POOL_REFRESH_THRESHOLD
+    not-yet-excluded candidates left -- an almost-exhausted pool triggers a
+    real refresh instead of grinding down to repeats before the fingerprint
+    (and so the cache key) next changes. Because the fingerprint only covers
+    the fields that actually affect retrieval/ranking (see
+    session_candidate_pool.fingerprint_for), any resolution whose intent
+    genuinely changed -- every feedback mutation that matters, since energy
+    is part of the fingerprint and is the one field every current mutation
+    path touches -- naturally misses and forces a fresh retrieval; nothing
+    here has to special-case "was this feedback-driven" to get that right.
+    """
+
+    fingerprint = session_candidate_pool.fingerprint_for(intent)
+    cached_candidates = session_candidate_pool.get(session_id, fingerprint)
+    candidate_pool_reused = False
+    if cached_candidates is not None:
+        fresh_count = sum(
+            1 for candidate in cached_candidates if _track_key(candidate) not in exclude_track_keys
+        )
+        if fresh_count >= _CANDIDATE_POOL_REFRESH_THRESHOLD:
+            candidates = cached_candidates
+            # served_by wasn't cached (session_candidate_pool only stores
+            # the ranked tracks) -- reconstructed from which source the
+            # cached tracks actually carry, so `fell_back`/`name`/
+            # `implementation` below stay accurate rather than assuming the
+            # primary retriever served a pool that was really the catalog
+            # fallback's.
+            served_by = fallback_retriever if candidates[0].source == "catalog" else retriever
+            candidate_pool_reused = True
+
+    if not candidate_pool_reused:
+        candidates, served_by = retrieve_candidates_with_fallback(
+            db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
+        )
+        session_candidate_pool.put(session_id, fingerprint, candidates)
     track = next(
         (candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys),
         candidates[0],
@@ -220,15 +262,25 @@ def _resolve_and_render(
     # Both best-effort only: neither CatalogTrackRetriever nor the
     # single-query Audius retriever compute a score breakdown, and only the
     # two Audius retrievers make any search_tracks calls at all -- both are
-    # None/missing whenever `served_by` doesn't expose the attribute.
-    score_breakdown = getattr(served_by, "last_candidate_scores", {}).get(_track_key(track))
-    cache_hit = getattr(served_by, "last_cache_hit", None)
+    # None/missing whenever `served_by` doesn't expose the attribute. On a
+    # candidate_pool_reused hit, `served_by` didn't actually run this
+    # resolution (it's reconstructed from cached track sources above), so
+    # its last_candidate_scores/last_cache_hit instance state reflects
+    # whatever *other* call last touched that singleton, not this
+    # resolution -- reading them here would show misleading, unrelated
+    # data, so both are explicitly None instead.
+    score_breakdown = (
+        None if candidate_pool_reused
+        else getattr(served_by, "last_candidate_scores", {}).get(_track_key(track))
+    )
+    cache_hit = None if candidate_pool_reused else getattr(served_by, "last_cache_hit", None)
     pipeline_trace = {
         "candidate_retriever": {
             "implementation": type(served_by).__name__,
             "name": served_by.name,
             "fell_back": served_by is not retriever,
             "candidate_count": len(candidates),
+            "candidate_pool_reused": candidate_pool_reused,
             "selected_track": {
                 "source": track.source,
                 "source_track_id": track.source_track_id,
@@ -320,9 +372,15 @@ def create_session(
     renderer: AudioRenderer,
 ) -> SessionRead:
     intent = _initial_intent(prompt, db, user_id, vibe)
+    # Generated up front (not left to the DJSession constructor below) so
+    # _resolve_and_render can key session_candidate_pool by this session's
+    # real, final id from its very first resolution -- a brand-new id has
+    # never been cached, so this always falls through to a real retrieval
+    # and populates the pool for the first advance() to reuse.
+    session_id = f"session_{uuid4().hex}"
     track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
         db, intent, retriever, fallback_retriever, selector, planner, renderer,
-        previous_segment=None, prefers_smoother=False,
+        session_id=session_id, previous_segment=None, prefers_smoother=False,
     )
     pipeline_trace["vibe_understander"] = {
         "implementation": type(vibe).__name__,
@@ -333,7 +391,7 @@ def create_session(
     }
 
     session = DJSession(
-        id=f"session_{uuid4().hex}",
+        id=session_id,
         user_id=user_id,
         prompt=prompt,
         status="playing",
@@ -406,8 +464,8 @@ def apply_feedback(
         try:
             track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
                 db, mutated, retriever, fallback_retriever, selector, planner, renderer,
-                previous_segment=previous_segment, prefers_smoother=prefers_smoother,
-                recent_artists=recent_artists,
+                session_id=session.id, previous_segment=previous_segment,
+                prefers_smoother=prefers_smoother, recent_artists=recent_artists,
             )
             # Feedback mutates the stored intent with fixed keyword rules
             # (_mutate_intent) rather than calling the LLM again -- invoked
@@ -491,7 +549,7 @@ def advance_session(
     try:
         track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
             db, intent, retriever, fallback_retriever, selector, planner, renderer,
-            previous_segment=previous_segment, prefers_smoother=False,
+            session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
             exclude_track_keys=exclude, recent_artists=recent_artists,
         )
     except NoMatchingCandidate:
