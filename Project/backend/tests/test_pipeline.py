@@ -125,6 +125,31 @@ def test_build_queries_skips_degenerate_mood_genre_combo_when_they_match():
     assert "chill lofi" in distinct_mood_queries
 
 
+def test_build_queries_uses_energy_as_fallback_when_no_genre_is_found():
+    # Regression test: a prompt like "gym energy" that the deterministic
+    # parser correctly maps to energy="high" but finds no genre word for
+    # (genres=[], mood stays "balanced") used to fall straight through to
+    # searching Audius with the raw sentence -- exactly the case that
+    # returns zero hits. energy is always populated (unlike mood/genres),
+    # so it is used as a cleaner fallback query before the raw sentence.
+    intent = _intent(genres=[], mood="balanced", energy="high", search_query="gym energy")
+    queries = build_queries(intent, max_queries=10)
+    assert queries == ["high energy", "gym energy"]
+
+    # "low" energy maps to "chill".
+    low_energy_intent = _intent(genres=[], mood="balanced", energy="low", search_query="something calm")
+    assert "chill" in build_queries(low_energy_intent, max_queries=10)
+
+    # "medium" has no term -- falls straight through to the raw sentence.
+    medium_energy_intent = _intent(genres=[], mood="balanced", energy="medium", search_query="a balanced mix")
+    assert build_queries(medium_energy_intent, max_queries=10) == ["a balanced mix"]
+
+    # Sanity: when a genre IS found, the energy fallback never fires -- the
+    # genre query is already better than a generic energy term.
+    with_genre_intent = _intent(genres=["techno"], mood="balanced", energy="high", search_query="techno set")
+    assert "high energy" not in build_queries(with_genre_intent, max_queries=10)
+
+
 # --- audius_retriever._reciprocal_rank_fusion -------------------------------
 
 

@@ -136,7 +136,7 @@ def parse_prompt(prompt: str) -> PromptIntent:
     started = perf_counter()
     ok = False
     try:
-        timeout_seconds = max(0.5, min(10.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
+        timeout_seconds = max(0.5, min(20.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
         with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
             response = client.post(
                 f"{base_url}/api/generate",
