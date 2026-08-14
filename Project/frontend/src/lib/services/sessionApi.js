@@ -72,6 +72,12 @@ export async function startSession({ prompt, signal }) {
 	const response = await apiRequest('/sessions/start', {
 		method: 'POST',
 		body: JSON.stringify({ prompt }),
+		// Runs the full pipeline (VibeUnderstander -> CandidateRetriever ->
+		// SegmentSelector -> TransitionPlanner -> AudioRenderer); the Ollama
+		// stage alone can take up to OLLAMA_TIMEOUT_SECONDS before falling
+		// back, on top of retrieval/render, so this needs more room than the
+		// 15s default other, lighter endpoints use.
+		timeoutMs: 45_000,
 		signal
 	});
 
@@ -85,6 +91,8 @@ export async function sendFeedback({ sessionId, feedback, signal }) {
 	const response = await apiRequest(`/sessions/${encodeURIComponent(sessionId)}/feedback`, {
 		method: 'POST',
 		body: JSON.stringify({ feedback }),
+		// Re-runs the same full pipeline as startSession -- see its comment.
+		timeoutMs: 45_000,
 		signal
 	});
 
@@ -101,6 +109,8 @@ export async function sendFeedback({ sessionId, feedback, signal }) {
 export async function advanceSession({ sessionId, signal }) {
 	const response = await apiRequest(`/sessions/${encodeURIComponent(sessionId)}/advance`, {
 		method: 'POST',
+		// Re-runs the same full pipeline as startSession -- see its comment.
+		timeoutMs: 45_000,
 		signal
 	});
 
