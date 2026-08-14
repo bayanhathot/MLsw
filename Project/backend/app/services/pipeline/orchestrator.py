@@ -20,9 +20,14 @@ class NoMatchingCandidate(Exception):
 
 
 def retrieve_candidates(
-    db: Session, intent: PromptIntent, retriever: CandidateRetriever, *, limit: int = 5
+    db: Session,
+    intent: PromptIntent,
+    retriever: CandidateRetriever,
+    *,
+    limit: int = 5,
+    recent_artists: frozenset[str] = frozenset(),
 ) -> list[Track]:
-    candidates = retriever.retrieve(db, intent, limit=limit)
+    candidates = retriever.retrieve(db, intent, limit=limit, recent_artists=recent_artists)
     if not candidates:
         raise NoMatchingCandidate(
             f"No {retriever.name} candidate matched this request closely enough."
@@ -37,6 +42,7 @@ def retrieve_candidates_with_fallback(
     fallback: CandidateRetriever,
     *,
     limit: int = 5,
+    recent_artists: frozenset[str] = frozenset(),
 ) -> tuple[list[Track], CandidateRetriever]:
     """Tries `primary` first; only falls through to `fallback` when primary
     plainly found nothing (an empty list is never silently replaced with an
@@ -48,11 +54,11 @@ def retrieve_candidates_with_fallback(
     NoMatchingCandidate only when both retrievers come back empty."""
 
     try:
-        return retrieve_candidates(db, intent, primary, limit=limit), primary
+        return retrieve_candidates(db, intent, primary, limit=limit, recent_artists=recent_artists), primary
     except NoMatchingCandidate:
         pass
     try:
-        return retrieve_candidates(db, intent, fallback, limit=limit), fallback
+        return retrieve_candidates(db, intent, fallback, limit=limit, recent_artists=recent_artists), fallback
     except NoMatchingCandidate:
         raise NoMatchingCandidate(
             f"No {primary.name} or {fallback.name} candidate matched this request closely enough."

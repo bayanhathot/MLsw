@@ -48,6 +48,12 @@ class DJSession(Base):
     # (capped, see session_manager._PLAYED_TRACK_HISTORY), so continuous
     # advancing doesn't immediately repeat whatever just played.
     played_track_keys_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Artist names of recently-played tracks, appended in lockstep with
+    # played_track_keys_json (same _PLAYED_TRACK_HISTORY cap) -- read as
+    # recent_artists by CandidateRetriever.retrieve() so the ranker can
+    # penalize repeating an artist without needing to look up each played
+    # track's artist from played_track_keys_json after the fact.
+    played_artists_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     selected_feedback: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

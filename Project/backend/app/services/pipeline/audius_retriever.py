@@ -52,6 +52,12 @@ WEIGHT_ENERGY = float(os.getenv("WEIGHT_ENERGY", "0.05"))
 # ARTIST_MATCH_THRESHOLD for the one place this codebase does use a hard
 # cutoff, for a different reason: reporting "nothing matched" plainly).
 WEIGHT_ARTIST_MATCH = float(os.getenv("WEIGHT_ARTIST_MATCH", "0.5"))
+# Session-aware artist diversity: penalizes (not filters) a candidate whose
+# artist already played recently in this session, so continuous advancing
+# doesn't loop the same artist back-to-back. Moderate weight, comparable to
+# WEIGHT_TAG -- strong enough to matter, not strong enough to override a
+# genuinely well-matched candidate on its own.
+WEIGHT_DIVERSITY = float(os.getenv("WEIGHT_DIVERSITY", "0.15"))
 
 # A small hardcoded heuristic table, not a measured value: Audius rarely
 # returns per-track energy/BPM data, so this approximates "does this genre
@@ -112,7 +118,18 @@ class AudiusCandidateRetriever(CandidateRetriever):
         # last_candidate_scores docstring for the same statefulness caveat.
         self.last_cache_hit: bool | None = None
 
-    def retrieve(self, db: Session, intent: PromptIntent, *, limit: int = 5) -> list[Track]:
+    def retrieve(
+        self,
+        db: Session,
+        intent: PromptIntent,
+        *,
+        limit: int = 5,
+        recent_artists: frozenset[str] = frozenset(),
+    ) -> list[Track]:
+        # No ranking stage here (Audius' own order is returned as-is) to
+        # feed a diversity signal into -- accepted for interface
+        # compatibility with CandidateRetriever, unused.
+        del recent_artists
         # Audius already does full-text search across its own catalog, so a
         # named artist is just forwarded as the query rather than fuzzy
         # matched client-side.
@@ -157,7 +174,10 @@ def _reciprocal_rank_fusion(rank_lists: list[list[str]], *, k: int = RRF_K) -> l
 
 
 def _score_candidates(
-    pool: dict[str, Track], fused_order: list[str], intent: PromptIntent
+    pool: dict[str, Track],
+    fused_order: list[str],
+    intent: PromptIntent,
+    recent_artists: frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, float | None]]:
     """Scores every pooled candidate against the intent: one 0..1 sub-signal
     per named component, plus a final weighted-average "total". This is also
@@ -184,6 +204,7 @@ def _score_candidates(
         intent.artist.lower() if intent.artist and intent.artist_mode == "required" else None
     )
     tag_terms = list(intent_genres) + ([intent_mood] if intent_mood else [])
+    recent_artists_lower = {artist.lower() for artist in recent_artists}
 
     breakdown: dict[str, dict[str, float | None]] = {}
     for key, track in pool.items():
@@ -218,8 +239,24 @@ def _score_candidates(
             energy_score = 1.0 if _GENRE_ENERGY[track.genre.lower()] == intent.energy else 0.0
 
         artist_match_score = None
+        is_required_artist_match = False
         if required_artist:
             artist_match_score = _trigram_similarity(track.artist.lower(), required_artist)
+            is_required_artist_match = track.artist.lower() == required_artist
+
+        # Session-aware artist diversity: a candidate whose artist already
+        # played recently in this session is penalized, not hard-filtered --
+        # except a candidate that IS the required artist the user explicitly
+        # asked for, which is exempt from this signal entirely (excluded
+        # from the average the same way a missing-data signal is, not just
+        # scored favorably), since repeating that artist is the whole point
+        # of a required-artist request. recent_artists is an unordered
+        # frozenset (see CandidateRetriever.retrieve's interface), so this
+        # is a flat "played recently at all" penalty, not graduated by how
+        # long ago -- a frozenset carries no ordering to graduate by.
+        diversity_score = None
+        if recent_artists_lower and not is_required_artist_match:
+            diversity_score = 0.0 if track.artist.lower() in recent_artists_lower else 1.0
 
         signals = (
             (WEIGHT_RETRIEVAL, retrieval_score),
@@ -228,6 +265,7 @@ def _score_candidates(
             (WEIGHT_TAG, tag_score),
             (WEIGHT_ENERGY, energy_score),
             (WEIGHT_ARTIST_MATCH, artist_match_score),
+            (WEIGHT_DIVERSITY, diversity_score),
         )
         available = [(weight, score) for weight, score in signals if score is not None]
         weight_sum = sum(weight for weight, _ in available)
@@ -242,6 +280,7 @@ def _score_candidates(
             "tag": tag_score,
             "energy": energy_score,
             "artist_match": artist_match_score,
+            "diversity": diversity_score,
             "total": total,
         }
 
@@ -249,7 +288,10 @@ def _score_candidates(
 
 
 def _rank_by_metadata(
-    pool: dict[str, Track], fused_order: list[str], intent: PromptIntent
+    pool: dict[str, Track],
+    fused_order: list[str],
+    intent: PromptIntent,
+    recent_artists: frozenset[str] = frozenset(),
 ) -> tuple[list[str], dict[str, dict[str, float | None]]]:
     """Re-ranks the RRF-fused order using the structured intent, since RRF
     alone only reflects "how findable was this," not "does it actually match
@@ -257,7 +299,7 @@ def _rank_by_metadata(
     score breakdown (see _score_candidates) so callers can also use it for
     debug observability, not just ranking."""
 
-    breakdown = _score_candidates(pool, fused_order, intent)
+    breakdown = _score_candidates(pool, fused_order, intent, recent_artists)
     ranked = sorted(pool.keys(), key=lambda key: breakdown[key]["total"], reverse=True)
     return ranked, breakdown
 
@@ -281,7 +323,14 @@ class MultiQueryAudiusRetriever(CandidateRetriever):
         # served from cache (see audius_service.py), not every one of them.
         self.last_cache_hit: bool | None = None
 
-    def retrieve(self, db: Session, intent: PromptIntent, *, limit: int = 5) -> list[Track]:
+    def retrieve(
+        self,
+        db: Session,
+        intent: PromptIntent,
+        *,
+        limit: int = 5,
+        recent_artists: frozenset[str] = frozenset(),
+    ) -> list[Track]:
         self.last_candidate_scores = {}
         self.last_cache_hit = False
         queries = build_queries(intent, max_queries=MAX_QUERIES)
@@ -310,6 +359,6 @@ class MultiQueryAudiusRetriever(CandidateRetriever):
             return []
 
         fused_order = _reciprocal_rank_fusion(rank_lists, k=RRF_K)
-        ranked, breakdown = _rank_by_metadata(pool, fused_order, intent)
+        ranked, breakdown = _rank_by_metadata(pool, fused_order, intent, recent_artists)
         self.last_candidate_scores = breakdown
         return [pool[key] for key in ranked[:limit]]

@@ -321,11 +321,112 @@ def test_rank_by_metadata_scores_always_stay_within_0_and_1():
         "c": _track(source_track_id="3", genre=None, vibe=None, tags=None, artist="Nobody In Particular"),
     }
     fused_order = list(pool.keys())
-    _ranked, breakdown = _rank_by_metadata(pool, fused_order, intent)
+    _ranked, breakdown = _rank_by_metadata(pool, fused_order, intent, recent_artists=frozenset({"Totally Different"}))
     for key, scores in breakdown.items():
         for name, value in scores.items():
             if value is not None:
                 assert 0.0 <= value <= 1.0, (key, name, value)
+
+
+# --- audius_retriever._score_candidates: session-aware artist diversity ----
+
+
+def test_rank_by_metadata_penalizes_a_candidate_whose_artist_was_played_recently():
+    intent = _intent(genres=["lofi"], mood="balanced", energy="medium")
+    pool = {
+        "better_rank_repeat_artist": _track(source_track_id="1", genre="lofi", artist="Artist A"),
+        "worse_rank_fresh_artist": _track(source_track_id="2", genre="lofi", artist="Artist B"),
+    }
+    # Same filler-spreading trick as the genre-match test above: without it,
+    # a 2-item fused order gives one candidate a 1.0 retrieval_score and the
+    # other 0.0, a gap too large for any other signal to overcome -- filler
+    # keeps their raw retrieval confidence close so the diversity weight
+    # actually decides.
+    filler = [f"filler-{i}" for i in range(8)]
+    fused_order = filler[:4] + ["better_rank_repeat_artist", "worse_rank_fresh_artist"] + filler[4:]
+    ranked, breakdown = _rank_by_metadata(
+        pool, fused_order, intent, recent_artists=frozenset({"Artist A"})
+    )
+
+    assert ranked[0] == "worse_rank_fresh_artist"
+    assert breakdown["better_rank_repeat_artist"]["diversity"] == 0.0
+    assert breakdown["worse_rank_fresh_artist"]["diversity"] == 1.0
+
+
+def test_rank_by_metadata_required_artist_is_exempt_from_diversity_penalty():
+    # A required-artist request ("play george wassouf" again) must never be
+    # penalized for repeating that exact artist -- that's the whole point of
+    # asking for it by name. The diversity signal is excluded entirely for
+    # that candidate (None), not just scored favorably despite the repeat.
+    intent = _intent(artist="George Wassouf", artist_mode="required")
+    pool = {
+        "matching_artist_played_recently": _track(source_track_id="1", artist="George Wassouf"),
+        "different_artist_not_recent": _track(source_track_id="2", artist="Someone Else"),
+    }
+    fused_order = ["matching_artist_played_recently", "different_artist_not_recent"]
+    ranked, breakdown = _rank_by_metadata(
+        pool, fused_order, intent, recent_artists=frozenset({"George Wassouf"})
+    )
+
+    assert breakdown["matching_artist_played_recently"]["diversity"] is None
+    assert ranked[0] == "matching_artist_played_recently"
+
+
+def test_diversity_penalty_is_flat_not_graduated_by_recency():
+    # Design choice, not an oversight: CandidateRetriever.retrieve's
+    # interface passes recent_artists as an unordered frozenset[str], which
+    # carries no information about *when* within the session each artist
+    # last played. A graduated penalty (smaller for "recently but not
+    # immediately previous") would need an ordered structure instead --
+    # since the interface mandates a frozenset, the penalty here is flat:
+    # any artist in recent_artists at all gets the same penalty, regardless
+    # of position.
+    intent = _intent(genres=["lofi"], mood="balanced", energy="medium")
+    pool = {
+        "a": _track(source_track_id="1", genre="lofi", artist="Artist A"),
+        "b": _track(source_track_id="2", genre="lofi", artist="Artist B"),
+    }
+    fused_order = ["a", "b"]
+    _ranked, breakdown = _rank_by_metadata(
+        pool, fused_order, intent, recent_artists=frozenset({"Artist A", "Artist B"})
+    )
+    assert breakdown["a"]["diversity"] == breakdown["b"]["diversity"] == 0.0
+
+
+def test_multi_query_retriever_applies_recent_artists_penalty_end_to_end(db_session, monkeypatch):
+    def fake_search_tracks(query, limit=5):
+        items = [
+            {
+                "title": f"Filler {i}",
+                "artist": "Filler Artist",
+                "audio_url": f"https://audio.example/filler-{i}",
+                "source_track_id": f"filler-{i}",
+                "duration": 100,
+                "genre": "lofi",
+            }
+            for i in range(8)
+        ]
+        items[3] = {
+            "title": "Repeat Track", "artist": "Repeat Artist",
+            "audio_url": "https://audio.example/repeat", "source_track_id": "repeat-1",
+            "duration": 100, "genre": "lofi",
+        }
+        items[4] = {
+            "title": "Fresh Track", "artist": "Fresh Artist",
+            "audio_url": "https://audio.example/fresh", "source_track_id": "fresh-1",
+            "duration": 100, "genre": "lofi",
+        }
+        return items
+
+    monkeypatch.setattr(audius_retriever, "search_tracks", fake_search_tracks)
+    intent = _intent(genres=["lofi"], search_query="lofi")
+    retriever = MultiQueryAudiusRetriever()
+    results = retriever.retrieve(
+        db_session, intent, limit=8, recent_artists=frozenset({"Repeat Artist"})
+    )
+
+    artists = [track.artist for track in results]
+    assert artists.index("Fresh Artist") < artists.index("Repeat Artist")
 
 
 # --- MultiQueryAudiusRetriever, end-to-end (no real network calls) ---------

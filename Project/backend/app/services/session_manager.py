@@ -158,6 +158,7 @@ def _resolve_and_render(
     previous_segment: SelectedSegment | None,
     prefers_smoother: bool,
     exclude_track_keys: frozenset[str] = frozenset(),
+    recent_artists: frozenset[str] = frozenset(),
 ) -> tuple[Track, SelectedSegment, dict, dict, dict, CandidateRetriever]:
     """Runs CandidateRetriever -> SegmentSelector -> TransitionPlanner ->
     AudioRenderer for one session-sized (single track) resolution and
@@ -177,11 +178,14 @@ def _resolve_and_render(
     pool instead of replaying the same top match; if every candidate is
     excluded, the top match plays again rather than raising, since "loop
     indefinitely" is the point once a
-    session's pool is exhausted. Raises NoMatchingCandidate only when both
-    retrievers come back empty."""
+    session's pool is exhausted. `recent_artists` is a softer signal than
+    exclude_track_keys -- a ranking-capable retriever penalizes (doesn't
+    filter) a candidate whose artist is in it, so it can still surface as a
+    fallback rather than disappearing outright. Raises NoMatchingCandidate
+    only when both retrievers come back empty."""
 
     candidates, served_by = retrieve_candidates_with_fallback(
-        db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT
+        db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
     )
     track = next(
         (candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys),
@@ -329,6 +333,7 @@ def create_session(
         reasoning_json=reasoning,
         pipeline_trace_json=pipeline_trace,
         played_track_keys_json=[_track_key(track)],
+        played_artists_json=[track.artist],
     )
     db.add(session)
     db.commit()
@@ -385,10 +390,12 @@ def apply_feedback(
         # if Audius was down at creation but is back by the time feedback
         # runs, or vice versa.
         previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
+        recent_artists = frozenset(session.played_artists_json or [])
         try:
             track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
                 db, mutated, retriever, fallback_retriever, selector, planner, renderer,
                 previous_segment=previous_segment, prefers_smoother=prefers_smoother,
+                recent_artists=recent_artists,
             )
             # Feedback mutates the stored intent with fixed keyword rules
             # (_mutate_intent) rather than calling the LLM again -- invoked
@@ -407,6 +414,9 @@ def apply_feedback(
             session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
             session.played_track_keys_json = (
                 (session.played_track_keys_json or []) + [_track_key(track)]
+            )[-_PLAYED_TRACK_HISTORY:]
+            session.played_artists_json = (
+                (session.played_artists_json or []) + [track.artist]
             )[-_PLAYED_TRACK_HISTORY:]
             resolved_again = True
         except NoMatchingCandidate:
@@ -462,11 +472,12 @@ def advance_session(
     intent = PromptIntent.model_validate(session.intent_json)
     previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
     exclude = frozenset(session.played_track_keys_json or [])
+    recent_artists = frozenset(session.played_artists_json or [])
     try:
         track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
             db, intent, retriever, fallback_retriever, selector, planner, renderer,
             previous_segment=previous_segment, prefers_smoother=False,
-            exclude_track_keys=exclude,
+            exclude_track_keys=exclude, recent_artists=recent_artists,
         )
     except NoMatchingCandidate:
         # Nothing to advance to (e.g. Audius briefly unreachable); leave the
@@ -485,6 +496,9 @@ def advance_session(
     session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
     session.played_track_keys_json = (
         (session.played_track_keys_json or []) + [_track_key(track)]
+    )[-_PLAYED_TRACK_HISTORY:]
+    session.played_artists_json = (
+        (session.played_artists_json or []) + [track.artist]
     )[-_PLAYED_TRACK_HISTORY:]
 
     db.commit()

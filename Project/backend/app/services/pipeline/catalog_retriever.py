@@ -172,7 +172,17 @@ def _to_track(row: CatalogTrack) -> Track:
 class CatalogTrackRetriever(CandidateRetriever):
     name = "catalog"
 
-    def retrieve(self, db: Session, intent: PromptIntent, *, limit: int = 5) -> list[Track]:
+    def retrieve(
+        self,
+        db: Session,
+        intent: PromptIntent,
+        *,
+        limit: int = 5,
+        recent_artists: frozenset[str] = frozenset(),
+    ) -> list[Track]:
+        # No ranking stage here to feed a diversity signal into -- accepted
+        # for interface compatibility with CandidateRetriever, unused.
+        del recent_artists
         _ensure_seed_catalog(db)
         if intent.artist:
             rows = _fuzzy_artist_matches(db, intent.artist, limit)

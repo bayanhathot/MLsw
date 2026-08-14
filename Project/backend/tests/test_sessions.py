@@ -219,6 +219,24 @@ def test_advance_continues_without_input_and_rotates_through_candidates(client, 
     assert looped.json()["nowPlaying"]["title"] in seen_titles
 
 
+def test_advance_persists_played_artists_alongside_played_track_keys(client, monkeypatch, db_session):
+    # Validates the migration + session_manager wiring: played_artists_json
+    # must grow in lockstep with played_track_keys_json (same length, same
+    # cap), since it's what recent_artists is built from on the next
+    # resolution -- the ranking-level diversity behavior itself is covered
+    # in test_pipeline.py against _rank_by_metadata directly.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    client.post(f"/sessions/{session['id']}/advance")
+    client.post(f"/sessions/{session['id']}/advance")
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert row.played_artists_json == ["George Wassouf"] * len(row.played_track_keys_json)
+    assert len(row.played_artists_json) == len(row.played_track_keys_json) == 3
+
+
 def test_advance_rejects_a_stopped_session(client):
     session = client.post("/sessions/start", json={"prompt": "smooth focus music"}).json()
     assert client.post(f"/sessions/{session['id']}/stop").status_code == 200
