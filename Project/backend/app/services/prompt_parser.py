@@ -57,40 +57,137 @@ def get_last_ollama_call() -> dict:
     with _last_call_lock:
         return dict(_last_ollama_call)
 
-# Matches "by/like/similar to/reminds me of <name>" so a named artist can be
-# forwarded to CandidateRetriever's fuzzy catalog search. This is only ever a
-# hint: unmatched or wrong extractions just mean no fuzzy match is attempted,
-# never an invented catalog entry.
-_ARTIST_PATTERN = re.compile(
-    r"\b(?:by|like|similar to|reminds? me of)\s+([A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+_HIGH_ENERGY_WORDS = {"energy", "energetic", "gym", "workout", "fast", "intense"}
+_LOW_ENERGY_WORDS = {"calm", "chill", "focus", "relax", "smooth", "sleep"}
+
+# Two separate artist triggers, not one: "required" means the user wants
+# that exact artist's own tracks (a hard ask), "reference" means a stylistic
+# pointer ("something that sounds like X") that shouldn't be treated as a
+# hard requirement for that specific artist. Both are only ever a hint to
+# CandidateRetriever -- an unmatched or wrong extraction just means no
+# artist-flavored query gets built, never an invented catalog entry.
+#
+# The generic "by <name>" branch (no leading "songs"/"music") is kept
+# deliberately broad, not narrowed to "songs by"/"music by" only, so prompts
+# like "chill vibes by Nova Blackwood" keep resolving an artist the way they
+# always have. The bare "play <name>" branch is new -- it's what "play
+# george wassouf" needed and had no trigger phrase for at all before -- and
+# is guarded separately in _extract_artist_and_mode against swallowing a
+# vibe description that merely happens to start with "play" (see
+# _looks_like_vibe_description).
+_ARTIST_REQUIRED_PATTERN = re.compile(
+    r"\bplay\s+some\s+(?P<play_some_music>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60}?)\s+music\b"
+    r"|\bput\s+on\s+(?P<put_on>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+    r"|\bsongs\s+by\s+(?P<songs_by>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+    r"|\bmusic\s+by\s+(?P<music_by>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+    r"|\bmusic\s+from\s+(?P<music_from>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+    r"|\bgive\s+me\s+some\s+(?P<give_me_some>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+    r"|\bby\s+(?P<by_bare>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})"
+    r"|\bplay\s+(?P<play_bare>[A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})$",
+    re.IGNORECASE,
+)
+_ARTIST_REFERENCE_PATTERN = re.compile(
+    r"\b(?:something\s+like|similar\s+to|reminds?\s+me\s+of)\s+([A-Za-z0-9][A-Za-z0-9 &'.-]{1,60})",
+    re.IGNORECASE,
 )
 _ARTIST_STOP_WORDS = re.compile(r"\b(?:but|and|for|with|that|which)\b", re.IGNORECASE)
 
 
-def _extract_artist(prompt: str) -> str | None:
-    match = _ARTIST_PATTERN.search(prompt)
-    if not match:
+def _clean_candidate(raw: str | None) -> str | None:
+    if not raw:
         return None
-    candidate = _ARTIST_STOP_WORDS.split(match.group(1), maxsplit=1)[0]
+    candidate = _ARTIST_STOP_WORDS.split(raw, maxsplit=1)[0]
     candidate = candidate.strip(" .,'-")
     return candidate[:120] or None
 
 
+def _first_group(match: re.Match) -> str | None:
+    return next((value for value in match.groupdict().values() if value), None)
+
+
+def _looks_like_vibe_description(candidate: str) -> bool:
+    """Guards the two "play"-prefixed required triggers only (bare "play X"
+    and "play some X music"): unlike every other required-artist trigger
+    ("songs by", "music from", ...), "play" is also how a vibe description
+    often starts ("play some upbeat electronic music", "play something
+    chill and relaxing"), and a real artist name is unlikely to be made up
+    entirely of the same genre/mood/energy vocabulary deterministic_parse
+    already reads from the raw prompt. Rejecting that case here keeps a
+    vibe-only prompt from hijacking retrieval as a required-artist search
+    for that phrase."""
+
+    words = set(re.findall(r"[a-z0-9-]+", candidate.lower()))
+    filler = {
+        "some", "something", "music", "songs", "tracks", "a", "the", "for",
+        "me", "and", "of", "please",
+    }
+    meaningful = words - filler
+    if not meaningful:
+        return True
+    keyword_like = ALLOWED_GENRES | _HIGH_ENERGY_WORDS | _LOW_ENERGY_WORDS | {
+        "vocals", "instrumental", "less", "vibes", "vibe", "mix", "beats",
+    }
+    return meaningful <= keyword_like
+
+
+def _extract_artist_and_mode(prompt: str) -> tuple[str | None, str]:
+    """Regex-only artist detection: which trigger phrase matched decides
+    artist_mode, not a guess about intent. When both a required- and a
+    reference-style trigger match the same prompt, whichever one starts
+    earlier (the more leading, and so presumably primary, phrase) wins."""
+
+    required_match = _ARTIST_REQUIRED_PATTERN.search(prompt)
+    reference_match = _ARTIST_REFERENCE_PATTERN.search(prompt)
+
+    if required_match and (not reference_match or required_match.start() <= reference_match.start()):
+        candidate = _clean_candidate(_first_group(required_match))
+        if candidate is None:
+            return None, "none"
+        groups = required_match.groupdict()
+        is_play_prefixed = groups.get("play_bare") or groups.get("play_some_music")
+        if is_play_prefixed:
+            # "play X" / "play some X music" greedily swallow a reference
+            # trigger that immediately follows "play" too ("play something
+            # like Drake" -> candidate="something like Drake"), since
+            # nothing in either pattern stops "play" from being followed by
+            # one. Re-extract as a reference match when the captured
+            # candidate itself starts with one of those trigger phrases,
+            # rather than treating the whole "something like Drake" string
+            # as a required-mode artist name.
+            embedded_reference = _ARTIST_REFERENCE_PATTERN.match(candidate)
+            if embedded_reference:
+                inner_candidate = _clean_candidate(embedded_reference.group(1))
+                if inner_candidate is None:
+                    return None, "none"
+                return inner_candidate, "reference"
+            if _looks_like_vibe_description(candidate):
+                return None, "none"
+        return candidate, "required"
+
+    if reference_match:
+        candidate = _clean_candidate(reference_match.group(1))
+        if candidate is None:
+            return None, "none"
+        return candidate, "reference"
+
+    return None, "none"
+
+
 def deterministic_parse(prompt: str) -> PromptIntent:
     text = prompt.strip().lower()
-    high_words = {"energy", "energetic", "gym", "workout", "fast", "intense"}
-    low_words = {"calm", "chill", "focus", "relax", "smooth", "sleep"}
     tokens = set(re.findall(r"[a-z0-9-]+", text))
-    energy = "high" if tokens & high_words else "low" if tokens & low_words else "medium"
+    energy = "high" if tokens & _HIGH_ENERGY_WORDS else "low" if tokens & _LOW_ENERGY_WORDS else "medium"
     vocals = "less" if {"instrumental", "focus", "less"} & tokens else "more" if "vocals" in tokens else "neutral"
     genres = sorted(tokens & ALLOWED_GENRES)[:5]
     mood = next((word for word in ("energetic", "calm", "chill", "focus", "smooth") if word in tokens), "balanced")
+    artist, artist_mode = _extract_artist_and_mode(prompt)
     return PromptIntent(
         mood=mood,
         energy=energy,
         vocals=vocals,
         genres=genres,
-        artist=_extract_artist(prompt),
+        artist=artist,
+        artist_mode=artist_mode,
         search_query=" ".join(text.split())[:120],
     )
 
@@ -98,8 +195,11 @@ def deterministic_parse(prompt: str) -> PromptIntent:
 def _refinement_instruction(prompt: str) -> str:
     return (
         "Classify this music request: mood, energy, vocals, up to 5 genres, an "
-        "optional artist name the user explicitly mentioned (or null), and a "
-        f"search_query. Request: {prompt!r}"
+        "optional artist name the user explicitly mentioned (or null), an "
+        "artist_mode ('required' if the user wants that exact artist's own "
+        "tracks, 'reference' if it's only a stylistic comparison, or 'none' "
+        "if no artist was named), and a search_query. "
+        f"Request: {prompt!r}"
     )
 
 
@@ -110,7 +210,9 @@ def _apply_guardrails(intent: PromptIntent, fallback: PromptIntent) -> PromptInt
     the source for the search text, preventing invented song names from being
     promoted to catalog records. The regex-extracted artist wins over the
     LLM's guess for the same reason; the LLM's guess is only used when the
-    deterministic pass found nothing. parse_prompt (Ollama) applies this
+    deterministic pass found nothing. artist_mode always tracks whichever
+    artist source actually won -- never the LLM's mode paired with a
+    different (regex-extracted) artist. parse_prompt (Ollama) applies this
     before returning, so the LLM can never override anything
     CandidateRetriever depends on.
     """
@@ -118,7 +220,17 @@ def _apply_guardrails(intent: PromptIntent, fallback: PromptIntent) -> PromptInt
     intent.genres = [genre.lower() for genre in intent.genres if genre.lower() in ALLOWED_GENRES]
     intent.search_query = fallback.search_query
     llm_artist = intent.artist.strip() if isinstance(intent.artist, str) else None
-    intent.artist = fallback.artist or (llm_artist or None)
+    if fallback.artist:
+        intent.artist = fallback.artist
+        intent.artist_mode = fallback.artist_mode
+    elif llm_artist:
+        intent.artist = llm_artist
+        # intent.artist_mode is already one of the three literals here --
+        # Pydantic validated it when `intent` was parsed from the LLM's JSON
+        # response, the same safety net genres/energy/vocals already rely on.
+    else:
+        intent.artist = None
+        intent.artist_mode = "none"
     return intent
 
 

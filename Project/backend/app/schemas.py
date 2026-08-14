@@ -513,6 +513,7 @@ class PromptIntent(BaseModel):
     vocals: Literal["less", "neutral", "more"]
     genres: list[str] = Field(max_length=5)
     artist: str | None = Field(default=None, max_length=120)
+    artist_mode: Literal["required", "reference", "none"] = "none"
     search_query: str = Field(min_length=1, max_length=120)
 
 

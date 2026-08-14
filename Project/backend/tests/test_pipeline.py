@@ -68,6 +68,59 @@ def test_deterministic_artist_extraction_handles_common_phrasings():
     assert deterministic_parse("high energy workout").artist is None
 
 
+def test_deterministic_artist_extraction_captures_artist_mode():
+    cases = [
+        ("play some George Wassouf music", "George Wassouf", "required"),
+        ("play George Wassouf", "George Wassouf", "required"),
+        ("music by George Wassouf", "George Wassouf", "required"),
+        ("something like George Wassouf", "George Wassouf", "reference"),
+        ("similar to George Wassouf", "George Wassouf", "reference"),
+        ("emotional Arabic music", None, "none"),
+        # Own additions, generalizing the required pattern beyond the exact
+        # phrasings above -- "put on X" / "give me some X" / "music from X".
+        ("put on Fairuz", "Fairuz", "required"),
+        ("give me some Adele", "Adele", "required"),
+        ("music from Coldplay", "Coldplay", "required"),
+    ]
+    for prompt, expected_artist, expected_mode in cases:
+        intent = deterministic_parse(prompt)
+        assert intent.artist == expected_artist, prompt
+        assert intent.artist_mode == expected_mode, prompt
+
+
+def test_bare_play_trigger_does_not_hijack_a_vibe_description():
+    # The generic bare "play X" trigger (added for "play george wassouf",
+    # which had no matching pattern at all before) must not swallow a
+    # vibe-only prompt that also happens to start with "play" -- a real
+    # artist name isn't usually made up entirely of the same genre/mood/
+    # energy words deterministic_parse already reads from the raw prompt.
+    for prompt in (
+        "play something chill and relaxing",
+        "play chill lofi beats for coding",
+    ):
+        intent = deterministic_parse(prompt)
+        assert intent.artist is None, prompt
+        assert intent.artist_mode == "none", prompt
+
+
+def test_play_prefixed_reference_trigger_is_not_swallowed_as_a_required_artist():
+    # Regression test: the bare "play X" trigger greedily captures anything
+    # after "play ", including a reference trigger phrase that immediately
+    # follows it ("play something like Drake" -> candidate="something like
+    # Drake") -- that must be re-extracted as a reference match (just the
+    # artist name), not treated as a required-mode artist literally named
+    # "something like Drake".
+    cases = [
+        ("play something like George Wassouf", "George Wassouf", "reference"),
+        ("play similar to George Wassouf", "George Wassouf", "reference"),
+        ("play reminds me of George Wassouf", "George Wassouf", "reference"),
+    ]
+    for prompt, expected_artist, expected_mode in cases:
+        intent = deterministic_parse(prompt)
+        assert intent.artist == expected_artist, prompt
+        assert intent.artist_mode == expected_mode, prompt
+
+
 # --- query_planner.build_queries -------------------------------------------
 
 
@@ -148,6 +201,37 @@ def test_build_queries_uses_energy_as_fallback_when_no_genre_is_found():
     # genre query is already better than a generic energy term.
     with_genre_intent = _intent(genres=["techno"], mood="balanced", energy="high", search_query="techno set")
     assert "high energy" not in build_queries(with_genre_intent, max_queries=10)
+
+
+def test_build_queries_required_artist_is_not_diluted_by_genre_in_the_first_round():
+    # Regression test for artist_mode: a required-artist request ("play
+    # george wassouf") must not share its first retrieval round
+    # (queries[0:2], see _relaxation_rounds in audius_retriever.py) with an
+    # unrelated genre query. The raw search_query is promoted ahead of
+    # genre/mood queries instead -- it's still artist-relevant (the artist
+    # name is literally in it) -- while the genre remains available later
+    # as a secondary option rather than being dropped.
+    intent = _intent(
+        artist="George Wassouf",
+        artist_mode="required",
+        genres=["techno"],
+        search_query="play some techno by george wassouf",
+    )
+    queries = build_queries(intent, max_queries=10)
+    assert queries[0] == "George Wassouf"
+    assert queries[1] == "play some techno by george wassouf"
+    assert "techno" in queries[2:]
+
+    # Sanity: the same artist under a non-required mode is not reordered --
+    # normal genre-before-search_query priority still applies.
+    reference_intent = _intent(
+        artist="George Wassouf",
+        artist_mode="reference",
+        genres=["techno"],
+        search_query="something like george wassouf but techno",
+    )
+    reference_queries = build_queries(reference_intent, max_queries=10)
+    assert reference_queries[-1] == "something like george wassouf but techno"
 
 
 # --- audius_retriever._reciprocal_rank_fusion -------------------------------

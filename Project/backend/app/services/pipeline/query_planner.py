@@ -25,8 +25,20 @@ def build_queries(intent: PromptIntent, *, max_queries: int = 5) -> list[str]:
         if candidate and candidate.lower() not in (existing.lower() for existing in queries):
             queries.append(candidate)
 
+    required_artist = bool(intent.artist) and intent.artist_mode == "required"
+
     if intent.artist:
         add(intent.artist)
+    if required_artist:
+        # A required artist ("play george wassouf") shouldn't share its
+        # first retrieval round with an unrelated genre query (see
+        # _relaxation_rounds' pairing in audius_retriever.py) -- the raw
+        # prompt is still artist-relevant (it's the sentence the artist name
+        # came from) and is promoted here, ahead of genre/mood queries.
+        # Those still run, just later in the list, as secondary options once
+        # the required-artist search has had its own undiluted round.
+        add(intent.search_query)
+
     for genre in intent.genres:
         add(genre)
     if len(intent.genres) >= 2:
@@ -49,6 +61,7 @@ def build_queries(intent: PromptIntent, *, max_queries: int = 5) -> list[str]:
         energy_term = _ENERGY_QUERY_TERMS.get(intent.energy)
         if energy_term:
             add(energy_term)
-    add(intent.search_query)
+    if not required_artist:
+        add(intent.search_query)
 
     return queries[:max_queries]
