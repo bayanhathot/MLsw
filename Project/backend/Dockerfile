@@ -22,6 +22,7 @@ RUN groupadd --gid 10001 cuemix \
 COPY --chown=10001:10001 alembic.ini ./alembic.ini
 COPY --chown=10001:10001 alembic ./alembic
 COPY --chown=10001:10001 app ./app
+COPY --chown=10001:10001 scripts ./scripts
 
 USER 10001:10001
 
