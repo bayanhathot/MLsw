@@ -145,6 +145,7 @@
 	onMediaReady={sessionStore.mediaReady}
 	onMediaEnded={sessionStore.mediaEnded}
 	onMediaError={sessionStore.mediaError}
+	onPrepareNext={sessionStore.prepareNext}
 />
 
 <PipelineDebugPanel />

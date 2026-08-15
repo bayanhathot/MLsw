@@ -33,7 +33,8 @@
 	 * onMediaWaiting?: () => void,
 	 * onMediaReady?: () => void,
 	 * onMediaEnded?: () => void,
-	 * onMediaError?: (message: string) => void
+	 * onMediaError?: (message: string) => void,
+	 * onPrepareNext?: () => Promise<string | null>
 	 * }} */
 	let {
 		status = APP_STATES.IDLE,
@@ -57,7 +58,8 @@
 		onMediaWaiting = () => {},
 		onMediaReady = () => {},
 		onMediaEnded = () => {},
-		onMediaError = () => {}
+		onMediaError = () => {},
+		onPrepareNext = () => Promise.resolve(null)
 	} = $props();
 
 	let volume = $state(72);
@@ -77,6 +79,14 @@
 	/** @type {number | null} */
 	let lastMediaPosition = null;
 	let eventFlushed = false;
+	// Which audioUrl prepareNext() has already been fired for -- guards
+	// against re-firing on every timeupdate tick once the threshold is
+	// crossed (design doc 4.1: "at most once per segment"). Reset below
+	// whenever audioUrl itself changes.
+	let preparedForUrl = $state('');
+	// The next track's audio URL, once prepareNext() resolves with one --
+	// drives the optional hidden preload <audio> element (design doc 4.3).
+	let preloadAudioUrl = $state('');
 
 	let segments = $derived(session?.segments ?? []);
 	let activeSegment = $derived(segments[segmentIndex] ?? null);
@@ -128,6 +138,15 @@
 		if (audioElement) {
 			audioElement.volume = volume / 100;
 		}
+	});
+
+	$effect(() => {
+		// audioUrl is the reactive dependency this effect re-runs on -- a new
+		// segment/track means any prior prepare/preload was for a URL that's
+		// no longer current.
+		void audioUrl;
+		preparedForUrl = '';
+		preloadAudioUrl = '';
 	});
 
 	$effect(() => {
@@ -250,6 +269,34 @@
 		return { start, end, length: Math.max(0, end - start) };
 	}
 
+	/** @param {{ start: number, end: number, length: number }} bounds */
+	function maybePrepareNext(bounds) {
+		// Only meaningful right before this segment ending would actually
+		// trigger a backend advance() (see handleAudioEnded below) -- if
+		// there's already a next *local* segment queued, that transition
+		// doesn't need the backend prepared ahead of time.
+		if (hasNext || preparedForUrl === audioUrl || bounds.length <= 0) {
+			return;
+		}
+
+		const remaining = bounds.length - currentTime;
+		// Percentage-based, not a fixed second count (design doc 4.1): a fixed
+		// threshold would fire far too early on a multi-minute Audius track,
+		// or far too late (or never) on a ~45s catalog demo clip.
+		const threshold = Math.max(10, bounds.length * 0.1);
+		if (remaining > threshold) {
+			return;
+		}
+
+		preparedForUrl = audioUrl;
+		const firedForUrl = audioUrl;
+		void onPrepareNext().then((nextAudioUrl) => {
+			if (nextAudioUrl && preparedForUrl === firedForUrl) {
+				preloadAudioUrl = nextAudioUrl;
+			}
+		});
+	}
+
 	function syncTimeline() {
 		if (!audioElement) {
 			return;
@@ -264,6 +311,7 @@
 		const bounds = segmentBounds();
 		currentTime = Math.max(0, absolute - bounds.start);
 		duration = bounds.length;
+		maybePrepareNext(bounds);
 
 		if (bounds.end > bounds.start && audioElement.currentTime >= bounds.end - 0.05) {
 			handleAudioEnded();
@@ -465,6 +513,14 @@
 				onended={handleAudioEnded}
 				onerror={handleMediaError}
 			></audio>
+		{/if}
+
+		{#if preloadAudioUrl}
+			<!-- Gives the browser a head start fetching the already-prepared next
+			     track's bytes (design doc 4.3) -- not wired into playback at all,
+			     just a hint; the real swap happens when advance()'s own result
+			     replaces audioUrl above. -->
+			<audio class="hidden-audio" src={preloadAudioUrl} preload="auto" aria-hidden="true"></audio>
 		{/if}
 	</div>
 

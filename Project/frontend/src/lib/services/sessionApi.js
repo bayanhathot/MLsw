@@ -118,6 +118,31 @@ export async function advanceSession({ sessionId, signal }) {
 }
 
 /**
+ * Best-effort prefetch of the session's next track/segment, ahead of when
+ * advance() will actually need it (PHASE_C_PREFETCH_DESIGN.md section 3.2) --
+ * unlike startSession/advance/sendFeedback, callers treat a failure or
+ * timeout here as "no speedup this cycle," never a user-facing error, so
+ * this gets a shorter timeout than the 45s pipeline calls.
+ *
+ * @param {{ sessionId: string, signal?: AbortSignal }} params
+ * @returns {Promise<{ prepared: boolean, audioUrl: string | null }>}
+ */
+export async function prepareNext({ sessionId, signal }) {
+	const response = await apiRequest(`/sessions/${encodeURIComponent(sessionId)}/prepare-next`, {
+		method: 'POST',
+		timeoutMs: 20_000,
+		signal
+	});
+
+	const body = /** @type {Record<string, any>} */ (response ?? {});
+	const audioUrl = typeof body.audioUrl === 'string' ? backendMediaUrl(body.audioUrl) : '';
+	return {
+		prepared: Boolean(body.prepared),
+		audioUrl: audioUrl || null
+	};
+}
+
+/**
  * @param {{ sessionId: string, signal?: AbortSignal }} params
  */
 export function stopSession({ sessionId, signal }) {

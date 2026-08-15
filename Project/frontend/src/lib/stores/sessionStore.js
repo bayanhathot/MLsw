@@ -5,6 +5,7 @@ import { writable } from 'svelte/store';
 import { APP_STATES } from '../constants/appStates.js';
 import {
 	advanceSession as apiAdvanceSession,
+	prepareNext as apiPrepareNext,
 	sendFeedback as apiSendFeedback,
 	startSession as apiStartSession,
 	stopSession as apiStopSession
@@ -123,6 +124,56 @@ function createSessionStore() {
 				}));
 			}
 			return false;
+		} finally {
+			feedbackController = null;
+		}
+	}
+
+	/**
+	 * Best-effort prefetch of the session's next track/segment
+	 * (PHASE_C_PREFETCH_DESIGN.md section 4.1), fired speculatively from
+	 * DJPlayerCard as the current segment nears its end. Shares advance()'s
+	 * feedbackVersion/feedbackController slot on purpose, for the same
+	 * reason advance() shares it with sendFeedback (see advance()'s comment
+	 * above): if coaching feedback lands before this resolves, feedbackVersion
+	 * has already moved on and this result is discarded, exactly like a
+	 * stale advance() result would be. Never touches session state on
+	 * success -- the backend already persisted the prepared item
+	 * server-side; this only hands back the next audioUrl for DJPlayerCard's
+	 * optional preload step, and swallows any failure silently (never
+	 * surfaced as a user-facing error, unlike advance/sendFeedback).
+	 *
+	 * @returns {Promise<string | null>}
+	 */
+	async function prepareNext() {
+		if (
+			latestState.status !== APP_STATES.PLAYING ||
+			latestState.isFeedbackPending ||
+			!latestState.session?.id
+		) {
+			return null;
+		}
+
+		const sessionId = latestState.session.id;
+		const requestVersion = ++feedbackVersion;
+		const lifecycleAtRequest = lifecycleVersion;
+		feedbackController = new AbortController();
+
+		try {
+			const { audioUrl } = await apiPrepareNext({
+				sessionId,
+				signal: feedbackController.signal
+			});
+			if (
+				requestVersion !== feedbackVersion ||
+				latestState.session?.id !== sessionId ||
+				lifecycleAtRequest !== lifecycleVersion
+			) {
+				return null;
+			}
+			return audioUrl;
+		} catch {
+			return null;
 		} finally {
 			feedbackController = null;
 		}
@@ -395,6 +446,7 @@ function createSessionStore() {
 		},
 
 		advance,
+		prepareNext,
 
 		/** @param {string} message */
 		mediaError(message) {
