@@ -75,11 +75,30 @@ PREPARED_NEXT_TTL_SECONDS = float(os.getenv("PREPARED_NEXT_TTL_SECONDS", "300"))
 # degrades to a pass-through pointing at a URL that's then often *also*
 # broken for the listener, e.g. the source track being unavailable at the
 # provider -- see RenderedAudio.fallback_reason) is skipped in favor of the
-# next-ranked candidate instead of stopping the resolution there. Capped so
-# a systemically broken source can't turn one resolution into a string of
-# slow, doomed download attempts (each up to
+# next-ranked candidate instead of stopping the resolution there. Defaults to
+# the full _CANDIDATE_LIMIT -- a session should exhaust every real candidate
+# it already retrieved from Audius before ever landing on a pass-through, not
+# give up after an arbitrary handful of them while untried real alternatives
+# still sit in the ranked pool (session-pipeline requests already get their
+# own longer client-side timeout for exactly this kind of case -- see
+# frontend/src/lib/services/sessionApi.js). Still env-overridable as a
+# safety cap in case
+# _CANDIDATE_LIMIT is ever raised well past what one request's latency
+# budget can absorb (each attempt costs up to
 # audio_renderer._REMOTE_TIMEOUT_SECONDS).
-AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", "3"))
+AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDIDATE_LIMIT)))
+
+# A wall-clock ceiling on how long one resolution spends retrying render
+# attempts in total (the primary retriever's attempts plus any catalog
+# rescue attempt combined -- see _resolve_and_render), independent of
+# AUDIO_RENDER_RETRY_LIMIT's candidate-count cap: with that cap now
+# defaulting to the whole candidate pool, a systemically broken source whose
+# every attempt genuinely hangs (rather than failing fast with an HTTP error)
+# must still not blow past the 45s client-side timeout session-pipeline
+# calls get (frontend/src/lib/services/sessionApi.js), alongside whatever
+# the VibeUnderstander/Ollama stage and retrieval already spent. Deliberately
+# well under that 45s ceiling, not equal to it.
+AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SECONDS", "25"))
 
 COVER_URL = "/brand/zonix-logo.svg"
 
@@ -249,16 +268,19 @@ def _try_render_ranked_candidates(
     *,
     previous_segment: SelectedSegment | None,
     prefers_smoother: bool,
+    deadline: float,
 ) -> tuple[Track, SelectedSegment, dict, dict, list[dict]]:
     """Filters `candidates` down to ones not already known-broken (recording
-    the rest as skipped -- see known_broken_tracks.py), then tries up to
-    AUDIO_RENDER_RETRY_LIMIT of what's left, in ranked order, until one
-    renders for real or the budget runs out. The last attempt is always
-    kept as the result, even a failed pass-through (see
-    AUDIO_RENDER_RETRY_LIMIT's module comment). Every genuine render
-    failure encountered here is persisted via known_broken_tracks.mark_broken
-    so a later resolution -- this session's or another's -- can skip it
-    outright. `candidates` must be non-empty."""
+    the rest as skipped -- see known_broken_tracks.py), then tries what's
+    left, in ranked order, until one renders for real, AUDIO_RENDER_RETRY_LIMIT
+    is reached, or `deadline` (a time.monotonic() timestamp, shared across
+    both this call and any later rescue call within the same resolution --
+    see AUDIO_RENDER_TIME_BUDGET_SECONDS) passes -- whichever comes first.
+    The last attempt tried is always kept as the result, even a failed
+    pass-through. Every genuine render failure encountered here is
+    persisted via known_broken_tracks.mark_broken so a later resolution --
+    this session's or another's -- can skip it outright. `candidates` must
+    be non-empty."""
 
     skipped_tracks: list[dict] = []
     known_broken_candidates, renderable_candidates = [], []
@@ -298,11 +320,14 @@ def _try_render_ranked_candidates(
             # instead of re-discovering the same dead end.
             known_broken_tracks.mark_broken(db, track, rendered.fallback_reason)
         # Stop -- and keep this attempt, whatever it is -- once it succeeds,
-        # or once the retry budget is spent: the last attempt is always the
-        # final result, even a failed one, never itself recorded as
-        # "skipped" (that label is only for a candidate discarded in favor
-        # of a different one that was tried next).
-        if not rendered.is_pass_through or index == len(attempts) - 1:
+        # once the retry budget is spent, or once the shared time budget
+        # runs out (most failures are fast HTTP errors, but a genuinely
+        # unreachable host can hang for the full
+        # audio_renderer._REMOTE_TIMEOUT_SECONDS on every attempt): the last
+        # attempt is always the final result, even a failed one, never
+        # itself recorded as "skipped" (that label is only for a candidate
+        # discarded in favor of a different one that was tried next).
+        if not rendered.is_pass_through or index == len(attempts) - 1 or time.monotonic() >= deadline:
             break
         skipped_tracks.append({
             "source": track.source,
@@ -413,9 +438,14 @@ def _resolve_and_render(
     # a "why did it play something odd" question is answerable without
     # backend logs. Skipped candidates are never marked "played" (they
     # never played), so they remain eligible on a future resolution too.
+    # render_deadline governs this call and any rescue call below together
+    # (see AUDIO_RENDER_TIME_BUDGET_SECONDS) -- one shared budget for the
+    # whole resolution's render attempts, not one per phase.
+    render_deadline = time.monotonic() + AUDIO_RENDER_TIME_BUDGET_SECONDS
     track, segment, transition, rendered, skipped_tracks = _try_render_ranked_candidates(
         db, fresh_candidates, selector, planner, renderer,
         previous_segment=previous_segment, prefers_smoother=prefers_smoother,
+        deadline=render_deadline,
     )
 
     # served_by's own candidates are all genuinely broken (not just
@@ -428,8 +458,14 @@ def _resolve_and_render(
     # already *is* fallback_retriever (nothing left to fall through to).
     # This rescue candidate list is never written to session_candidate_pool --
     # that cache's fingerprint/served_by-reconstruction semantics are for
-    # the primary retrieval only, not a one-off audio-failure rescue.
-    if rendered.is_pass_through and served_by is not fallback_retriever:
+    # the primary retrieval only, not a one-off audio-failure rescue. Skipped
+    # entirely once render_deadline has already passed -- no budget left to
+    # spend on a rescue attempt either.
+    if (
+        rendered.is_pass_through
+        and served_by is not fallback_retriever
+        and time.monotonic() < render_deadline
+    ):
         try:
             rescue_candidates = retrieve_candidates(
                 db, intent, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
@@ -445,6 +481,7 @@ def _resolve_and_render(
             ) = _try_render_ranked_candidates(
                 db, fresh_rescue_candidates, selector, planner, renderer,
                 previous_segment=previous_segment, prefers_smoother=prefers_smoother,
+                deadline=render_deadline,
             )
             if not rescue_rendered.is_pass_through:
                 skipped_tracks.append({

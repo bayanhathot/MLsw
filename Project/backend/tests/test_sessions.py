@@ -248,9 +248,10 @@ def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_cand
     row = db_session.query(DJSession).filter_by(id=session["id"]).one()
     audio_trace = row.pipeline_trace_json["audio_renderer"]
     assert audio_trace["is_pass_through"] is False
-    # The retry-capped Audius attempts, all discarded in favor of the
-    # catalog rescue.
-    assert len(audio_trace["skipped_tracks"]) == session_manager.AUDIO_RENDER_RETRY_LIMIT
+    # All 5 broken Audius candidates were tried (well under
+    # AUDIO_RENDER_RETRY_LIMIT's default, the full candidate pool) and
+    # discarded in favor of the catalog rescue.
+    assert len(audio_trace["skipped_tracks"]) == 5
     assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
     assert row.pipeline_trace_json["candidate_retriever"]["name"] == "catalog"
 
@@ -283,13 +284,82 @@ def test_create_session_keeps_the_pass_through_when_not_even_the_catalog_can_res
     session = client.post(
         "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
     ).json()
-    assert session["nowPlaying"]["title"] == f"Broken {session_manager.AUDIO_RENDER_RETRY_LIMIT - 1}"
+    # All 5 candidates were genuinely tried (not capped early) -- the last
+    # of them is the kept, honest pass-through.
+    assert session["nowPlaying"]["title"] == "Broken 4"
 
     row = db_session.query(DJSession).filter_by(id=session["id"]).one()
     audio_trace = row.pipeline_trace_json["audio_renderer"]
     assert audio_trace["is_pass_through"] is True
-    assert len(audio_trace["skipped_tracks"]) == session_manager.AUDIO_RENDER_RETRY_LIMIT - 1
+    assert len(audio_trace["skipped_tracks"]) == 4
     assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+
+
+def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monkeypatch, db_session):
+    # AUDIO_RENDER_RETRY_LIMIT defaults to the whole candidate pool now
+    # (never stop early while untried real candidates remain), but it must
+    # still act as a hard safety cap when an operator lowers it.
+    monkeypatch.setattr(session_manager, "AUDIO_RENDER_RETRY_LIMIT", 2)
+    tracks = [
+        {
+            "title": f"Broken {i}", "artist": "Nancy Ajram",
+            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
+            "duration": 100, "source": "audius",
+        }
+        for i in range(5)
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_http_403"),
+    )
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
+    ).json()
+    assert session["nowPlaying"]["title"] == "Broken 1"
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert len(row.pipeline_trace_json["audio_renderer"]["skipped_tracks"]) == 1
+
+
+def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(
+    client, monkeypatch, db_session
+):
+    # A genuinely unreachable source can hang for the full remote timeout on
+    # every single attempt, unlike a fast-failing HTTP error -- the shared
+    # wall-clock budget must still cut retries short well before
+    # AUDIO_RENDER_RETRY_LIMIT's (much larger) candidate-count cap would.
+    monkeypatch.setattr(session_manager, "AUDIO_RENDER_TIME_BUDGET_SECONDS", 0.0)
+    tracks = [
+        {
+            "title": f"Broken {i}", "artist": "Nancy Ajram",
+            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
+            "duration": 100, "source": "audius",
+        }
+        for i in range(5)
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_http_403"),
+    )
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
+    ).json()
+    # A zero time budget means the very first attempt already exceeds the
+    # deadline once it returns -- exactly one attempt is made, not all 5.
+    assert session["nowPlaying"]["title"] == "Broken 0"
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert row.pipeline_trace_json["audio_renderer"]["skipped_tracks"] == []
 
 
 def test_a_previously_known_broken_track_is_skipped_without_a_download_attempt(
