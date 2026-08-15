@@ -100,6 +100,17 @@ class StopSessionRead(BaseModel):
     message: str
 
 
+class PrepareNextRead(BaseModel):
+    # True if session.prepared_next_json holds a valid entry once this call
+    # returns, regardless of whether *this* call was the one that populated
+    # it (a no-op because one was already prepared still reports True).
+    prepared: bool
+    # The prepared item's rendered audio URL, for the frontend's optional
+    # preload step (PHASE_C_PREFETCH_DESIGN.md section 4.3) -- None whenever
+    # `prepared` is False.
+    audioUrl: str | None = None
+
+
 class StartMixRequest(NonBlankModel):
     prompt: str = Field(min_length=1, max_length=300)
 

@@ -7,7 +7,13 @@ from app.core.rate_limit import write_rate_limit
 from app.database.database import get_db
 from app.database.models.user import User
 from app.routers.auth import get_optional_current_user
-from app.schemas import SessionFeedbackRequest, SessionRead, StartSessionRequest, StopSessionRead
+from app.schemas import (
+    PrepareNextRead,
+    SessionFeedbackRequest,
+    SessionRead,
+    StartSessionRequest,
+    StopSessionRead,
+)
 from app.services import session_manager
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
@@ -135,6 +141,40 @@ def advance_session(
         selector=selector,
         planner=planner,
         renderer=renderer,
+    )
+
+
+@router.post("/{session_id}/prepare-next", response_model=PrepareNextRead)
+def prepare_next(
+    session_id: str,
+    _: None = Depends(write_rate_limit),
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+    retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
+    fallback_retriever: CandidateRetriever = Depends(get_catalog_candidate_retriever),
+    selector: SegmentSelector = Depends(get_segment_selector),
+    planner: TransitionPlanner = Depends(get_transition_planner),
+    renderer: AudioRenderer = Depends(get_audio_renderer),
+):
+    """Best-effort prefetch of the session's next track/segment, ahead of
+    when advance() actually needs it (PHASE_C_PREFETCH_DESIGN.md section
+    3.2). Safe to call speculatively and repeatedly: a no-op, not an error,
+    if the session isn't playing or a valid prepared item already exists."""
+
+    session = _existing(db, session_id, current_user)
+    session_manager.prepare_next(
+        db,
+        session,
+        retriever=retriever,
+        fallback_retriever=fallback_retriever,
+        selector=selector,
+        planner=planner,
+        renderer=renderer,
+    )
+    prepared = session.prepared_next_json
+    return PrepareNextRead(
+        prepared=prepared is not None,
+        audioUrl=prepared["now_playing"]["audio_url"] if prepared else None,
     )
 
 

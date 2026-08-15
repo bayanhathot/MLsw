@@ -1,8 +1,10 @@
+import time
 from pathlib import Path
 
 from conftest import register_and_login
 
 from app.database.models.session import DJSession, UserPreference
+from app.services import session_manager
 from app.services.pipeline.audius_retriever import MultiQueryAudiusRetriever
 
 _DEMO_WAV_BYTES = (
@@ -349,6 +351,212 @@ def test_feedback_that_changes_energy_invalidates_the_cached_pool(client, monkey
     # the old fingerprint, forcing a real retrieval rather than serving a
     # pool ranked for the session's original (lower-energy) intent.
     assert calls["count"] == 2
+
+
+# --- Phase C: prepare-next / prefetch (PHASE_C_PREFETCH_DESIGN.md) --------
+
+
+def test_prepare_next_populates_prepared_next_json_without_touching_live_fields(
+    client, monkeypatch, db_session
+):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    live_now_playing = row.now_playing_json
+    live_reasoning = row.reasoning_json
+    live_intent = row.intent_json
+    assert row.prepared_next_json is None
+
+    response = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["prepared"] is True
+    assert body["audioUrl"]
+
+    db_session.refresh(row)
+    assert row.prepared_next_json is not None
+    assert row.prepared_next_json["now_playing"]["audio_url"] == body["audioUrl"]
+    # Nothing the session currently reports as playing was touched.
+    assert row.now_playing_json == live_now_playing
+    assert row.reasoning_json == live_reasoning
+    assert row.intent_json == live_intent
+
+
+def test_advance_consumes_a_valid_prepared_item_without_calling_the_retriever_again(
+    client, monkeypatch, db_session
+):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    prep = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+    assert calls["count"] == 2  # prepare-next's own resolution
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    prepared_audio_url = row.prepared_next_json["now_playing"]["audio_url"]
+
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    assert response.json()["audioUrl"] == prepared_audio_url
+    # Fast path: consuming the prepared item made no additional retrieve() call.
+    assert calls["count"] == 2
+
+    db_session.refresh(row)
+    assert row.prepared_next_json is None  # consumed and cleared
+
+
+def test_advance_does_a_real_resolution_when_no_prepared_item_exists(client, monkeypatch, db_session):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert row.prepared_next_json is None
+
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    assert calls["count"] == 2
+
+
+def test_advance_does_a_real_resolution_when_the_prepared_item_has_expired(client, monkeypatch):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    monkeypatch.setattr(session_manager, "PREPARED_NEXT_TTL_SECONDS", 0.05)
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    prep = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+    assert calls["count"] == 2
+
+    time.sleep(0.1)
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    # The prepared item had aged past PREPARED_NEXT_TTL_SECONDS, so this fell
+    # through to a real resolution instead of consuming stale state.
+    assert calls["count"] == 3
+
+
+def test_advance_does_a_real_resolution_when_prepared_fingerprint_mismatches(
+    client, monkeypatch, db_session
+):
+    # Simulates PHASE_C_PREFETCH_DESIGN.md section 3.5's race directly: a
+    # prepared item sitting in the row with a fingerprint that no longer
+    # matches the session's current intent (e.g. intent changed by some
+    # other path after this was prepared) -- advance_session's own
+    # fingerprint check has to catch this, not just apply_feedback's
+    # explicit clear (covered separately below).
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    row.prepared_next_json = {
+        "track_key": "audius:mismatched-1",
+        "artist": "Someone Else",
+        "now_playing": {},
+        "reasoning": {},
+        "pipeline_trace": {},
+        "fingerprint": ["Someone Else", "required", [], "chill", "low"],
+        "prepared_at": time.monotonic(),
+    }
+    db_session.commit()
+
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    assert calls["count"] == 2  # the mismatched prepared item was ignored
+
+
+def test_feedback_that_changes_energy_clears_prepared_next_and_forces_real_resolution(
+    client, monkeypatch, db_session
+):
+    # 10 candidates, same as the pool-cache-reuse test above: with only 1
+    # track played so far, prepare-next's own _resolve_and_render reuses the
+    # still-warm session_candidate_pool rather than calling the retriever
+    # again -- that's the pool cache working as intended (section 3.2 notes
+    # this explicitly: "a warm candidate pool means this is often nearly
+    # free"), not something this test is exercising.
+    _patch_audius(monkeypatch, _many_wassouf_tracks(10))
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    prep = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+    assert calls["count"] == 1  # pool cache hit, no new retrieve() call
+
+    feedback = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+    )
+    assert feedback.status_code == 200
+    # "More energy" changes the fingerprint, so this can't reuse the pool
+    # cached under the old one either -- a genuinely new retrieval.
+    assert calls["count"] == 2
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert row.prepared_next_json is None  # explicit invalidation, section 3.4
+
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    # No stale prepared item was consumed (there wasn't one to consume) --
+    # this fell through to _resolve_and_render same as the feedback call did,
+    # which found the pool feedback just warmed under the new fingerprint
+    # still fresh enough to reuse, so no *further* retrieve() call was needed.
+    assert calls["count"] == 2
+
+
+def test_calling_prepare_next_twice_in_a_row_does_not_duplicate_retrieval_work(client, monkeypatch):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    first = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert first.status_code == 200
+    assert first.json()["prepared"] is True
+    assert calls["count"] == 2
+
+    second = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert second.status_code == 200
+    assert second.json()["prepared"] is True
+    # Already-valid prepared item -- no second retrieval.
+    assert calls["count"] == 2
+
+
+def test_stop_session_clears_a_prepared_item(client, monkeypatch, db_session):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    prep = client.post(f"/sessions/{session['id']}/prepare-next")
+    assert prep.json()["prepared"] is True
+
+    assert client.post(f"/sessions/{session['id']}/stop").status_code == 200
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    assert row.prepared_next_json is None
 
 
 def test_advance_rejects_a_stopped_session(client):

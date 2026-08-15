@@ -9,6 +9,9 @@ against whichever CandidateRetriever originally served this session -- so it
 works the same whether that retriever is the local catalog or Audius.
 """
 
+import os
+import time
+from threading import Lock
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -55,6 +58,12 @@ _CANDIDATE_LIMIT = 15
 # a real retrieval refreshes the pool instead of letting advance() grind
 # down to repeats before the next natural refresh (a fingerprint change).
 _CANDIDATE_POOL_REFRESH_THRESHOLD = 3
+
+# How long a prepare_next() result stays eligible for advance_session's fast
+# path (PHASE_C_PREFETCH_DESIGN.md section 3.3). Short-ish on purpose: this
+# only needs to bridge the gap between "prepared ahead of time" and "the
+# current track actually ends" -- not act as a general-purpose cache.
+PREPARED_NEXT_TTL_SECONDS = float(os.getenv("PREPARED_NEXT_TTL_SECONDS", "300"))
 
 COVER_URL = "/brand/zonix-logo.svg"
 
@@ -138,6 +147,59 @@ def _effective_original_intent(session: DJSession) -> dict:
     treating the absence as an error anywhere this gets read."""
 
     return session.original_intent_json or session.intent_json
+
+
+def _fingerprint_as_json(fingerprint: session_candidate_pool.RetrievalFingerprint) -> list:
+    """session_candidate_pool.fingerprint_for() returns a tuple (with a
+    nested tuple of genres) for use as an in-memory dict key, but JSON has
+    no tuple type -- prepared_next_json round-trips through a JSON column,
+    so it stores and compares against this normalized list form instead,
+    to avoid a `(...) != [...]` false mismatch after a save/load cycle."""
+
+    artist, artist_mode, genres, mood, energy = fingerprint
+    return [artist, artist_mode, list(genres), mood, energy]
+
+
+def _prepared_expired(prepared: dict) -> bool:
+    return time.monotonic() - prepared["prepared_at"] >= PREPARED_NEXT_TTL_SECONDS
+
+
+def _prepared_is_valid(
+    prepared: dict | None, fingerprint: session_candidate_pool.RetrievalFingerprint
+) -> bool:
+    """True only if `prepared` (session.prepared_next_json) exists, was
+    resolved against the exact same retrieval fingerprint as `fingerprint`,
+    and hasn't exceeded PREPARED_NEXT_TTL_SECONDS. prepare_next() uses this
+    to decide whether it's a no-op; advance_session() uses it to decide
+    whether to take the fast path (PHASE_C_PREFETCH_DESIGN.md section 3.3) --
+    always re-derived from the session's *current* intent at the moment of
+    the check, never trusted just because a prepared item exists."""
+
+    if prepared is None:
+        return False
+    if prepared["fingerprint"] != _fingerprint_as_json(fingerprint):
+        return False
+    return not _prepared_expired(prepared)
+
+
+# Per-session_id locks guarding prepare_next() so two near-simultaneous
+# prepare calls for the same session don't both pay for a full
+# retrieval/render. Not a correctness requirement -- session.prepared_next_json
+# is a single side-slot where the last write just wins, so a race here is
+# only ever wasted duplicate work, never corrupted state (see
+# PHASE_C_PREFETCH_DESIGN.md section 3.5) -- but cheap to avoid. Same
+# Lock-per-key idiom as session_candidate_pool.py's module-level lock.
+_prepare_locks_guard = Lock()
+_prepare_locks: dict[str, Lock] = {}
+
+
+def _prepare_lock_for(session_id: str) -> Lock:
+    with _prepare_locks_guard:
+        lock = _prepare_locks.get(session_id)
+        if lock is None:
+            lock = Lock()
+            _prepare_locks[session_id] = lock
+        return lock
 
 
 def _track_key(track: Track) -> str:
@@ -480,6 +542,16 @@ def apply_feedback(
                 "original_intent": _effective_original_intent(session),
             }
             session.intent_json = mutated.model_dump(mode="json")
+            if mutated is not current_intent:
+                # PHASE_C_PREFETCH_DESIGN.md section 3.4: any prepared next
+                # item was resolved against the intent this just replaced --
+                # advance_session's own fingerprint check (section 3.3) would
+                # already refuse to serve it, but clearing it here too means
+                # it doesn't linger unused in the row. Gated on the intent
+                # actually changing (not just prefers_smoother alone, which
+                # leaves the fingerprint unchanged), matching the spec's own
+                # "MORE ENERGY -> discard the prepared next item" example.
+                session.prepared_next_json = None
             session.now_playing_json = now_playing
             session.reasoning_json = reasoning
             session.pipeline_trace_json = pipeline_trace
@@ -540,9 +612,45 @@ def advance_session(
     Explicit coaching feedback (apply_feedback) still wins if the two race:
     both are ordinary commits to the same DJSession row, so whichever
     request's commit lands last is what persists -- no special locking
-    needed, same as any other concurrent write to one row."""
+    needed, same as any other concurrent write to one row.
+
+    PHASE_C_PREFETCH_DESIGN.md section 3.3: if prepare_next() already parked
+    a still-valid result for this exact intent, that's applied directly
+    instead -- no retrieve/select/plan/render at all. The prepared item is
+    re-validated against the session's *current* intent fingerprint right
+    here, not trusted just because it exists, since feedback may have
+    mutated the intent after it was prepared but before this call landed."""
 
     intent = PromptIntent.model_validate(session.intent_json)
+    fingerprint = session_candidate_pool.fingerprint_for(intent)
+    prepared = session.prepared_next_json
+    if _prepared_is_valid(prepared, fingerprint):
+        pipeline_trace = prepared["pipeline_trace"]
+        pipeline_trace["vibe_understander"] = {
+            "implementation": type(get_vibe_understander()).__name__,
+            "invoked": False,
+            "intent": intent.model_dump(mode="json"),
+            "original_intent": _effective_original_intent(session),
+        }
+        session.now_playing_json = prepared["now_playing"]
+        session.reasoning_json = prepared["reasoning"]
+        session.pipeline_trace_json = pipeline_trace
+        session.retriever_name = pipeline_trace["candidate_retriever"]["name"]
+        session.vibe_label = (
+            prepared["now_playing"]["segment"]["track"]["vibe_label"] or session.vibe_label
+        )
+        session.played_track_keys_json = (
+            (session.played_track_keys_json or []) + [prepared["track_key"]]
+        )[-_PLAYED_TRACK_HISTORY:]
+        session.played_artists_json = (
+            (session.played_artists_json or []) + [prepared["artist"]]
+        )[-_PLAYED_TRACK_HISTORY:]
+        session.prepared_next_json = None
+        db.commit()
+        db.refresh(session)
+        notify_pipeline_debug_change()
+        return serialize_session(session)
+
     previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
     exclude = frozenset(session.played_track_keys_json or [])
     recent_artists = frozenset(session.played_artists_json or [])
@@ -584,7 +692,78 @@ def advance_session(
     return serialize_session(session)
 
 
+def prepare_next(
+    db: Session,
+    session: DJSession,
+    *,
+    retriever: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
+    selector: SegmentSelector,
+    planner: TransitionPlanner,
+    renderer: AudioRenderer,
+) -> None:
+    """PHASE_C_PREFETCH_DESIGN.md section 3.2: runs the exact same resolution
+    advance_session() would do, ahead of time, and parks the result in
+    session.prepared_next_json instead of the live now_playing_json/
+    reasoning_json/pipeline_trace fields -- nothing this session currently
+    reports as playing is touched. A no-op if the session isn't
+    `"playing"`, or if a still-valid (unexpired, current-fingerprint)
+    prepared item already exists.
+
+    Guarded by a per-session Lock so two near-simultaneous calls for the
+    same session don't both pay for a full retrieval/render -- see the
+    module-level _prepare_locks comment for why this is a latency nicety,
+    not a correctness requirement (section 3.5)."""
+
+    if session.status != "playing":
+        return
+
+    lock = _prepare_lock_for(session.id)
+    if not lock.acquire(blocking=False):
+        # Another prepare_next() call for this session is already doing the
+        # real work; its result (or lack of one) is what matters, not a
+        # second redundant attempt.
+        return
+    try:
+        intent = PromptIntent.model_validate(session.intent_json)
+        fingerprint = session_candidate_pool.fingerprint_for(intent)
+        if _prepared_is_valid(session.prepared_next_json, fingerprint):
+            return
+
+        previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
+        exclude = frozenset(session.played_track_keys_json or [])
+        recent_artists = frozenset(session.played_artists_json or [])
+        try:
+            track, _, now_playing, reasoning, pipeline_trace, _served_by = _resolve_and_render(
+                db, intent, retriever, fallback_retriever, selector, planner, renderer,
+                session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
+                exclude_track_keys=exclude, recent_artists=recent_artists,
+            )
+        except NoMatchingCandidate:
+            # Nothing to prepare ahead of time; advance_session falls back to
+            # its own real resolution when it's actually called, same as it
+            # always has.
+            return
+
+        session.prepared_next_json = {
+            "track_key": _track_key(track),
+            "artist": track.artist,
+            "now_playing": now_playing,
+            "reasoning": reasoning,
+            # vibe_understander is deliberately absent here -- advance_session
+            # fills it in at consume time, exactly like every other caller of
+            # _resolve_and_render already does with its own pipeline_trace.
+            "pipeline_trace": pipeline_trace,
+            "fingerprint": _fingerprint_as_json(fingerprint),
+            "prepared_at": time.monotonic(),
+        }
+        db.commit()
+    finally:
+        lock.release()
+
+
 def stop_session(db: Session, session: DJSession) -> dict:
     session.status = "stopped"
+    session.prepared_next_json = None
     db.commit()
     return {"session_id": session.id, "status": "stopped", "message": "AI DJ session stopped."}

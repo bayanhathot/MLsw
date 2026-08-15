@@ -42,6 +42,15 @@ class DJSession(Base):
     # before this column existed fall back to intent_json instead of
     # erroring), not a public API field.
     original_intent_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # A fully pre-resolved "next" resolution (track key, now_playing,
+    # reasoning, pipeline_trace, retrieval fingerprint, prepared_at) parked
+    # by session_manager.prepare_next() ahead of when it's actually needed --
+    # never applied to the live now_playing_json/reasoning_json/intent_json
+    # fields directly (see PHASE_C_PREFETCH_DESIGN.md section 3.5 for why
+    # that separation is what makes this race-safe). advance_session()
+    # consumes it only if its fingerprint still matches the session's
+    # current intent and it hasn't exceeded PREPARED_NEXT_TTL_SECONDS.
+    prepared_next_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Serialized NowPlayingRead-shaped data for the current track/segment.
     now_playing_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Serialized ReasoningRead-shaped data (selectedMoment/transitionPlan/nextDirection).
