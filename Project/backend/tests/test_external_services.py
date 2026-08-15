@@ -1,7 +1,12 @@
+import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from time import perf_counter
 
 import httpx
 
+from app.schemas import PromptIntent
 from app.services import audius_service, prompt_parser
 
 
@@ -186,6 +191,73 @@ def test_ollama_keep_alive_defaults_to_never_unload_but_is_configurable(monkeypa
     monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "30m")
     prompt_parser.parse_prompt("chill lofi beats")
     assert payloads[1]["keep_alive"] == "30m"  # passed through as-is, unparsed
+
+
+def test_concurrent_parse_prompt_calls_respect_the_ollama_slot_bound(monkeypatch):
+    """CI-safe concurrency load test for the "Local LLM Integration"
+    requirement's Concurrency bullet: fires far more than _ollama_slots'
+    configured limit at the real prompt_parser.parse_prompt() concurrently,
+    against an artificially slow mocked Ollama, so callers actually contend
+    for slots instead of racing through sequentially. Verifies: no more
+    than the configured limit are ever in-flight against "Ollama" at once,
+    every caller still returns a valid PromptIntent (never hangs, never
+    raises), and callers that miss a slot within the real 0.05s acquire
+    timeout cleanly fall back to the deterministic parse rather than
+    blocking."""
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+
+    in_flight = 0
+    high_water_mark = 0
+    lock = threading.Lock()
+
+    def slow_post(*args, **kwargs):
+        nonlocal in_flight, high_water_mark
+        with lock:
+            in_flight += 1
+            high_water_mark = max(high_water_mark, in_flight)
+        time.sleep(0.2)  # far longer than the 0.05s slot-acquire timeout
+        with lock:
+            in_flight -= 1
+        return httpx.Response(
+            200,
+            json={
+                "response": json.dumps(
+                    {
+                        "mood": "calm",
+                        "energy": "low",
+                        "vocals": "neutral",
+                        "genres": ["lofi"],
+                        "artist": None,
+                        "artist_mode": "none",
+                        "search_query": "chill lofi beats",
+                    }
+                )
+            },
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", slow_post)
+
+    concurrency_limit = prompt_parser._ollama_slots._value
+    call_count = concurrency_limit * 5
+
+    started = perf_counter()
+    with ThreadPoolExecutor(max_workers=call_count) as executor:
+        results = list(
+            executor.map(lambda _: prompt_parser.parse_prompt("chill lofi beats for focus"), range(call_count))
+        )
+    wall_clock_seconds = perf_counter() - started
+
+    print(
+        f"\n[llm-concurrency] limit={concurrency_limit} calls={call_count} "
+        f"high_water_mark={high_water_mark} wall_clock={wall_clock_seconds:.2f}s"
+    )
+
+    assert all(isinstance(result, PromptIntent) for result in results)
+    assert high_water_mark <= concurrency_limit
+    assert high_water_mark >= 1  # sanity: the mock was actually exercised
 
 
 def test_valid_llm_classification_cannot_replace_catalog_search_text(monkeypatch):

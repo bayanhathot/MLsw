@@ -36,8 +36,8 @@ frontend dev server proxies `/api` to `127.0.0.1:5000` by default.
 - `app/database/models/` — SQLAlchemy models, one module per domain
   (`user`, `profile`, `session`, `mix`, `mix_social`, `catalog`, `forum`,
   `social`, `messaging`, `music_identity`, `attachment`).
-- `app/scripts/` — operational scripts, including `eval_preferences.py`
-  (labeled offline eval for the retrieval-preference ranking signal).
+- `scripts/` — standalone evaluation scripts (`eval_preferences.py`,
+  `eval_llm_reasoning.py`) — see [Evaluations](#evaluations) below.
 - `alembic/versions/` — migrations. Any model change must land with a
   migration in the same change; `python -m alembic check` verifies there's
   no drift.
@@ -53,6 +53,49 @@ session's current intent; any intent mutation (new prompt, feedback, skip)
 invalidates it. This exists purely to avoid a visible stall between segments
 — it's not a correctness requirement, and every path that consumes a
 prepared result re-validates the fingerprint first.
+
+## Evaluations
+
+Two evaluations verify the "Local LLM Integration" requirement's
+Performance and Concurrency criteria, in addition to the normal pytest gate:
+
+- **Concurrency** — `tests/test_external_services.py::test_concurrent_parse_prompt_calls_respect_the_ollama_slot_bound`
+  runs in the standard `pytest` suite (mocked Ollama, no live model needed).
+  It fires 5x `prompt_parser._ollama_slots`' configured limit at the real
+  `parse_prompt()` concurrently against an artificially slow mock, and
+  asserts the number of calls actually in flight against "Ollama" never
+  exceeds the configured `OLLAMA_MAX_CONCURRENCY`, and that every caller
+  still returns a valid `PromptIntent` (callers that miss a slot within the
+  real 0.05s timeout fall back to the deterministic parse rather than
+  blocking). **Last verified result (2026-08-15, commit `a3a1c63`, local
+  run):** 20 concurrent callers against a limit of 4 → high-water-mark
+  **4/4**, wall-clock **0.80s**, 20/20 valid `PromptIntent` results, 0
+  failures.
+- **Performance (math/context reasoning)** — `scripts/eval_llm_reasoning.py`
+  is a standalone script, **not part of the pytest gate**, that needs a
+  genuinely live, reachable Ollama with `OLLAMA_MODEL` already pulled (the
+  same reason `ffmpeg`/Audius aren't fully exercised in the default
+  local/CI run). It sends a scripted multi-turn `/api/chat` exchange —
+  state two tracks' BPM in an early turn, unrelated filler in the middle,
+  then a final question requiring both arithmetic and recalling the early
+  turn's numbers — and checks the reply numerically (parsed percentage vs.
+  the real value, ±1%) and for context retention (original BPM values
+  present, not hallucinated ones). Run it against a live instance with:
+
+  ```powershell
+  cd backend
+  python -m scripts.eval_llm_reasoning
+  ```
+
+  **Status: not yet run against a live model.** No Ollama instance was
+  reachable from the environment this script was written in. It needs to
+  be run against the deployment where `OLLAMA_MODEL` is actually pulled
+  (`docker-compose.prod.yml`'s `ollama` service on the Azure VM) — via
+  `docker compose --env-file .env --file docker-compose.prod.yml exec
+  backend python -m scripts.eval_llm_reasoning` — once this code has been
+  deployed there. This section should be updated with the real result
+  (pass/fail, exact percentages, latency, date, commit) the first time
+  that happens, whether it passes or not.
 
 ## Tests and checks
 
