@@ -28,7 +28,7 @@
 			>{/if}
 	</div>
 	<div class="profile-copy">
-		<p class="eyebrow">{isOwner ? 'Your Zonix profile' : 'Zonix listener'}</p>
+		<p class="eyebrow">{isOwner ? 'Your Cuemix profile' : 'Cuemix listener'}</p>
 		<h1>{displayName || username}</h1>
 		<div class="identity-line">
 			<strong>@{username}</strong>{#if memberSince}<span

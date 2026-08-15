@@ -1,4 +1,4 @@
-# File: ZONIX_FINAL_DESIGN_NOTES.md
+# File: CUEMIX_FINAL_DESIGN_NOTES.md
 
 > **Archived design snapshot.** This predates the feed, library, forum, social,
 > profile, and persistent-session work and mentions files that were deliberately
@@ -9,7 +9,7 @@
 This document explains the final MVP design choices and why the interface looks/behaves this way.
 It is not executed by the app; it is design documentation for the project.
 
-# Zonix Final MVP Frontend Design
+# Cuemix Final MVP Frontend Design
 
 This source package applies the final selected design direction:
 

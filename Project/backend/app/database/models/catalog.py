@@ -63,7 +63,7 @@ class CatalogTrack(Base):
 
     # Not unique: the 4 seeded demo rows deliberately share one physical
     # file, the same way the old TRACKS dict pointed every bucket at
-    # zonix-demo.wav. Uploaded tracks always get a fresh uuid4-based name
+    # cuemix-demo.wav. Uploaded tracks always get a fresh uuid4-based name
     # from upload_queue.py regardless.
     storage_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)

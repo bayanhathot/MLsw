@@ -41,7 +41,7 @@
 		<div class="empty">
 			<span aria-hidden="true">♫</span>
 			<strong>No artist history yet</strong>
-			<p>Play a mix and Zonix will build this ranking from the seconds you actually listen.</p>
+			<p>Play a mix and Cuemix will build this ranking from the seconds you actually listen.</p>
 		</div>
 	{/if}
 </section>

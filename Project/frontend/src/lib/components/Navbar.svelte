@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { onDestroy } from 'svelte';
 
-	import zonixLogo from '../../assets/zonix-logo.svg';
+	import cuemixLogo from '../../assets/cuemix-logo.svg';
 	import {
 		getConversations,
 		getNotifications,
@@ -132,8 +132,8 @@
 </script>
 
 <nav class="navbar" aria-label="Main navigation">
-	<a class="logo" href={resolve('/')} aria-label="Zonix DJ" onclick={() => (menuOpen = false)}
-		><img src={zonixLogo} alt="Zonix" /></a
+	<a class="logo" href={resolve('/')} aria-label="Cuemix DJ" onclick={() => (menuOpen = false)}
+		><img src={cuemixLogo} alt="Cuemix" /></a
 	>
 	<button
 		class="menu-toggle"

@@ -297,7 +297,7 @@
 					ZX
 				</div>{/if}
 			<div>
-				<span>Shared Zonix mix</span><strong>{post.mix.title}</strong>
+				<span>Shared Cuemix mix</span><strong>{post.mix.title}</strong>
 				<p>{post.mix.prompt}</p>
 				<small>by @{post.mix.ownerUsername} · {post.mix.segmentCount} segments</small>
 			</div>

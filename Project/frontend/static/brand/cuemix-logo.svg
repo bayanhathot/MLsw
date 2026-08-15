@@ -1,11 +1,18 @@
 <!--
-  File: src/assets/zonix-logo.svg
-  Purpose: Vector Zonix logo used by Navbar.svelte.
-  What it does: Provides scalable brand artwork that can be imported by Svelte/Vite and rendered as an image.
+  File: static/brand/cuemix-logo.svg
+  Purpose: Public-URL copy of the Cuemix logo (served at /brand/cuemix-logo.svg),
+  used wherever a plain URL is needed instead of a bundled Svelte import --
+  e.g. AudioRenderer's now-playing cover fallback (session_manager.COVER_URL).
+  Keep in sync with src/assets/cuemix-logo.svg.
+  Note: the mark (the two angular slash shapes below) was originally drawn to
+  evoke a "Z"/"X" monogram for the old Zonix name -- carried over as-is
+  during the Cuemix rebrand since redrawing it is a design task, not a text
+  rename. Worth a real icon redesign pass if the mark itself should read as
+  a "C"/"M" monogram instead.
 -->
 <svg width="220" height="64" viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Zonix logo</title>
-  <desc id="desc">Zonix wordmark with a compact ZX mark</desc>
+  <title id="title">Cuemix logo</title>
+  <desc id="desc">Cuemix wordmark with a compact angular mark</desc>
   <defs>
     <linearGradient id="mark" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
       <stop stop-color="#7DB7FF"/>
@@ -26,5 +33,5 @@
     <path d="M11 20H31L23 29H34L18 44H11L22 33H11L19 24H11V20Z" fill="white" fill-opacity="0.96"/>
     <path d="M34 20H41L31 31L42 44H34L26 35L18 44H11L23 31L13 20H21L27 28L34 20Z" fill="#DDF0FF" fill-opacity="0.95"/>
   </g>
-  <text x="66" y="42" fill="#F7FBFF" font-family="Outfit, Inter, Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="9">ZONIX</text>
+  <text x="66" y="42" fill="#F7FBFF" font-family="Outfit, Inter, Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="9">CUEMIX</text>
 </svg>

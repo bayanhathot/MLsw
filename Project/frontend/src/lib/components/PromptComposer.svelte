@@ -16,7 +16,7 @@
 	/**
 	 * Prompt composer.
 	 *
-	 * In the guest MVP this is the main way to start Zonix. During playback it can
+	 * In the guest MVP this is the main way to start Cuemix. During playback it can
 	 * also appear as a compact "change vibe" panel, opened from the small current
 	 * vibe strip.
 	 */

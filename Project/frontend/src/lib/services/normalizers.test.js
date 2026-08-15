@@ -16,7 +16,7 @@ describe('backend response adapters', () => {
 					{
 						position: 1,
 						title: 'Focus Loop',
-						artist: 'Zonix',
+						artist: 'Cuemix',
 						audio_url: '/static/audio/demo.mp3',
 						start_second: 5,
 						end_second: 25

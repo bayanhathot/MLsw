@@ -108,9 +108,9 @@ class UploadQueue:
         self._unclaimed_ttl = max(60, int(os.getenv("UPLOAD_JOB_TTL_SECONDS", "3600")))
         self._cleanup_wakeup = Event()
         for index in range(workers):
-            Thread(target=self._worker, name=f"zonix-upload-{index}", daemon=True).start()
+            Thread(target=self._worker, name=f"cuemix-upload-{index}", daemon=True).start()
         if workers > 0:
-            Thread(target=self._cleanup_worker, name="zonix-upload-cleanup", daemon=True).start()
+            Thread(target=self._cleanup_worker, name="cuemix-upload-cleanup", daemon=True).start()
 
     def _new_job(
         self,

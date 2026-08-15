@@ -41,10 +41,10 @@ def test_duplicate_and_disabled_user(client, db_session):
 
 
 def test_malformed_and_expired_subjects_are_unauthorized(client):
-    client.cookies.set("zonix_access_token", create_access_token("not-an-integer"))
+    client.cookies.set("cuemix_access_token", create_access_token("not-an-integer"))
     assert client.get("/auth/me").status_code == 401
     client.cookies.set(
-        "zonix_access_token", create_access_token("1", expires_delta=timedelta(seconds=-1))
+        "cuemix_access_token", create_access_token("1", expires_delta=timedelta(seconds=-1))
     )
     assert client.get("/auth/me").status_code == 401
     assert decode_access_token("not-a-token") is None
@@ -56,12 +56,12 @@ def test_optional_auth_endpoint_degrades_to_anonymous_on_stale_cookie(client):
     assert client.get("/mixes/feed").status_code == 200
 
     client.cookies.set(
-        "zonix_access_token", create_access_token("1", expires_delta=timedelta(seconds=-1))
+        "cuemix_access_token", create_access_token("1", expires_delta=timedelta(seconds=-1))
     )
     assert client.get("/mixes/feed").status_code == 200
     assert client.get("/posts/feed").status_code == 200
 
-    client.cookies.set("zonix_access_token", "not-a-token")
+    client.cookies.set("cuemix_access_token", "not-a-token")
     assert client.get("/mixes/feed").status_code == 200
     assert client.get("/posts/feed").status_code == 200
 

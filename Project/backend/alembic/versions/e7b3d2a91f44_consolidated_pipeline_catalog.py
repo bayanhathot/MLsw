@@ -18,32 +18,32 @@ depends_on: Union[str, Sequence[str], None] = None
 # The 4 legacy hardcoded TRACKS dict entries, now real catalog rows. All 4
 # still point at the one bundled demo asset (catalog_retriever.py stages it
 # into UPLOAD_DIR on first use) -- same as the old dict, which served every
-# bucket from the same zonix-demo.wav.
+# bucket from the same cuemix-demo.wav.
 _SEED_TRACKS = [
     {
         "title": "Momentum Loop",
-        "artist": "Zonix AI DJ",
+        "artist": "Cuemix AI DJ",
         "album": "Workout Demo Catalog",
         "mood_bucket": "energy",
         "vibe_label": "Gym energy",
     },
     {
         "title": "Midnight Whispers",
-        "artist": "Zonix AI DJ",
+        "artist": "Cuemix AI DJ",
         "album": "Vocal Demo Catalog",
         "mood_bucket": "vocals",
         "vibe_label": "Emotional vocals",
     },
     {
         "title": "Focus Loop 01",
-        "artist": "Zonix AI DJ",
+        "artist": "Cuemix AI DJ",
         "album": "Focus Demo Catalog",
         "mood_bucket": "focus",
         "vibe_label": "Deep work focus",
     },
     {
         "title": "Smooth Flow Demo",
-        "artist": "Zonix AI DJ",
+        "artist": "Cuemix AI DJ",
         "album": "General Demo Catalog",
         "mood_bucket": "smooth",
         "vibe_label": "Smooth flow",
@@ -117,7 +117,7 @@ def upgrade() -> None:
         [
             {
                 **seed,
-                "storage_name": "zonix-demo.wav",
+                "storage_name": "cuemix-demo.wav",
                 "content_type": "audio/wav",
                 "duration_seconds": 60,
                 "analysis_status": "completed",

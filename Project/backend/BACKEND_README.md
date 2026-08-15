@@ -1,11 +1,11 @@
-# Zonix backend
+# Cuemix backend
 
 This directory contains the FastAPI, SQLAlchemy, Alembic, and PostgreSQL side
-of Zonix. It implements a complete prototype API for authentication, persistent
+of Cuemix. It implements a complete prototype API for authentication, persistent
 DJ sessions and preferences, mix publishing, forum interactions, profiles,
 direct messages, notifications, and bounded media uploads.
 
-Zonix still does not render real crossfades or run a trained music-selection
+Cuemix still does not render real crossfades or run a trained music-selection
 model. Audius supplies candidate metadata and streams when available; a small,
 original WAV file is the deterministic offline fallback.
 
@@ -156,4 +156,4 @@ enable it silently in production.
   multi-gigabyte model downloads happen automatically.
 
 For full architecture, deployment prerequisites, current limitations, and the
-MLOps roadmap, use [the canonical project guide](../ZONIX_PROJECT_README.md).
+MLOps roadmap, use [the canonical project guide](../CUEMIX_PROJECT_README.md).

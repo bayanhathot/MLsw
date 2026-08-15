@@ -3,9 +3,9 @@ def test_root_health_endpoint(client):
 
     assert response.status_code == 200
     assert response.json() == {
-        "service": "zonix-backend",
+        "service": "cuemix-backend",
         "status": "running",
-        "message": "Zonix backend is running",
+        "message": "Cuemix backend is running",
     }
 
 

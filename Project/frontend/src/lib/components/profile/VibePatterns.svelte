@@ -41,7 +41,7 @@
 			<div class="empty-orbit" aria-hidden="true"><span></span></div>
 			<strong>Your vibe pattern is still forming</strong>
 			<p>
-				As Zonix records real listening sessions, repeated contexts such as focus, late night,
+				As Cuemix records real listening sessions, repeated contexts such as focus, late night,
 				energy and chill will appear here.
 			</p>
 		</div>

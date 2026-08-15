@@ -1,4 +1,4 @@
-"""Audius service for Zonix.
+"""Audius service for Cuemix.
 
 This service is responsible for communicating with the external Audius API.
 
@@ -12,7 +12,7 @@ Behavior:
 1. Receive a user prompt, for example: "chill electronic focus".
 2. Send the prompt to Audius track search.
 3. Receive raw Audius track data.
-4. Extract only the fields Zonix needs: track id, title, artist, duration,
+4. Extract only the fields Cuemix needs: track id, title, artist, duration,
    cover image, stream URL.
 5. Return a clean list of track dictionaries.
 
@@ -41,7 +41,7 @@ import httpx
 # alternate discovery node can be swapped in without a code change, matching
 # how OLLAMA_BASE_URL is configured.
 AUDIUS_API_BASE = os.getenv("AUDIUS_API_BASE", "https://discoveryprovider.audius.co/v1").rstrip("/")
-APP_NAME = "Zonix"
+APP_NAME = "Cuemix"
 logger = logging.getLogger(__name__)
 
 # Short-TTL, bounded search cache in front of the real Audius call. A single

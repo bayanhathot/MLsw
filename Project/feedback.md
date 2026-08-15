@@ -1,5 +1,5 @@
 > **Archived grading feedback.** This is the professor's original grading
-> rubric from before the project was renamed from "CueMix" to Zonix; it does
+> rubric from before the project was renamed from "CueMix" to Cuemix; it does
 > not describe the current architecture or feature set. Kept for reference
 > only. See [README.md](README.md) for current behavior.
 

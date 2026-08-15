@@ -8,15 +8,15 @@
 
 This document gives a detailed file-by-file guide to the frontend architecture.
 
-# Zonix Frontend Source Code Guide
+# Cuemix Frontend Source Code Guide
 
 ## Purpose
 
-This document explains the structure of the Zonix SvelteKit frontend and how the files work together. It is meant for teammates, the lecturer, and future maintainers.
+This document explains the structure of the Cuemix SvelteKit frontend and how the files work together. It is meant for teammates, the lecturer, and future maintainers.
 
 ## High-level product flow
 
-Zonix is an AI DJ interface. The user describes a vibe, starts a continuous AI DJ session, listens through the fixed bottom control deck, and guides future moments with feedback buttons.
+Cuemix is an AI DJ interface. The user describes a vibe, starts a continuous AI DJ session, listens through the fixed bottom control deck, and guides future moments with feedback buttons.
 
 The main flow is:
 
@@ -62,7 +62,7 @@ The prompt is important before starting, but after playback begins the interface
 
 ## Why the bottom player is different from Spotify
 
-Zonix is not only switching between songs. The app plans continuous DJ-style segments and transitions. Therefore the bottom player contains normal music controls plus AI-specific controls:
+Cuemix is not only switching between songs. The app plans continuous DJ-style segments and transitions. Therefore the bottom player contains normal music controls plus AI-specific controls:
 
 - Coach the DJ buttons,
 - current flow status,

@@ -1,4 +1,4 @@
-def register_user(client, username="zonix_user", email="user@example.com"):
+def register_user(client, username="cuemix_user", email="user@example.com"):
     return client.post(
         "/auth/register",
         json={
@@ -30,7 +30,7 @@ def test_register_login_me_and_logout(client):
 
     me_response = client.get("/auth/me")
     assert me_response.status_code == 200
-    assert me_response.json()["username"] == "zonix_user"
+    assert me_response.json()["username"] == "cuemix_user"
 
     logout_response = client.post("/auth/logout")
     assert logout_response.status_code == 200

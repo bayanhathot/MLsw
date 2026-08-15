@@ -16,6 +16,6 @@ This file documents binary/static assets because image files such as PNG files c
 
 Used as a visual/cover-style asset for the demo music session and UI mock content. It helps the player look like a real streaming product before real album art is connected.
 
-### `zonix-logo.svg`
+### `cuemix-logo.svg`
 
 Vector logo used by `Navbar.svelte`. SVG is preferred for logos because it scales cleanly on high-resolution screens.

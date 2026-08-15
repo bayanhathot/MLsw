@@ -1,6 +1,6 @@
-# Zonix frontend
+# Cuemix frontend
 
-SvelteKit 2/Svelte 5 client for the Zonix AI DJ, persistent mix library, community forum, and account features.
+SvelteKit 2/Svelte 5 client for the Cuemix AI DJ, persistent mix library, community forum, and account features.
 
 ## Run locally
 

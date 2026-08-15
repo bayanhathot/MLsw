@@ -92,7 +92,7 @@
 			label="Total listening"
 			value={hasData ? duration(totalSeconds) : '0m'}
 			detail={hasData
-				? 'Actual playback time recorded by Zonix'
+				? 'Actual playback time recorded by Cuemix'
 				: 'Your clock starts with your first play.'}
 			icon="◷"
 			accent="violet"
@@ -189,7 +189,7 @@
 						<div class="context-icon">{item.kind === 'mix' ? 'M' : 'DJ'}</div>
 						<div class="recent-copy">
 							<strong>{item.title}</strong><span
-								>{item.subtitle || (item.kind === 'mix' ? 'Zonix mix' : 'AI DJ session')}</span
+								>{item.subtitle || (item.kind === 'mix' ? 'Cuemix mix' : 'AI DJ session')}</span
 							>
 						</div>
 						<div class="recent-meta">

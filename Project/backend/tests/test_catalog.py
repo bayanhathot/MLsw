@@ -6,7 +6,7 @@ from conftest import register_and_login
 from app.database.models.catalog import CatalogTrack
 
 _DEMO_WAV_BYTES = (
-    Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
+    Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "cuemix-demo.wav"
 ).read_bytes()
 
 

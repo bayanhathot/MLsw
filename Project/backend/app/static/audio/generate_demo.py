@@ -1,4 +1,4 @@
-"""Generate Zonix's original deterministic 60-second demo audio asset.
+"""Generate Cuemix's original deterministic 60-second demo audio asset.
 
 This uses only synthesized sine waves; it contains no sampled or third-party
 recording. Run ``python app/static/audio/generate_demo.py`` to reproduce the
@@ -12,7 +12,7 @@ import wave
 
 SAMPLE_RATE = 22_050
 DURATION_SECONDS = 60
-OUTPUT = Path(__file__).with_name("zonix-demo.wav")
+OUTPUT = Path(__file__).with_name("cuemix-demo.wav")
 
 # MIDI-note chord progression: Cmaj7, Am7, Fmaj7, G6.
 CHORDS = (

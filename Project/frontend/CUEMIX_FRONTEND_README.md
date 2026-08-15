@@ -1,21 +1,21 @@
-# Zonix Frontend README
+# Cuemix Frontend README
 
 > **Archived implementation snapshot.** This document describes the early
 > mock-only MVP and is retained only for project history. It is not a setup or
 > architecture reference. Use [README.md](README.md) and the repository root
 > [README.md](../README.md) for the current authenticated, persistent frontend.
 
-This README explains the purpose, structure, and current behavior of the Zonix frontend.
+This README explains the purpose, structure, and current behavior of the Cuemix frontend.
 
 ---
 
 ## 1. Frontend purpose
 
-The frontend is the user-facing part of Zonix.
+The frontend is the user-facing part of Cuemix.
 
 It lets the user:
 
-- Open the Zonix app.
+- Open the Cuemix app.
 - Read the product message.
 - Enter a vibe prompt.
 - Choose a preset vibe.
@@ -121,7 +121,7 @@ Main home page of the app.
 
 What it does:
 
-- Displays the main Zonix landing/app screen.
+- Displays the main Cuemix landing/app screen.
 - Uses the hero section, prompt composer, and AI DJ player components.
 - Reads state from `sessionStore.js`.
 - Calls store methods when the user starts, stops, or sends feedback.
@@ -184,7 +184,7 @@ They must not be written inside comments, because that can break the build and s
 
 Purpose:
 
-Global styling for the Zonix frontend.
+Global styling for the Cuemix frontend.
 
 What it does:
 
@@ -211,7 +211,7 @@ Top navigation bar.
 
 What it does:
 
-- Shows the Zonix logo/brand.
+- Shows the Cuemix logo/brand.
 - Provides navigation links.
 - Links to login/register pages.
 
@@ -225,7 +225,7 @@ Main landing message.
 
 What it does:
 
-- Explains the value of Zonix.
+- Explains the value of Cuemix.
 - Presents the product as an AI DJ that helps the user stay in the zone.
 
 ---
@@ -535,7 +535,7 @@ Recommended next frontend tasks:
 
 ## 16. Frontend summary
 
-The frontend currently works as the visual/control layer of Zonix.
+The frontend currently works as the visual/control layer of Cuemix.
 
 It is responsible for:
 

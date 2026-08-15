@@ -1,4 +1,4 @@
-# Zonix Frontend/Backend Connection Notes
+# Cuemix Frontend/Backend Connection Notes
 
 > **Archived integration note.** The absolute localhost and mock-import details
 > below describe an earlier milestone. The current application uses one

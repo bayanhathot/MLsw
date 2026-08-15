@@ -1,6 +1,6 @@
 <!--
   File: src/routes/register/+page.svelte
-  Purpose: Registration page for Zonix accounts.
+  Purpose: Registration page for Cuemix accounts.
   What it does:
   - Validates the form, creates an account, signs in, and redirects home.
 -->

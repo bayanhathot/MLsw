@@ -8,7 +8,7 @@
 	});
 </script>
 
-<svelte:head><title>Discussions | Zonix</title></svelte:head>
+<svelte:head><title>Discussions | Cuemix</title></svelte:head>
 
 <main class="redirect-page">
 	<p>Opening Community discussions…</p>

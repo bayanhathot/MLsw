@@ -7,7 +7,7 @@ The current revision cleanup is complete:
   from the Git index without deleting their local working copies.
 - The unused, uncleared `backend/app/static/audio/demo.mp3` was deleted from the
   current revision. Runtime fallback audio is the original, reproducibly
-  generated `zonix-demo.wav`.
+  generated `cuemix-demo.wav`.
 - Repository and project ignore rules prevent these generated paths from being
   added again. Future MP3 files are assigned to Git LFS.
 - `.vscode`, feedback files, and unrelated working files were not included.

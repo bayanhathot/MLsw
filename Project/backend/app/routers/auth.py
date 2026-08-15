@@ -34,7 +34,7 @@ router = APIRouter(
 
 
 # Cookie name used by the backend and browser.
-ACCESS_TOKEN_COOKIE_NAME = "zonix_access_token"
+ACCESS_TOKEN_COOKIE_NAME = "cuemix_access_token"
 
 
 def _cookie_samesite() -> str:
@@ -127,7 +127,7 @@ def register(
     db: Session = Depends(get_db),
 ):
     """
-    Register a new Zonix user.
+    Register a new Cuemix user.
 
     This endpoint only creates the user.
     It does not automatically log the user in.

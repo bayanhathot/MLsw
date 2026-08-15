@@ -55,8 +55,8 @@ from app.routers.debug import router as debug_router
 # app.main -> this file: backend/app/main.py
 # app      -> this FastAPI object below
 app = FastAPI(
-    title="Zonix Backend",
-    description="Backend API for the Zonix Smart AI DJ Mixer project.",
+    title="Cuemix Backend",
+    description="Backend API for the Cuemix Smart AI DJ Mixer project.",
     version="0.2.0",
     root_path=os.getenv("ROOT_PATH", ""),
 )
@@ -76,7 +76,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-access_logger = logging.getLogger("zonix.access")
+access_logger = logging.getLogger("cuemix.access")
 
 
 @app.middleware("http")
@@ -84,7 +84,7 @@ async def csrf_origin_guard(request, call_next):
     """Reject cross-site cookie-authenticated writes without changing the UI contract."""
 
     unsafe = request.method in {"POST", "PUT", "PATCH", "DELETE"}
-    cookie_auth = "zonix_access_token" in request.cookies
+    cookie_auth = "cuemix_access_token" in request.cookies
     fetch_site = request.headers.get("sec-fetch-site", "").lower()
     origin = (request.headers.get("origin") or "").rstrip("/")
     if unsafe and cookie_auth and (
@@ -160,9 +160,9 @@ def root():
     """
 
     return {
-        "service": "zonix-backend",
+        "service": "cuemix-backend",
         "status": "running",
-        "message": "Zonix backend is running",
+        "message": "Cuemix backend is running",
     }
 
 
@@ -206,7 +206,7 @@ def db_health(db: Session = Depends(get_db)):
 def health():
     """Stable health-check path for containers and load balancers."""
 
-    return {"service": "zonix-backend", "status": "healthy", "version": app.version}
+    return {"service": "cuemix-backend", "status": "healthy", "version": app.version}
 
 
 @app.get("/model-info")

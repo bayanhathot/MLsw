@@ -1,4 +1,4 @@
-"""Social graph and safety primitives for Zonix listeners."""
+"""Social graph and safety primitives for Cuemix listeners."""
 
 from datetime import datetime
 

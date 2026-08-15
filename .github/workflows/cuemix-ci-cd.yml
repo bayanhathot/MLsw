@@ -1,4 +1,4 @@
-name: Zonix CI
+name: Cuemix CI
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: zonix-${{ github.workflow }}-${{ github.ref }}
+  group: cuemix-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,20 +23,20 @@ jobs:
       postgres:
         image: postgres:16.9-alpine
         env:
-          POSTGRES_DB: zonix_test
-          POSTGRES_USER: zonix_ci
-          POSTGRES_PASSWORD: zonix_ci_password
+          POSTGRES_DB: cuemix_test
+          POSTGRES_USER: cuemix_ci
+          POSTGRES_PASSWORD: cuemix_ci_password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U zonix_ci -d zonix_test"
+          --health-cmd "pg_isready -U cuemix_ci -d cuemix_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
       APP_ENV: test
-      DATABASE_URL: postgresql+psycopg2://zonix_ci:zonix_ci_password@localhost:5432/zonix_test
-      DATABASE_URL_LOCAL: postgresql+psycopg2://zonix_ci:zonix_ci_password@localhost:5432/zonix_test
+      DATABASE_URL: postgresql+psycopg2://cuemix_ci:cuemix_ci_password@localhost:5432/cuemix_test
+      DATABASE_URL_LOCAL: postgresql+psycopg2://cuemix_ci:cuemix_ci_password@localhost:5432/cuemix_test
       SECRET_KEY: ci-only-secret-with-at-least-thirty-two-characters
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
@@ -145,8 +145,8 @@ jobs:
 
       - name: Validate production Compose configuration
         env:
-          BACKEND_IMAGE: ghcr.io/example/zonix-backend:validation
-          FRONTEND_IMAGE: ghcr.io/example/zonix-frontend:validation
+          BACKEND_IMAGE: ghcr.io/example/cuemix-backend:validation
+          FRONTEND_IMAGE: ghcr.io/example/cuemix-frontend:validation
         run: >-
           docker compose
           --env-file Project/deploy/.env.production.example
@@ -202,8 +202,8 @@ jobs:
         shell: bash
         run: |
           owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          echo "backend_image=ghcr.io/${owner}/zonix-backend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
-          echo "frontend_image=ghcr.io/${owner}/zonix-frontend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "backend_image=ghcr.io/${owner}/cuemix-backend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "frontend_image=ghcr.io/${owner}/cuemix-frontend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
 
       - name: Build and publish backend
         uses: docker/build-push-action@v6
@@ -265,8 +265,8 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           install -d -m 700 "${HOME}/.ssh"
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/zonix_deploy"
-          chmod 600 "${HOME}/.ssh/zonix_deploy"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/cuemix_deploy"
+          chmod 600 "${HOME}/.ssh/cuemix_deploy"
           {
             echo "Host *"
             echo "  StrictHostKeyChecking accept-new"
@@ -279,9 +279,9 @@ jobs:
           SSH_HOST: ${{ vars.SSH_HOST }}
           SSH_USER: ${{ vars.SSH_USER }}
         run: |
-          ssh -i "${HOME}/.ssh/zonix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/zonix-deploy/deploy"
-          scp -i "${HOME}/.ssh/zonix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/zonix-deploy/"
-          scp -i "${HOME}/.ssh/zonix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh "${SSH_USER}@${SSH_HOST}:~/zonix-deploy/deploy/"
+          ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       - name: Log the VM in to GHCR
         env:
@@ -290,7 +290,7 @@ jobs:
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         run: |
-          printf '%s' "${GHCR_READ_TOKEN}" | ssh -i "${HOME}/.ssh/zonix_deploy" "${SSH_USER}@${SSH_HOST}" \
+          printf '%s' "${GHCR_READ_TOKEN}" | ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
             "docker login ghcr.io --username '${GHCR_USERNAME}' --password-stdin"
 
       - name: Apply migration and deploy
@@ -300,8 +300,8 @@ jobs:
           BACKEND_IMAGE: ${{ needs.publish-images.outputs.backend_image }}
           FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}
         run: |
-          ssh -i "${HOME}/.ssh/zonix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/zonix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' bash \$HOME/zonix-deploy/deploy/remote-deploy.sh"
+          ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       # --retry-all-errors is required, not optional: on a first-ever deploy
       # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and

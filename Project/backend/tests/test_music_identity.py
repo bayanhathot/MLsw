@@ -225,6 +225,6 @@ def test_session_playback_can_be_recorded_without_client_supplied_track_metadata
     )
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["artist_name"] == "Zonix AI DJ"
+    assert body["artist_name"] == "Cuemix AI DJ"
     assert body["vibe"] == "Gym energy"
     assert body["seconds_listened"] == 12

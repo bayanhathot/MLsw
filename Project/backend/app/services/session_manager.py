@@ -103,7 +103,7 @@ AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDID
 # well under that 45s ceiling, not equal to it.
 AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SECONDS", "25"))
 
-COVER_URL = "/brand/zonix-logo.svg"
+COVER_URL = "/brand/cuemix-logo.svg"
 
 _ENERGY_LEVELS = ["low", "medium", "high"]
 _VOCALS_LEVELS = ["less", "neutral", "more"]
@@ -502,7 +502,7 @@ def _resolve_and_render(
     now_playing = {
         "title": track.title,
         "artist": track.artist,
-        "album": track.album or "Zonix catalog",
+        "album": track.album or "Cuemix catalog",
         "cover_url": track.cover_url or COVER_URL,
         "role": _role_for(track),
         "audio_url": rendered.audio_url,

@@ -7,7 +7,7 @@
  * - Acts as a contract between frontend mock data and the future backend API.
  */
 
-// cSpell:ignore Zonix explainability
+// cSpell:ignore Cuemix explainability
 
 /**
  * @typedef {"idle" | "starting" | "playing" | "buffering_next" | "stopped" | "error"} AppStatus
@@ -20,7 +20,7 @@
  */
 
 /**
- * User-facing metadata for the current Zonix moment.
+ * User-facing metadata for the current Cuemix moment.
  *
  * @typedef {Object} NowPlaying
  * @property {string} title
@@ -42,7 +42,7 @@
  */
 
 /**
- * Active Zonix session returned by the backend/mock API.
+ * Active Cuemix session returned by the backend/mock API.
  *
  * @typedef {Object} Session
  * @property {string} id
@@ -256,7 +256,7 @@
  */
 
 /**
- * Central frontend state for the Zonix session.
+ * Central frontend state for the Cuemix session.
  *
  * @typedef {Object} SessionState
  * @property {AppStatus} status

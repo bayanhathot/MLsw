@@ -22,7 +22,7 @@ load_dotenv()
 
 # Read the full database connection string.
 # Example:
-# postgresql+psycopg2://zonix_user:zonix_password@postgres:5432/zonix_db
+# postgresql+psycopg2://cuemix_user:cuemix_password@postgres:5432/cuemix_db
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Fail early if DATABASE_URL is missing.

@@ -255,7 +255,7 @@
 	}
 </script>
 
-<svelte:head><title>Community | Zonix</title></svelte:head>
+<svelte:head><title>Community | Cuemix</title></svelte:head>
 
 <main class="community-page">
 	<header class="hero">
@@ -369,7 +369,7 @@
 										? 'Visible to friends'
 										: activeTab === 'discussions'
 											? 'Ask, compare, or debate music'
-											: 'Share with the Zonix community'}</span
+											: 'Share with the Cuemix community'}</span
 								>
 							</div>
 						</div>
@@ -434,7 +434,7 @@
 					</div>{/if}
 			</section>
 			<aside class="context-card">
-				<p class="eyebrow">Zonix social loop</p>
+				<p class="eyebrow">Cuemix social loop</p>
 				<h3>Connect through sound</h3>
 				<p>
 					Listen → build your Music Identity → share a mix → friends react → discover more music.

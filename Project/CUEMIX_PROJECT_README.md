@@ -1,6 +1,6 @@
-# Zonix
+# Cuemix
 
-Zonix is a full-stack prototype for a prompt-guided DJ experience. The current
+Cuemix is a full-stack prototype for a prompt-guided DJ experience. The current
 application provides a SvelteKit UI, a FastAPI/PostgreSQL API, cookie-based
 authentication, persistent sessions and feedback, an Audius-backed mix plan
 with a local fallback, mix/community/social-graph vertical slices, protected uploads,
@@ -116,7 +116,7 @@ Main API groups:
 
 ## Music Identity analytics
 
-Zonix now records **actual playback time** as raw `listening_events` when an authenticated listener finishes, skips, closes, stops, or changes a played segment/session. It does not send a request every second. Track identity/artist/genre/vibe are resolved by the backend from the referenced Zonix mix segment or DJ session rather than trusted from client metadata.
+Cuemix now records **actual playback time** as raw `listening_events` when an authenticated listener finishes, skips, closes, stops, or changes a played segment/session. It does not send a request every second. Track identity/artist/genre/vibe are resolved by the backend from the referenced Cuemix mix segment or DJ session rather than trusted from client metadata.
 
 The deterministic analytics service derives total listening time, top artists, artist listening shares, genre distribution, recurring vibes, a listening trend, and recent listening contexts. New and migrated users have a `user_music_profiles` row that is **private by default**. Public profile endpoints never return private Music Identity data.
 
@@ -220,7 +220,7 @@ rollback drill, backups, and external uptime check succeed.
 
 - Never commit `.env`, private keys, credentials, model downloads, DVC caches,
   virtual environments, `node_modules`, or generated build output.
-- Runtime demo playback uses the original procedural `zonix-demo.wav`, which is
+- Runtime demo playback uses the original procedural `cuemix-demo.wav`, which is
   reproducible with the committed generator. The old uncleared MP3 has been
   removed from the current revision and images; its ordinary blob remains only
   in old Git history pending a separately coordinated rewrite. Future MP3

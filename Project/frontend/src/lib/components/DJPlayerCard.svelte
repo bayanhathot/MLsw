@@ -218,7 +218,7 @@
 				keepalive
 			});
 		} catch (requestError) {
-			console.warn('Zonix listening event was not recorded.', requestError);
+			console.warn('Cuemix listening event was not recorded.', requestError);
 		}
 	}
 
@@ -393,7 +393,7 @@
 	}
 </script>
 
-<section class="player-deck" aria-label="Zonix AI DJ player">
+<section class="player-deck" aria-label="Cuemix AI DJ player">
 	<div class="track-block">
 		{#if nowPlaying}
 			{#if nowPlaying.coverUrl}
@@ -408,7 +408,7 @@
 		{:else}
 			<div class="cover placeholder" aria-hidden="true">ZX</div>
 			<div class="track-copy">
-				<h2>Zonix is ready</h2>
+				<h2>Cuemix is ready</h2>
 				<p>Start a vibe to begin the flow.</p>
 			</div>
 		{/if}

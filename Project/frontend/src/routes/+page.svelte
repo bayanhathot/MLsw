@@ -16,7 +16,7 @@
 
 <script>
 	/**
-	 * Zonix home route.
+	 * Cuemix home route.
 	 *
 	 * Behavior:
 	 * - Before starting: show the full prompt composer.
@@ -95,7 +95,7 @@
 			/>
 		</div>
 	{:else if canChangeVibe}
-		<section class="active-vibe-strip card" aria-label="Current Zonix prompt">
+		<section class="active-vibe-strip card" aria-label="Current Cuemix prompt">
 			<div>
 				<p class="eyebrow">Current vibe</p>
 				<p class="prompt-preview">{$sessionStore.prompt}</p>

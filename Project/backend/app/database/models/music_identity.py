@@ -1,7 +1,7 @@
 """Listening history and Music Identity persistence.
 
 Raw listening events are intentionally stored separately from derived metrics.
-This lets Zonix recompute analytics and future ML features without losing the
+This lets Cuemix recompute analytics and future ML features without losing the
 original behavioral signal.
 """
 

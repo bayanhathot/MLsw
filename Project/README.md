@@ -1,6 +1,6 @@
-# Zonix
+# Cuemix
 
-Zonix is a SvelteKit, FastAPI, and PostgreSQL prototype for prompt-guided DJ
+Cuemix is a SvelteKit, FastAPI, and PostgreSQL prototype for prompt-guided DJ
 sessions. Session start/feedback and mix generation are routed through one
 consolidated, swappable AI-DJ pipeline (`VibeUnderstander` -> deterministic
 catalog/Audius `CandidateRetriever` -> librosa `SegmentSelector` ->
@@ -42,7 +42,7 @@ migrations, and then starts the API and UI.
 | Azure CD | Template only; VM, DNS, secrets, and first deployment are external prerequisites |
 
 The complete architecture, commands, limitations, security notes, and roadmap
-are in [ZONIX_PROJECT_README.md](ZONIX_PROJECT_README.md). The AI-DJ pipeline
+are in [CUEMIX_PROJECT_README.md](CUEMIX_PROJECT_README.md). The AI-DJ pipeline
 (stages, why each is swappable, deterministic-vs-LLM breakdown, and what's
 deferred) is in [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md). Music Identity data
 flow, privacy, future ML integration points, and a debugging checklist are in
@@ -83,6 +83,6 @@ npm run test:e2e
 
 Do not commit `.env`, virtual environments, `node_modules`, model downloads,
 DVC/MLflow caches, or unlicensed audio. Runtime demo playback uses the original,
-reproducibly generated `zonix-demo.wav`. The old uncleared MP3 is excluded from
+reproducibly generated `cuemix-demo.wav`. The old uncleared MP3 is excluded from
 the current revision and container builds, but its old blob remains in Git
 history until a separately coordinated rewrite; future MP3 staging uses Git LFS.

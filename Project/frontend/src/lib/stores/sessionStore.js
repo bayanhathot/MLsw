@@ -1,4 +1,4 @@
-/** Session lifecycle and media intent for the main Zonix player. */
+/** Session lifecycle and media intent for the main Cuemix player. */
 
 import { writable } from 'svelte/store';
 

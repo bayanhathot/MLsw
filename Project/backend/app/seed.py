@@ -18,9 +18,9 @@ from app.database.models.forum import ForumComment, ForumPost, ForumPostVote
 from app.database.models.user import User
 
 DEMO_USERS = (
-    ("demo_aurora", "demo-aurora@zonix.invalid"),
-    ("demo_pulse", "demo-pulse@zonix.invalid"),
-    ("demo_echo", "demo-echo@zonix.invalid"),
+    ("demo_aurora", "demo-aurora@cuemix.invalid"),
+    ("demo_pulse", "demo-pulse@cuemix.invalid"),
+    ("demo_echo", "demo-echo@cuemix.invalid"),
 )
 
 

@@ -1,4 +1,4 @@
-"""Validated API contracts for the Zonix backend.
+"""Validated API contracts for the Cuemix backend.
 
 The project is intentionally keeping a single schema module for now.  The
 contracts are grouped by domain and all user supplied strings are stripped at

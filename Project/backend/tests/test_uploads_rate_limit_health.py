@@ -269,14 +269,14 @@ def test_rate_limiter_uses_route_template_and_prunes_inactive_keys(monkeypatch):
 
 def test_health_and_request_id(client):
     response = client.get("/health", headers={"X-Request-ID": "test-request"})
-    assert response.json() == {"service": "zonix-backend", "status": "healthy", "version": "0.2.0"}
+    assert response.json() == {"service": "cuemix-backend", "status": "healthy", "version": "0.2.0"}
     assert response.headers["x-request-id"] == "test-request"
     model = client.get("/model-info").json()
     assert model["selector"] == "deterministic-intent-v1"
     assert model["llm_provider"] == "none"
     assert model["llm_configured"] is False
     assert model["llm_availability"] == "not_configured"
-    audio = client.get("/static/audio/zonix-demo.wav")
+    audio = client.get("/static/audio/cuemix-demo.wav")
     assert audio.status_code == 200
     assert audio.content[:4] == b"RIFF"
 

@@ -1,4 +1,4 @@
-# Zonix AI-DJ Session Workflow — Read-Only Loop Review
+# Cuemix AI-DJ Session Workflow — Read-Only Loop Review
 
 **Status:** review only, no behavior changed. Written for a teammate who understands Python/JS but hasn't read this codebase yet. Every claim below is anchored to a specific file and function so it can be checked against the source directly.
 

@@ -1,6 +1,6 @@
-# Zonix Social Music Infrastructure — V3
+# Cuemix Social Music Infrastructure — V3
 
-This version reshapes Zonix around one product loop instead of separate profile, forum, messaging, and mix islands:
+This version reshapes Cuemix around one product loop instead of separate profile, forum, messaging, and mix islands:
 
 ```text
 listen -> Music Identity -> publish/share music -> friends react ->

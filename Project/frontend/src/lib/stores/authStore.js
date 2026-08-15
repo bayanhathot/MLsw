@@ -89,7 +89,7 @@ function createAuthStore() {
 					error:
 						error && typeof error === 'object' && 'status' in error && error.status === 401
 							? null
-							: 'Zonix could not verify your account.'
+							: 'Cuemix could not verify your account.'
 				});
 			}
 		},

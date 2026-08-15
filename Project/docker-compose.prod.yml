@@ -1,4 +1,4 @@
-name: zonix-production
+name: cuemix-production
 
 x-backend-environment: &backend-environment
   APP_ENV: production

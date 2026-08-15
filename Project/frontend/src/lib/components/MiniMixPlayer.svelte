@@ -104,7 +104,7 @@
 		} catch (requestError) {
 			// Analytics must never interrupt playback. Keep the error in devtools
 			// so the event pipeline can still be debugged.
-			console.warn('Zonix listening event was not recorded.', requestError);
+			console.warn('Cuemix listening event was not recorded.', requestError);
 		}
 	}
 

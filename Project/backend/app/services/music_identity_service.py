@@ -175,7 +175,7 @@ def _recent_listening(db: Session, events: list[ListeningEvent], limit: int = 6)
     result = []
     for item in ordered:
         context_id = item["key"].split(":", 1)[1]
-        title = "Zonix listening session"
+        title = "Cuemix listening session"
         subtitle = None
         if item["kind"] == "mix":
             mix = db.query(Mix).filter(Mix.id == int(context_id)).first()

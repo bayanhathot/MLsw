@@ -42,7 +42,7 @@
 	{:else}
 		<div class="empty">
 			<span>◔</span><strong>Your sound map is empty</strong>
-			<p>Genres will appear here as Zonix records real listening events.</p>
+			<p>Genres will appear here as Cuemix records real listening events.</p>
 		</div>
 	{/if}
 </section>

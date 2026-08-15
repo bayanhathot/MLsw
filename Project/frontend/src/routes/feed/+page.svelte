@@ -131,11 +131,11 @@
 	}
 </script>
 
-<svelte:head><title>Community mixes | Zonix</title></svelte:head>
+<svelte:head><title>Community mixes | Cuemix</title></svelte:head>
 
 <main class="feed-page">
 	<header>
-		<p class="eyebrow">Zonix community</p>
+		<p class="eyebrow">Cuemix community</p>
 		<h1>Discover mixes</h1>
 		<p>Listen to published mixes and keep the ones that fit your flow.</p>
 	</header>

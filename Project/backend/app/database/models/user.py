@@ -3,7 +3,7 @@ user.py
 
 This file defines the users table.
 
-The User model represents one registered user in Zonix.
+The User model represents one registered user in Cuemix.
 
 Important:
 We never store the real password.

@@ -38,11 +38,11 @@ def _intent(**overrides) -> PromptIntent:
 
 
 def test_trigram_similarity_is_symmetric_and_bounded():
-    a, b = "zzzqx nonexistent artist ptrxk", "zonix ai dj"
+    a, b = "zzzqx nonexistent artist ptrxk", "cuemix ai dj"
     assert _trigram_similarity(a, b) == _trigram_similarity(b, a)
     assert _trigram_similarity("drake", "drake") == 1.0
     assert _trigram_similarity("drake", "drakee") > ARTIST_MATCH_THRESHOLD
-    assert _trigram_similarity("drake", "zonix ai dj") < ARTIST_MATCH_THRESHOLD
+    assert _trigram_similarity("drake", "cuemix ai dj") < ARTIST_MATCH_THRESHOLD
 
 
 def test_catalog_retriever_named_artist_below_threshold_returns_nothing(db_session):
@@ -60,10 +60,10 @@ def test_catalog_retriever_mood_bucket_matches_seeded_rows(db_session):
 
 def test_catalog_retriever_finds_close_but_imperfect_artist_spelling(db_session):
     retriever = CatalogTrackRetriever()
-    # A near-miss (missing a letter) of the seeded "Zonix AI DJ" artist.
-    tracks = retriever.retrieve(db_session, _intent(artist="Zonix AI D"), limit=5)
+    # A near-miss (missing a letter) of the seeded "Cuemix AI DJ" artist.
+    tracks = retriever.retrieve(db_session, _intent(artist="Cuemix AI D"), limit=5)
     assert tracks
-    assert tracks[0].artist == "Zonix AI DJ"
+    assert tracks[0].artist == "Cuemix AI DJ"
 
 
 def test_deterministic_artist_extraction_handles_common_phrasings():
@@ -686,7 +686,7 @@ def test_audio_renderer_degrades_to_pass_through_when_a_track_cannot_be_fetched(
     assert composite.fallback_reason == "download_failed_ConnectError"
 
 
-_DEMO_WAV_PATH = Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
+_DEMO_WAV_PATH = Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "cuemix-demo.wav"
 
 
 def _local_file_segment() -> SelectedSegment:

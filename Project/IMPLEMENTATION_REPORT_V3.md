@@ -1,4 +1,4 @@
-# Zonix V3 Implementation Report
+# Cuemix V3 Implementation Report
 
 > **Point-in-time snapshot.** Written when the V3 social/community features
 > first shipped; test counts and coverage figures below are from that run,
@@ -7,7 +7,7 @@
 
 ## Goal
 
-Move Zonix closer to a coherent music-social product while deliberately postponing ML/AI model development.
+Move Cuemix closer to a coherent music-social product while deliberately postponing ML/AI model development.
 
 ## Major backend additions
 

@@ -226,7 +226,7 @@
 	}
 </script>
 
-<svelte:head><title>{profile?.display_name || username || 'Listener'} | Zonix</title></svelte:head>
+<svelte:head><title>{profile?.display_name || username || 'Listener'} | Cuemix</title></svelte:head>
 
 <main class="public-profile-page">
 	{#if loading}<div class="loading-state">

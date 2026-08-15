@@ -1,4 +1,4 @@
-# Zonix Music Identity
+# Cuemix Music Identity
 
 This repository now contains the full-stack infrastructure for the Music Identity feature. The analytics are factual aggregations from real playback events; the future Listening DNA algorithm is intentionally not implemented yet.
 
@@ -86,7 +86,7 @@ The players accumulate forward media-time deltas locally. They do **not** send o
 - media error
 - component teardown (best-effort keepalive)
 
-Seek jumps are excluded from listened-time accumulation. Backend metadata is resolved from the known Zonix session/mix context, so a client cannot claim an arbitrary artist/genre for its profile.
+Seek jumps are excluded from listened-time accumulation. Backend metadata is resolved from the known Cuemix session/mix context, so a client cannot claim an arbitrary artist/genre for its profile.
 
 ## Frontend routes
 

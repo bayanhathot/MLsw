@@ -1,6 +1,6 @@
 <!--
   File: src/lib/components/HeroSection.svelte
-  Purpose: Main brand/landing hero for the Zonix guest homepage.
+  Purpose: Main brand/landing hero for the Cuemix guest homepage.
   What it does:
   - Shows the core product promise: Your AI DJ. Zero interruptions.
   - Adds soft waveform-like visual elements in the background.
@@ -11,7 +11,7 @@
 
 <script>
 	/**
-	 * Hero section for Zonix.
+	 * Hero section for Cuemix.
 	 * Keeps the brand promise clear without making the UI confusing.
 	 */
 </script>

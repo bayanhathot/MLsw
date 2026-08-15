@@ -1,6 +1,6 @@
-# Zonix demo audio
+# Cuemix demo audio
 
-`zonix-demo.wav` is original procedural audio generated from sine waves by
+`cuemix-demo.wav` is original procedural audio generated from sine waves by
 `generate_demo.py`. It contains no third-party sample or recording.
 
 Regenerate it from the backend directory with:

@@ -183,7 +183,7 @@
 	}
 </script>
 
-<svelte:head><title>Messages | Zonix</title></svelte:head>
+<svelte:head><title>Messages | Cuemix</title></svelte:head>
 
 <main class="messages-page">
 	<header>

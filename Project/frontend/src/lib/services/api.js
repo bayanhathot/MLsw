@@ -204,7 +204,7 @@ export async function apiRequest(path, options = {}) {
 			throw new ApiError('The request was cancelled.', { code: 'aborted' });
 		}
 
-		throw new ApiError('Unable to reach Zonix. Check your connection and try again.', {
+		throw new ApiError('Unable to reach Cuemix. Check your connection and try again.', {
 			code: 'network_error',
 			details: error
 		});

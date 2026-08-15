@@ -8,7 +8,7 @@ from app.services import session_manager
 from app.services.pipeline.audius_retriever import MultiQueryAudiusRetriever
 
 _DEMO_WAV_BYTES = (
-    Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
+    Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "cuemix-demo.wav"
 ).read_bytes()
 
 # Audius defaults to "nothing found" for every test via conftest.py's

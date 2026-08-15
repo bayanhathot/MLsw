@@ -157,7 +157,7 @@
 	}
 </script>
 
-<svelte:head><title>Your mix library | Zonix</title></svelte:head>
+<svelte:head><title>Your mix library | Cuemix</title></svelte:head>
 
 <main class="library-page">
 	<header>

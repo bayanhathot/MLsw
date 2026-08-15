@@ -1,4 +1,4 @@
-"""Create trustworthy raw listening events from known Zonix playback contexts."""
+"""Create trustworthy raw listening events from known Cuemix playback contexts."""
 
 from datetime import datetime, timedelta, timezone
 

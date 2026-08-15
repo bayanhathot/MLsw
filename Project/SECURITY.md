@@ -8,7 +8,7 @@ CI blocks moderate, high, and critical npm advisories (`npm audit
 this writing the only outstanding low-severity finding is a `cookie <0.7.0`
 advisory inherited by SvelteKit, for which npm offers no compatible patched
 SvelteKit release yet (its `--force` proposal incorrectly downgrades
-SvelteKit). Zonix uses the static adapter, so this package is build-time
+SvelteKit). Cuemix uses the static adapter, so this package is build-time
 tooling and is absent from the final unprivileged Nginx image. Run `npm audit`
 in `frontend/` for the current result; this exception should be removed once
 a compatible SvelteKit release depends on `cookie >=0.7.0`.

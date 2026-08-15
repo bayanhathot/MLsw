@@ -31,9 +31,9 @@ export function normalizeSession(value, fallbackPrompt) {
 	const rawNowPlaying = raw.nowPlaying ?? raw.now_playing ?? {};
 	const vibeLabel = text(raw.vibeLabel ?? raw.vibe_label, text(raw.status, 'Your mix'));
 	const nowPlaying = {
-		title: text(rawNowPlaying.title, firstSegment?.title || 'Zonix session'),
-		artist: text(rawNowPlaying.artist, firstSegment?.artist || 'Zonix AI DJ'),
-		album: text(rawNowPlaying.album, 'Zonix mix'),
+		title: text(rawNowPlaying.title, firstSegment?.title || 'Cuemix session'),
+		artist: text(rawNowPlaying.artist, firstSegment?.artist || 'Cuemix AI DJ'),
+		album: text(rawNowPlaying.album, 'Cuemix mix'),
 		coverUrl: text(rawNowPlaying.coverUrl ?? rawNowPlaying.cover_url, firstSegment?.coverUrl || ''),
 		vibeLabel: text(rawNowPlaying.vibeLabel ?? rawNowPlaying.vibe_label, vibeLabel),
 		role: text(rawNowPlaying.role, 'Current segment')

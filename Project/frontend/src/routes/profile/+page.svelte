@@ -157,7 +157,7 @@
 	}
 </script>
 
-<svelte:head><title>Your Music Identity | Zonix</title></svelte:head>
+<svelte:head><title>Your Music Identity | Cuemix</title></svelte:head>
 
 <main class="profile-page">
 	{#if error && !profile}

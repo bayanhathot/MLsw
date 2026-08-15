@@ -37,7 +37,7 @@ ARTIST_MATCH_THRESHOLD = float(os.getenv("ARTIST_MATCH_THRESHOLD", "0.3"))
 # than something already sitting in UPLOAD_DIR. It's staged into place on
 # first use instead of at migration time, since UPLOAD_DIR is an
 # environment-resolved runtime path (tests monkeypatch it per-run).
-_SEED_AUDIO_SOURCE = Path(__file__).resolve().parents[2] / "static" / "audio" / "zonix-demo.wav"
+_SEED_AUDIO_SOURCE = Path(__file__).resolve().parents[2] / "static" / "audio" / "cuemix-demo.wav"
 
 # Canonical content for the 4 legacy TRACKS-dict rows. The Alembic migration
 # inserts these for a real `alembic upgrade head` deployment; this module
@@ -46,10 +46,10 @@ _SEED_AUDIO_SOURCE = Path(__file__).resolve().parents[2] / "static" / "audio" / 
 # the test suite's SQLite engine does) so the catalog retriever always has
 # something to match against.
 _SEED_TRACKS = [
-    {"title": "Momentum Loop", "artist": "Zonix AI DJ", "album": "Workout Demo Catalog", "mood_bucket": "energy", "vibe_label": "Gym energy"},
-    {"title": "Midnight Whispers", "artist": "Zonix AI DJ", "album": "Vocal Demo Catalog", "mood_bucket": "vocals", "vibe_label": "Emotional vocals"},
-    {"title": "Focus Loop 01", "artist": "Zonix AI DJ", "album": "Focus Demo Catalog", "mood_bucket": "focus", "vibe_label": "Deep work focus"},
-    {"title": "Smooth Flow Demo", "artist": "Zonix AI DJ", "album": "General Demo Catalog", "mood_bucket": "smooth", "vibe_label": "Smooth flow"},
+    {"title": "Momentum Loop", "artist": "Cuemix AI DJ", "album": "Workout Demo Catalog", "mood_bucket": "energy", "vibe_label": "Gym energy"},
+    {"title": "Midnight Whispers", "artist": "Cuemix AI DJ", "album": "Vocal Demo Catalog", "mood_bucket": "vocals", "vibe_label": "Emotional vocals"},
+    {"title": "Focus Loop 01", "artist": "Cuemix AI DJ", "album": "Focus Demo Catalog", "mood_bucket": "focus", "vibe_label": "Deep work focus"},
+    {"title": "Smooth Flow Demo", "artist": "Cuemix AI DJ", "album": "General Demo Catalog", "mood_bucket": "smooth", "vibe_label": "Smooth flow"},
 ]
 
 
@@ -60,7 +60,7 @@ def _ensure_seed_catalog(db: Session) -> None:
         db.add(
             CatalogTrack(
                 **seed,
-                storage_name="zonix-demo.wav",
+                storage_name="cuemix-demo.wav",
                 content_type="audio/wav",
                 duration_seconds=60,
                 analysis_status="completed",

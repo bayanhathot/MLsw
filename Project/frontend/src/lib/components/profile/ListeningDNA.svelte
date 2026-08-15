@@ -14,12 +14,12 @@
 		{#if ready}
 			<strong class="identity-name">{dna.label || 'Your music signature'}</strong>
 			<p class="summary">
-				{dna.summary || 'Your Listening DNA has been generated from your Zonix behavior.'}
+				{dna.summary || 'Your Listening DNA has been generated from your Cuemix behavior.'}
 			</p>
 		{:else}
 			<strong class="identity-name">Still taking shape</strong>
 			<p class="summary">
-				Your Listening DNA will take shape as Zonix learns from the music you actually play, skip,
+				Your Listening DNA will take shape as Cuemix learns from the music you actually play, skip,
 				revisit, and explore.
 			</p>
 		{/if}

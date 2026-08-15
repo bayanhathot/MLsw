@@ -307,7 +307,7 @@ of the last *real* `parse_prompt` call (tracked in `prompt_parser.py`, not a
 synthetic ping). `WS /debug/ws` pushes an invalidation signal on every new
 trace, same pattern as `/posts/ws/community`. Both are gated behind
 `ENABLE_PIPELINE_DEBUG` (off by default) and a logged-in user -- see
-`ZONIX_PROJECT_README.md`'s "Internal debug panel" section. Observability
+`CUEMIX_PROJECT_README.md`'s "Internal debug panel" section. Observability
 only: nothing here can trigger or change pipeline behavior.
 
 ## Deliberately left for later

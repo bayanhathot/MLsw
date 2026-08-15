@@ -2,7 +2,7 @@ import { apiRequest } from './api.js';
 
 /**
  * Persist one completed/abandoned playback moment. Track metadata is resolved
- * by the backend from the referenced Zonix mix segment or DJ session.
+ * by the backend from the referenced Cuemix mix segment or DJ session.
  *
  * @param {{
  *  clientEventId: string,

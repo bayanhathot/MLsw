@@ -22,7 +22,7 @@ function makeSession(overrides = {}) {
 		nowPlaying: {
 			title: 'Track One',
 			artist: 'Artist One',
-			album: 'Zonix mix',
+			album: 'Cuemix mix',
 			coverUrl: '',
 			vibeLabel: 'Deep work focus',
 			role: 'Now playing'

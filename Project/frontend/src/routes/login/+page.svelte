@@ -1,6 +1,6 @@
 <!--
   File: src/routes/login/+page.svelte
-  Purpose: Login page for the cookie-authenticated Zonix account.
+  Purpose: Login page for the cookie-authenticated Cuemix account.
   What it does:
   - Submits credentials to the backend and redirects after authentication.
 -->
@@ -101,7 +101,7 @@
 		</form>
 
 		<p class="switch">
-			New to Zonix? <a href={resolve('/register')}>Create account</a>
+			New to Cuemix? <a href={resolve('/register')}>Create account</a>
 		</p>
 	</div>
 </section>

@@ -1,4 +1,4 @@
-# File: ZONIX_BRAND_APPLIED.md
+# File: CUEMIX_BRAND_APPLIED.md
 
 > **Historical brand rationale.** Visual reasoning below is retained as design
 > history; it is not a current feature or architecture inventory. See
@@ -6,16 +6,16 @@
 
 ## Purpose
 
-This document explains how the Zonix brand identity was translated into the frontend.
+This document explains how the Cuemix brand identity was translated into the frontend.
 It is not executed by the app; it is documentation for the team and lecturer.
 
-# Zonix Brand Applied
+# Cuemix Brand Applied
 
-This frontend keeps the Zonix identity but uses clear product copy instead of over-branded labels.
+This frontend keeps the Cuemix identity but uses clear product copy instead of over-branded labels.
 
 ## What stayed branded
 
-- Product name: Zonix
+- Product name: Cuemix
 - Core headline: “Get in the zone.”
 - Visual identity: black/deep charcoal background, electric cyan accents, cyber-kinetic feel
 - Tone: active, confident, technical, and minimal
@@ -31,4 +31,4 @@ This frontend keeps the Zonix identity but uses clear product copy instead of ov
 
 ## Reason
 
-Brand language should support the product, not make buttons harder to understand. The current UI keeps Zonix's premium dark/cyan identity while making the main actions obvious to users.
+Brand language should support the product, not make buttons harder to understand. The current UI keeps Cuemix's premium dark/cyan identity while making the main actions obvious to users.
