@@ -370,6 +370,14 @@ def _resolve_and_render(
             "implementation": type(renderer).__name__,
             "is_pass_through": rendered.is_pass_through,
             "offset_count": len(rendered.offsets),
+            # The URL actually handed to the player, and -- when
+            # is_pass_through is True -- why: surfaced so a "won't play"
+            # report is diagnosable straight from the debug panel (was it
+            # our own /media/renders/... file, or a raw external stream URL
+            # that never got rendered at all, and if the latter, did the
+            # download or the decode fail).
+            "resolved_audio_url": rendered.audio_url,
+            "fallback_reason": rendered.fallback_reason,
         },
         "resolved_at": utc_now().isoformat(),
     }

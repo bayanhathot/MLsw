@@ -41,7 +41,7 @@ def _patch_audius(monkeypatch, tracks):
         lambda prompt, limit=5: tracks,
     )
     monkeypatch.setattr(
-        "app.services.pipeline.audio_renderer._download", lambda url: _DEMO_WAV_BYTES
+        "app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None)
     )
 
 

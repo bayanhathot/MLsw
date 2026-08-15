@@ -666,19 +666,24 @@ def test_media_route_404s_for_an_unknown_render(client):
 
 def test_audio_renderer_degrades_to_pass_through_when_a_track_cannot_be_fetched(monkeypatch):
     monkeypatch.setattr(
-        "app.services.pipeline.audio_renderer._download", lambda url: None
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_ConnectError"),
     )
     renderer = PydubAudioRenderer()
     segment = _segment()
     rendered = renderer.render([segment], [])
     assert rendered.is_pass_through is True
     assert rendered.audio_url == segment.track.audio_url
+    # Surfaced in the pipeline debug trace so a pass-through is diagnosable
+    # without grepping backend logs (session_manager._resolve_and_render).
+    assert rendered.fallback_reason == "download_failed_ConnectError"
 
     other = _segment()
     plan = TransitionPlan(crossfade_ms=3000, style="crossfade", notes="x")
     composite = renderer.render([segment, other], [plan])
     assert composite.is_pass_through is True
     assert len(composite.offsets) == 2
+    assert composite.fallback_reason == "download_failed_ConnectError"
 
 
 _DEMO_WAV_PATH = Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
@@ -719,6 +724,7 @@ def test_export_leaves_a_fresh_render_alone():
     rendered = PydubAudioRenderer().render([_local_file_segment()], [])
 
     assert rendered.is_pass_through is False
+    assert rendered.fallback_reason is None
     assert fresh_path.exists()
 
 

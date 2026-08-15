@@ -575,6 +575,11 @@ class RenderedAudio(BaseModel):
     audio_url: str
     offsets: list[tuple[int, int]]
     is_pass_through: bool = False
+    # Short machine-readable cause when is_pass_through is True (e.g.
+    # "download_failed_ConnectError", "decode_failed_CouldntDecodeError") --
+    # surfaced in the pipeline debug trace so a pass-through is diagnosable
+    # without grepping backend logs. None whenever is_pass_through is False.
+    fallback_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +601,11 @@ class SessionPipelineDebugRead(BaseModel):
     # session_manager._resolve_and_render; None for sessions created before
     # this column existed.
     trace: dict[str, Any] | None = None
+    # Whether session.prepared_next_json currently holds an unconsumed
+    # prepare_next() result -- prepare_next() never touches `trace` above
+    # (see PHASE_C_PREFETCH_DESIGN.md section 3.5), so without this the
+    # panel would have no visibility into the prefetch side of the loop.
+    has_prepared_next: bool = False
 
 
 class OllamaLastCallRead(BaseModel):

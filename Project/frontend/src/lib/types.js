@@ -289,6 +289,7 @@
  * @property {string} vibe_label
  * @property {string} updated_at
  * @property {Record<string, any> | null} trace
+ * @property {boolean} has_prepared_next
  */
 
 /**

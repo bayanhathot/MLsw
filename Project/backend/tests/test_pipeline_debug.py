@@ -112,14 +112,18 @@ def test_pipeline_debug_endpoint_is_404_when_disabled(client, monkeypatch):
     assert client.get("/debug/pipeline").status_code == 404
 
 
-def test_pipeline_debug_endpoint_requires_login_even_when_enabled(client, monkeypatch):
+def test_pipeline_debug_endpoint_works_without_login_when_enabled(client, monkeypatch):
+    # Deliberately no login here: this endpoint exists to diagnose a live
+    # deployment before anyone necessarily has an account on it, gated by
+    # ENABLE_PIPELINE_DEBUG alone (see routers/debug.py's module docstring).
     monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
-    assert client.get("/debug/pipeline").status_code == 401
+    assert client.get("/debug/pipeline").status_code == 200
 
 
 def test_pipeline_debug_endpoint_reports_stage_traces_for_recent_sessions(client, monkeypatch):
     monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
-    register_and_login(client)
+    # No login: anonymous sessions are already supported end to end
+    # (get_optional_current_user), and so is reading this panel now.
 
     started = client.post("/sessions/start", json={"prompt": "smooth focus music"})
     assert started.status_code == 200
@@ -131,6 +135,7 @@ def test_pipeline_debug_endpoint_reports_stage_traces_for_recent_sessions(client
 
     entry = next(item for item in payload["sessions"] if item["session_id"] == session_id)
     trace = entry["trace"]
+    assert entry["has_prepared_next"] is False
     assert trace["vibe_understander"]["invoked"] is True
     assert trace["candidate_retriever"]["implementation"] == "CatalogTrackRetriever"
     assert trace["candidate_retriever"]["candidate_count"] >= 1
@@ -138,6 +143,18 @@ def test_pipeline_debug_endpoint_reports_stage_traces_for_recent_sessions(client
     assert trace["transition_planner"]["style"] in ("crossfade", "cut")
     assert trace["audio_renderer"]["implementation"]
     assert isinstance(trace["audio_renderer"]["is_pass_through"], bool)
+    # The URL actually handed to the player, and (only set on a
+    # pass-through) why -- see audio_renderer.RenderedAudio.fallback_reason.
+    assert trace["audio_renderer"]["resolved_audio_url"]
+    assert trace["audio_renderer"]["fallback_reason"] is None
+
+    prepared = client.post(f"/sessions/{session_id}/prepare-next")
+    assert prepared.status_code == 200
+    payload_prepared = client.get("/debug/pipeline").json()
+    entry_prepared = next(
+        item for item in payload_prepared["sessions"] if item["session_id"] == session_id
+    )
+    assert entry_prepared["has_prepared_next"] is True
 
     feedback = client.post(f"/sessions/{session_id}/feedback", json={"feedback": "More energy"})
     assert feedback.status_code == 200
@@ -147,6 +164,8 @@ def test_pipeline_debug_endpoint_reports_stage_traces_for_recent_sessions(client
     # Feedback mutates the stored intent deterministically; it never calls
     # the LLM again, so the trace must say so rather than implying it did.
     assert entry_after["trace"]["vibe_understander"]["invoked"] is False
+    # apply_feedback's intent mutation explicitly invalidates a prepared item.
+    assert entry_after["has_prepared_next"] is False
 
 
 def test_pipeline_debug_websocket_rejects_untrusted_origin(client):
@@ -164,12 +183,10 @@ def test_pipeline_debug_websocket_closes_when_disabled(client, monkeypatch):
     assert exc_info.value.code == 4404
 
 
-def test_pipeline_debug_websocket_requires_auth_when_enabled(client, monkeypatch):
+def test_pipeline_debug_websocket_connects_when_enabled_without_login(client, monkeypatch):
     monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/debug/ws"):
-            pass
-    assert exc_info.value.code == 4401
+    with client.websocket_connect("/debug/ws") as socket:
+        socket.send_text("ready")
 
 
 def test_pipeline_debug_websocket_connects_when_enabled_and_authenticated(client, monkeypatch):

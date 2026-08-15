@@ -1,11 +1,16 @@
 """Internal AI-DJ pipeline and Ollama observability.
 
-Gated behind ENABLE_PIPELINE_DEBUG (app.core.config.pipeline_debug_enabled,
+Gated behind ENABLE_PIPELINE_DEBUG only (app.core.config.pipeline_debug_enabled,
 off by default -- the same explicit-opt-in shape as ALLOW_DEMO_SEED in
-app/seed.py) *and* a logged-in user (auth.get_current_user), rather than
-inventing a new access-control mechanism for one internal page. Read-only:
-nothing here can trigger or change pipeline behavior, only reflect state the
-session/pipeline layer already produced.
+app/seed.py). Deliberately does NOT require a logged-in user: this exists to
+diagnose live pipeline failures (e.g. "why won't this track play") from a
+freshly-deployed environment where creating/logging into an account is
+exactly the kind of extra step that gets in the way of a live incident.
+ENABLE_PIPELINE_DEBUG is the only access control here -- turn it off again
+once done investigating, since anyone who can reach the URL while it's on
+can see recent prompts and internal implementation details across all
+users. Read-only: nothing here can trigger or change pipeline behavior,
+only reflect state the session/pipeline layer already produced.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -13,11 +18,8 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.config import cors_origins, pipeline_debug_enabled
-from app.core.security import decode_access_token
 from app.database.database import get_db
 from app.database.models.session import DJSession
-from app.database.models.user import User
-from app.routers.auth import ACCESS_TOKEN_COOKIE_NAME, get_current_user
 from app.schemas import OllamaHealthRead, PipelineDebugRead, SessionPipelineDebugRead
 from app.services.pipeline.ollama_health import check_ollama_health
 from app.services.pipeline_debug_service import pipeline_debug_hub
@@ -47,7 +49,6 @@ def _ollama_section() -> OllamaHealthRead:
 @router.get("/pipeline", response_model=PipelineDebugRead)
 def read_pipeline_debug(
     _enabled: None = Depends(_require_enabled),
-    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     sessions = (
@@ -68,6 +69,7 @@ def read_pipeline_debug(
                 vibe_label=session.vibe_label,
                 updated_at=session.updated_at,
                 trace=session.pipeline_trace_json,
+                has_prepared_next=session.prepared_next_json is not None,
             )
             for session in sessions
         ],
@@ -75,10 +77,11 @@ def read_pipeline_debug(
 
 
 @router.websocket("/ws")
-async def pipeline_debug_socket(websocket: WebSocket, db: Session = Depends(get_db)):
+async def pipeline_debug_socket(websocket: WebSocket):
     """Invalidation-only push, same shape as /posts/ws/community: a client
     reconnecting here re-fetches GET /debug/pipeline rather than trusting
-    anything pushed over the socket."""
+    anything pushed over the socket. Origin-checked and ENABLE_PIPELINE_DEBUG
+    -gated, same as the GET route -- no login required, see module docstring."""
 
     origin = (websocket.headers.get("origin") or "").rstrip("/")
     if origin and origin not in cors_origins():
@@ -86,20 +89,6 @@ async def pipeline_debug_socket(websocket: WebSocket, db: Session = Depends(get_
         return
     if not pipeline_debug_enabled():
         await websocket.close(code=4404)
-        return
-
-    token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
-    subject = decode_access_token(token) if token else None
-    try:
-        user_id = int(subject) if subject is not None else None
-    except ValueError:
-        user_id = None
-    if user_id is None:
-        await websocket.close(code=4401)
-        return
-    user = db.query(User).filter_by(id=user_id, is_active=True).first()
-    if user is None:
-        await websocket.close(code=4401)
         return
 
     await pipeline_debug_hub.connect(websocket)

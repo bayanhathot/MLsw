@@ -1,10 +1,10 @@
 /** Internal AI-DJ pipeline / Ollama debug panel API.
  *
- * Backend-gated (ENABLE_PIPELINE_DEBUG + a logged-in user, see
- * routers/debug.py) -- this module never assumes access; every caller must
- * handle a 401/404 ApiError by simply not rendering anything, the same
- * "fail closed, no visible trace of the feature" contract the backend
- * already enforces.
+ * Backend-gated by ENABLE_PIPELINE_DEBUG only -- no login required (see
+ * routers/debug.py's module docstring for why) -- this module never assumes
+ * access; every caller must handle a 404 ApiError by simply not rendering
+ * anything, the same "fail closed, no visible trace of the feature" contract
+ * the backend already enforces when the flag is off.
  */
 
 import { API_BASE_URL, apiRequest } from './api.js';

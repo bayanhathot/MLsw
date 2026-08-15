@@ -51,7 +51,13 @@ def _render_dir() -> Path:
     return directory
 
 
-def _download(url: str) -> bytes | None:
+def _download(url: str) -> tuple[bytes | None, str | None]:
+    """Returns (bytes, None) on success, or (None, reason) on failure -- the
+    reason is a short machine-readable string surfaced all the way up into
+    the pipeline debug trace (RenderedAudio.fallback_reason), so a
+    pass-through is diagnosable from the live panel instead of only from
+    backend logs."""
+
     try:
         with httpx.Client(timeout=httpx.Timeout(_REMOTE_TIMEOUT_SECONDS), follow_redirects=True) as client:
             with client.stream("GET", url) as response:
@@ -61,18 +67,25 @@ def _download(url: str) -> bytes | None:
                     body.extend(chunk)
                     if len(body) > _MAX_REMOTE_BYTES:
                         logger.warning("AudioRenderer: remote track exceeded the download cap.")
-                        return None
-                return bytes(body)
+                        return None, "download_exceeded_size_cap"
+                return bytes(body), None
+    except httpx.HTTPStatusError as exc:
+        logger.warning("AudioRenderer could not download a remote track: %s", exc)
+        return None, f"download_failed_http_{exc.response.status_code}"
     except (httpx.HTTPError, OSError) as exc:
         logger.warning("AudioRenderer could not download a remote track: %s", exc)
-        return None
+        return None, f"download_failed_{type(exc).__name__}"
 
 
 def _looks_like_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
-def _load_clip(segment: SelectedSegment) -> AudioSegment | None:
+def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None]:
+    """Returns (clip, None) on success, or (None, reason) on failure -- see
+    _download's docstring for why the reason is threaded through rather than
+    just logged."""
+
     track = segment.track
     try:
         if track.local_path:
@@ -80,9 +93,9 @@ def _load_clip(segment: SelectedSegment) -> AudioSegment | None:
             # path; anything else (mp3/ogg/flac) shells out to ffmpeg.
             audio = AudioSegment.from_file(track.local_path)
         else:
-            data = _download(track.audio_url)
+            data, reason = _download(track.audio_url)
             if data is None:
-                return None
+                return None, reason
             # A BytesIO buffer has no filename to sniff from, so pydub would
             # always shell out to ffmpeg here even for plain WAV bytes;
             # checking the signature directly avoids that for the one format
@@ -92,11 +105,12 @@ def _load_clip(segment: SelectedSegment) -> AudioSegment | None:
             )
     except (CouldntDecodeError, OSError, IndexError) as exc:
         logger.warning("AudioRenderer could not decode %s: %s", track.source_track_id, exc)
-        return None
+        return None, f"decode_failed_{type(exc).__name__}"
 
     start_ms = max(0, segment.start_second * 1000)
     end_ms = segment.end_second * 1000
-    return audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
+    clip = audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
+    return clip, None
 
 
 def _sweep_stale_renders(directory: Path) -> None:
@@ -139,11 +153,12 @@ class PydubAudioRenderer(AudioRenderer):
         return self._render_composite(segments, transitions)
 
     def _render_single(self, segment: SelectedSegment) -> RenderedAudio:
-        clip = _load_clip(segment)
+        clip, reason = _load_clip(segment)
         if clip is None:
             duration = max(0, segment.end_second - segment.start_second)
             return RenderedAudio(
-                audio_url=segment.track.audio_url, offsets=[(0, duration)], is_pass_through=True
+                audio_url=segment.track.audio_url, offsets=[(0, duration)],
+                is_pass_through=True, fallback_reason=reason,
             )
         return RenderedAudio(
             audio_url=_export(clip), offsets=[(0, int(len(clip) / 1000))], is_pass_through=False
@@ -152,11 +167,14 @@ class PydubAudioRenderer(AudioRenderer):
     def _render_composite(
         self, segments: list[SelectedSegment], transitions: list[TransitionPlan]
     ) -> RenderedAudio:
-        clips = [_load_clip(segment) for segment in segments]
+        loaded = [_load_clip(segment) for segment in segments]
+        clips = [clip for clip, _reason in loaded]
         if all(clip is None for clip in clips):
             offsets = [(0, max(0, segment.end_second - segment.start_second)) for segment in segments]
+            first_reason = next((reason for _clip, reason in loaded if reason), None)
             return RenderedAudio(
-                audio_url=segments[0].track.audio_url, offsets=offsets, is_pass_through=True
+                audio_url=segments[0].track.audio_url, offsets=offsets,
+                is_pass_through=True, fallback_reason=first_reason,
             )
 
         composite: AudioSegment | None = None

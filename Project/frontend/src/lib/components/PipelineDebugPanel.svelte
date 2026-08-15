@@ -6,17 +6,17 @@
 
   Visibility: this component renders nothing at all unless GET
   /debug/pipeline succeeds. The backend gates that endpoint behind
-  ENABLE_PIPELINE_DEBUG (off by default) *and* a logged-in user
-  (routers/debug.py); a disabled or unauthorized response (404/401) is
-  treated as "nothing to show" with no visible trace of the feature, not an
-  error. This component never sends anything that could change pipeline
-  behavior -- it only reads and displays.
+  ENABLE_PIPELINE_DEBUG only (off by default) -- no login required, on
+  purpose, so this is usable while diagnosing a fresh deployment before
+  anyone has an account there (see routers/debug.py's module docstring). A
+  disabled response (404) is treated as "nothing to show" with no visible
+  trace of the feature, not an error. This component never sends anything
+  that could change pipeline behavior -- it only reads and displays.
 -->
 
 <script>
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
-	import { authStore } from '$lib/stores/authStore.js';
 	import { getPipelineDebug, pipelineDebugWebSocketUrl } from '$lib/services/debugApi.js';
 	import { formatUtcDate } from '$lib/utils/dates.js';
 
@@ -24,7 +24,6 @@
 	let data = $state(null);
 	let visible = $state(false);
 	let collapsed = $state(true);
-	let attempted = false;
 
 	/** @type {WebSocket | null} */
 	let socket = null;
@@ -37,8 +36,7 @@
 			visible = true;
 			if (!socket) connectSocket();
 		} catch {
-			// Disabled (404) or unauthorized (401) -- both mean "nothing to
-			// show", not an error to surface.
+			// Disabled (404) -- means "nothing to show", not an error to surface.
 			visible = false;
 		}
 	}
@@ -65,16 +63,8 @@
 		}
 	}
 
-	$effect(() => {
-		if ($authStore.status === 'authenticated' && !attempted) {
-			attempted = true;
-			void load();
-		} else if ($authStore.status === 'guest') {
-			attempted = false;
-			visible = false;
-			data = null;
-			closeSocket();
-		}
+	onMount(() => {
+		void load();
 	});
 
 	onDestroy(() => {
@@ -160,6 +150,9 @@
 								<div class="debug-session-head">
 									<span class="debug-session-id">{session.session_id}</span>
 									<span class="debug-session-status">{session.status}</span>
+									{#if session.has_prepared_next}
+										<span class="debug-session-status">prepared</span>
+									{/if}
 									<span class="debug-session-time">{updatedLabel(session.updated_at)}</span>
 								</div>
 								<p class="debug-prompt">&ldquo;{session.prompt}&rdquo;</p>
@@ -200,12 +193,19 @@
 										</div>
 										<div>
 											<dt>AudioRenderer</dt>
-											<dd>
+											<dd class:bad={trace.audio_renderer?.is_pass_through}>
 												{trace.audio_renderer?.implementation} · {trace.audio_renderer
 													?.is_pass_through
 													? 'pass-through (no blend)'
 													: 'rendered'}
+												{#if trace.audio_renderer?.fallback_reason}
+													&mdash; {trace.audio_renderer.fallback_reason}
+												{/if}
 											</dd>
+										</div>
+										<div>
+											<dt>Playing from</dt>
+											<dd class="debug-url">{trace.audio_renderer?.resolved_audio_url || '—'}</dd>
 										</div>
 									</dl>
 								{:else}
@@ -321,6 +321,11 @@
 
 	.debug-facts dd.bad {
 		color: var(--danger);
+	}
+
+	.debug-url {
+		overflow-wrap: anywhere;
+		font-size: 10.5px;
 	}
 
 	.debug-empty {
