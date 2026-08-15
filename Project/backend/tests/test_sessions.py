@@ -216,14 +216,14 @@ def test_create_session_skips_a_candidate_whose_audio_cannot_be_rendered(client,
     assert audio_trace["skipped_tracks"][0]["fallback_reason"] == "download_failed_http_403"
 
 
-def test_create_session_falls_back_to_pass_through_when_every_candidate_fails_to_render(
+def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_candidate_fails(
     client, monkeypatch, db_session
 ):
     # A systemically broken source (or a whole pool of unavailable tracks)
     # must not turn one resolution into an unbounded string of doomed
-    # download attempts -- capped at AUDIO_RENDER_RETRY_LIMIT, then the
-    # session lands on the last attempt's honest pass-through rather than
-    # erroring out.
+    # download attempts -- capped at AUDIO_RENDER_RETRY_LIMIT -- nor land the
+    # session on a dead pass-through when a real fallback source (the local
+    # catalog, never a remote fetch) can actually produce playable audio.
     tracks = [
         {
             "title": f"Broken {i}", "artist": "Artist",
@@ -242,14 +242,54 @@ def test_create_session_falls_back_to_pass_through_when_every_candidate_fails_to
     )
 
     session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
-    # The retry-capped final attempt -- the (limit)th candidate tried, not
-    # the first and not all 5.
+    # None of the 5 broken Audius tracks -- a real catalog track instead.
+    assert session["nowPlaying"]["title"] not in {f"Broken {i}" for i in range(5)}
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    audio_trace = row.pipeline_trace_json["audio_renderer"]
+    assert audio_trace["is_pass_through"] is False
+    # The retry-capped Audius attempts, all discarded in favor of the
+    # catalog rescue.
+    assert len(audio_trace["skipped_tracks"]) == session_manager.AUDIO_RENDER_RETRY_LIMIT
+    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
+    assert row.pipeline_trace_json["candidate_retriever"]["name"] == "catalog"
+
+
+def test_create_session_keeps_the_pass_through_when_not_even_the_catalog_can_rescue_it(
+    client, monkeypatch, db_session
+):
+    # The catalog rescue only helps when it actually has something to offer:
+    # a named artist absent from the tiny local demo catalog still has
+    # nowhere left to fall through to, so the session must land on the
+    # retry-capped Audius attempt's honest pass-through, same as before the
+    # rescue existed.
+    tracks = [
+        {
+            "title": f"Broken {i}", "artist": "Nancy Ajram",
+            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
+            "duration": 100, "source": "audius",
+        }
+        for i in range(5)
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_http_403"),
+    )
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
+    ).json()
     assert session["nowPlaying"]["title"] == f"Broken {session_manager.AUDIO_RENDER_RETRY_LIMIT - 1}"
 
     row = db_session.query(DJSession).filter_by(id=session["id"]).one()
     audio_trace = row.pipeline_trace_json["audio_renderer"]
     assert audio_trace["is_pass_through"] is True
     assert len(audio_trace["skipped_tracks"]) == session_manager.AUDIO_RENDER_RETRY_LIMIT - 1
+    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 
 def test_a_previously_known_broken_track_is_skipped_without_a_download_attempt(
