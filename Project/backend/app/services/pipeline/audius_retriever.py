@@ -16,6 +16,7 @@ Two implementations live here:
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
@@ -158,6 +159,23 @@ def _relaxation_rounds(
             break
         rounds.append(queries[start : start + round_size])
     return rounds
+
+
+def _fetch_query(query: str) -> tuple[list[dict], bool]:
+    """One query's search_tracks call plus its own immediate cache-hit
+    check, bundled together so a query fetched concurrently with others (see
+    MultiQueryAudiusRetriever.retrieve) captures its own outcome rather than
+    reading get_last_search_cache_hit() long after the fact, when another
+    concurrently-running query may have already overwritten it. That global
+    is still a single process-wide flag (audius_service._last_cache_lookup),
+    so this narrows the race to "whichever of the round's own queries writes
+    it last, right after that same query's own call returns" -- the same
+    kind of best-effort imprecision the flag already had across separate
+    concurrent requests, not a new failure mode, and never a risk to the
+    actual cached results (audius_service._search_cache is Lock-guarded)."""
+
+    raw = search_tracks(query, limit=CANDIDATES_PER_QUERY)
+    return raw, bool(get_last_search_cache_hit())
 
 
 def _reciprocal_rank_fusion(rank_lists: list[list[str]], *, k: int = RRF_K) -> list[str]:
@@ -338,9 +356,28 @@ class MultiQueryAudiusRetriever(CandidateRetriever):
         rank_lists: list[list[str]] = []
 
         for round_queries in _relaxation_rounds(queries, max_rounds=MAX_RETRIEVAL_ROUNDS):
+            # Each query in a round is an independent Audius HTTP call, so
+            # firing them concurrently (only within a round -- rounds
+            # themselves stay sequential, since the MIN_POOL_SIZE early-stop
+            # below needs a round's complete results before deciding whether
+            # to broaden further) cuts a round's wall-clock cost from
+            # sum-of-latencies to roughly the slowest single call in it.
+            with ThreadPoolExecutor(
+                max_workers=max(1, min(len(round_queries), MAX_QUERIES))
+            ) as executor:
+                futures = {
+                    executor.submit(_fetch_query, query): query for query in round_queries
+                }
+                # Collected into a plain dict, keyed by query, back on this
+                # thread once every future in the round has completed --
+                # pool/rank_lists below are only ever mutated here, never
+                # from inside a worker thread, so no locking is needed
+                # around them.
+                results_by_query = {futures[future]: future.result() for future in futures}
+
             for query in round_queries:
-                raw = search_tracks(query, limit=CANDIDATES_PER_QUERY)
-                if get_last_search_cache_hit():
+                raw, cache_hit = results_by_query[query]
+                if cache_hit:
                     self.last_cache_hit = True
                 keys: list[str] = []
                 for item in raw:

@@ -494,6 +494,45 @@ def test_multi_query_retriever_returns_empty_list_when_audius_finds_nothing(db_s
     assert retriever.retrieve(db_session, intent, limit=5) == []
 
 
+def test_multi_query_retriever_round_still_issues_and_fuses_every_querys_own_results(
+    db_session, monkeypatch
+):
+    # A round's queries are now fired concurrently (ThreadPoolExecutor), not
+    # one after another -- this confirms that didn't silently drop a query,
+    # duplicate a call, or cross-wire one query's results into another's
+    # ranked list: each of the round's two queries returns one distinctly-
+    # ID'd track, and both must survive into the final fused/ranked pool.
+    calls = []
+
+    def fake_search_tracks(query, limit=5):
+        calls.append(query)
+        if query == "lofi":
+            return [{
+                "title": "Lofi Track", "artist": "Artist A", "audio_url": "https://a",
+                "source_track_id": "lofi-only", "duration": 100, "genre": "lofi",
+            }]
+        if query == "chill lofi":
+            return [{
+                "title": "Chill Track", "artist": "Artist B", "audio_url": "https://b",
+                "source_track_id": "chill-only", "duration": 100, "genre": "lofi",
+            }]
+        return []
+
+    monkeypatch.setattr(audius_retriever, "search_tracks", fake_search_tracks)
+    # genres=["lofi"] + mood="chill" builds exactly the 2-query round
+    # ["lofi", "chill lofi"] (build_queries dedupes the raw search_query
+    # against the mood+genre combo it equals), so this is exactly one round.
+    intent = _intent(genres=["lofi"], mood="chill", search_query="chill lofi")
+    retriever = MultiQueryAudiusRetriever()
+    results = retriever.retrieve(db_session, intent, limit=10)
+
+    # Both queries were actually issued -- exactly once each, unchanged from
+    # sequential behavior -- just not necessarily in list order.
+    assert sorted(calls) == ["chill lofi", "lofi"]
+    ids = {track.source_track_id for track in results}
+    assert {"lofi-only", "chill-only"} <= ids
+
+
 def test_relaxation_ladder_stops_once_min_pool_size_is_reached(db_session, monkeypatch):
     call_log: list[str] = []
 
@@ -526,7 +565,13 @@ def test_relaxation_ladder_stops_once_min_pool_size_is_reached(db_session, monke
     assert len(results) == MIN_POOL_SIZE
     # Stops calling as soon as the pool hits MIN_POOL_SIZE at the end of
     # round 2 ("rock", "lofi jazz") -- round 3's "chill lofi" is never tried.
-    assert call_log == ["lofi", "jazz", "rock", "lofi jazz"]
+    # Order within a round is no longer guaranteed (queries in a round run
+    # concurrently, see MultiQueryAudiusRetriever.retrieve), so this checks
+    # which queries ran, not the sequence -- round-to-round ordering is still
+    # deterministic (rounds themselves stay sequential), which "chill lofi"
+    # never appearing at all already confirms.
+    assert set(call_log) == {"lofi", "jazz", "rock", "lofi jazz"}
+    assert "chill lofi" not in call_log
 
 
 def _track(**overrides) -> Track:
