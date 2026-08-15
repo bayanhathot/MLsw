@@ -252,6 +252,146 @@ def test_create_session_falls_back_to_pass_through_when_every_candidate_fails_to
     assert len(audio_trace["skipped_tracks"]) == session_manager.AUDIO_RENDER_RETRY_LIMIT - 1
 
 
+def test_a_previously_known_broken_track_is_skipped_without_a_download_attempt(
+    client, monkeypatch, db_session
+):
+    # A track already recorded as broken by an earlier resolution (possibly
+    # from a different session entirely) should never even attempt a
+    # download -- it's skipped straight away, same as if the retry loop had
+    # already tried and discarded it, but without paying the network cost.
+    from app.database.models.session import KnownBrokenTrack
+
+    tracks = [
+        {
+            "title": "Previously Broken", "artist": "Artist A",
+            "audio_url": "https://audio.example/broken", "source_track_id": "broken-1",
+            "duration": 100, "source": "audius",
+        },
+        {
+            "title": "Good Track", "artist": "Artist B",
+            "audio_url": "https://audio.example/good", "source_track_id": "good-1",
+            "duration": 100, "source": "audius",
+        },
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+
+    db_session.add(
+        KnownBrokenTrack(
+            track_key="audius:broken-1",
+            source="audius",
+            source_track_id="broken-1",
+            title="Previously Broken",
+            fallback_reason="download_failed_http_403",
+            failure_count=3,
+        )
+    )
+    db_session.commit()
+
+    download_calls = []
+
+    def fake_download(url):
+        download_calls.append(url)
+        return _DEMO_WAV_BYTES, None
+
+    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", fake_download)
+
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    assert session["nowPlaying"]["title"] == "Good Track"
+    assert download_calls == ["https://audio.example/good"]
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    audio_trace = row.pipeline_trace_json["audio_renderer"]
+    assert audio_trace["skipped_tracks"] == [
+        {
+            "source": "audius",
+            "source_track_id": "broken-1",
+            "title": "Previously Broken",
+            "fallback_reason": "known_broken",
+        }
+    ]
+
+
+def test_a_render_failure_persists_a_known_broken_track_row(client, monkeypatch, db_session):
+    # The flip side: when AudioRenderer genuinely fails on a candidate
+    # during a normal resolution, that failure must be persisted so a
+    # *future* resolution (this session or another) can skip it outright.
+    from app.database.models.session import KnownBrokenTrack
+
+    tracks = [
+        {
+            "title": "Broken Track", "artist": "Artist A",
+            "audio_url": "https://audio.example/broken", "source_track_id": "broken-1",
+            "duration": 100, "source": "audius",
+        },
+        {
+            "title": "Good Track", "artist": "Artist B",
+            "audio_url": "https://audio.example/good", "source_track_id": "good-1",
+            "duration": 100, "source": "audius",
+        },
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+
+    def fake_download(url):
+        if url.endswith("/broken"):
+            return None, "download_failed_http_403"
+        return _DEMO_WAV_BYTES, None
+
+    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", fake_download)
+
+    client.post("/sessions/start", json={"prompt": "chill lofi beats"})
+
+    row = db_session.query(KnownBrokenTrack).filter_by(track_key="audius:broken-1").one()
+    assert row.fallback_reason == "download_failed_http_403"
+    assert row.failure_count == 1
+
+
+def test_known_broken_track_past_its_ttl_is_tried_again(client, monkeypatch, db_session):
+    from datetime import timedelta
+
+    from app.core.time import utc_now
+    from app.database.models.session import KnownBrokenTrack
+    from app.services import known_broken_tracks
+
+    tracks = [
+        {
+            "title": "Old News", "artist": "Artist A",
+            "audio_url": "https://audio.example/oldnews", "source_track_id": "old-1",
+            "duration": 100, "source": "audius",
+        },
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+
+    stale_at = utc_now() - timedelta(seconds=known_broken_tracks.KNOWN_BROKEN_TRACK_TTL_SECONDS + 60)
+    db_session.add(
+        KnownBrokenTrack(
+            track_key="audius:old-1",
+            source="audius",
+            source_track_id="old-1",
+            title="Old News",
+            fallback_reason="download_failed_http_403",
+            failure_count=1,
+            last_seen_at=stale_at,
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None)
+    )
+
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    assert session["nowPlaying"]["title"] == "Old News"
+
+
 def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(client, monkeypatch):
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []

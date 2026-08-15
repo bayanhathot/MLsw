@@ -36,7 +36,7 @@ from app.services.pipeline.interfaces import (
 )
 from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
-from app.services import session_candidate_pool
+from app.services import known_broken_tracks, session_candidate_pool
 
 # How many recently-played tracks a session remembers to avoid immediately
 # repeating one when advancing (requirement: continuous playback should work
@@ -330,13 +330,51 @@ def _resolve_and_render(
     # a "why did it play something odd" question is answerable without
     # backend logs. Skipped candidates are never marked "played" (they
     # never played), so they remain eligible on a future resolution too.
+    #
+    # A candidate already known (from a *previous* resolution, possibly a
+    # previous session entirely) to fail rendering is filtered out here,
+    # before the AUDIO_RENDER_RETRY_LIMIT slice, rather than spending a real
+    # attempt re-discovering the same failure -- see
+    # known_broken_tracks.py. Falling through to `candidates` (same "or
+    # candidates" rule as exclude_track_keys above) if every fresh candidate
+    # is known-broken, so a resolution never has literally nothing to try.
     skipped_tracks: list[dict] = []
-    attempts = fresh_candidates[:AUDIO_RENDER_RETRY_LIMIT]
+    known_broken_candidates, renderable_candidates = [], []
+    for candidate in fresh_candidates:
+        if known_broken_tracks.is_known_broken(db, _track_key(candidate)):
+            known_broken_candidates.append(candidate)
+        else:
+            renderable_candidates.append(candidate)
+
+    if renderable_candidates:
+        for candidate in known_broken_candidates:
+            skipped_tracks.append({
+                "source": candidate.source,
+                "source_track_id": candidate.source_track_id,
+                "title": candidate.title,
+                "fallback_reason": "known_broken",
+            })
+    else:
+        # Every fresh candidate is known-broken -- nothing left to skip *to*,
+        # so fall through to actually trying them (same "loop rather than
+        # raise once a pool is exhausted" rule exclude_track_keys already
+        # follows above). The render loop below re-attempts each and
+        # refreshes its known-broken record either way.
+        renderable_candidates = fresh_candidates
+
+    attempts = renderable_candidates[:AUDIO_RENDER_RETRY_LIMIT]
     for index, candidate in enumerate(attempts):
         track = candidate
         segment = selector.select(db, track)
         transition = planner.plan(previous_segment, segment, prefers_smoother=prefers_smoother)
         rendered = renderer.render([segment], [transition])
+        if rendered.fallback_reason:
+            # The failure itself is what's informative here, not which
+            # retry slot it landed in -- even the final kept attempt (a
+            # pass-through the session has no better alternative for) is
+            # worth remembering, so the *next* session skips straight past
+            # it instead of re-discovering the same dead end.
+            known_broken_tracks.mark_broken(db, track, rendered.fallback_reason)
         # Stop -- and keep this attempt, whatever it is -- once it succeeds,
         # or once the retry budget is spent: the last attempt is always the
         # final result, even a failed one, never itself recorded as

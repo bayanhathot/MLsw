@@ -96,6 +96,30 @@ class SessionFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
+class KnownBrokenTrack(Base):
+    """A track whose audio AudioRenderer has recently failed to
+    fetch/decode, recorded so a fresh session doesn't have to rediscover
+    the same failure by actually attempting the download again (see
+    session_manager._resolve_and_render / services/known_broken_tracks.py).
+    Always has an expiry, enforced by the service layer's TTL check, never
+    treated as a permanent blacklist -- provider-side availability (e.g. an
+    Audius 403) can change."""
+
+    __tablename__ = "known_broken_tracks"
+
+    # Matches session_manager._track_key(track): f"{track.source}:{track.source_track_id}"
+    track_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_track_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    fallback_reason: Mapped[str] = mapped_column(String(100), nullable=False)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
 class UserPreference(Base):
     __tablename__ = "user_preferences"
 
