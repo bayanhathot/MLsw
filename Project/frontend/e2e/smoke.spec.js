@@ -40,9 +40,9 @@ const emptyIdentity = {
 /**
  * Mock the API boundary while exercising the production Svelte UI.
  * @param {import('@playwright/test').Page} page
- * @param {{ authenticated?: boolean }} options
+ * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[] }} options
  */
-async function mockApi(page, { authenticated = false } = {}) {
+async function mockApi(page, { authenticated = false, promptShortcuts = [] } = {}) {
 	const unexpectedRequests = [];
 
 	await page.routeWebSocket('**/api/ws/notifications', (socket) => {
@@ -74,6 +74,12 @@ async function mockApi(page, { authenticated = false } = {}) {
 			};
 		} else if (path === '/api/users/me/preferences') {
 			payload = [];
+		} else if (path === '/api/users/me/prompt-shortcuts') {
+			// PromptComposer only ever calls this for an authenticated identity
+			// (see its $effect) -- reachable in the guest tests too only if
+			// that scoping regresses, so it stays fixtured rather than
+			// falling through to "unexpected".
+			payload = promptShortcuts;
 		} else if (path === '/api/users/me/music-identity') {
 			payload = emptyIdentity;
 		} else if (path === `/api/users/${authenticatedUser.username}/profile`) {
@@ -162,5 +168,41 @@ test('authenticated library, Music Identity profile, and messages load their API
 	await page.getByRole('link', { name: 'Messages' }).click();
 	await expect(page.getByRole('heading', { name: 'Messages' })).toBeVisible();
 	await expect(page.getByText('No conversations yet')).toBeVisible();
+	expect(unexpectedRequests).toEqual([]);
+});
+
+test('guest home page only shows the static preset shortcuts', async ({ page }) => {
+	const unexpectedRequests = await mockApi(page);
+
+	await page.goto('/');
+	await expect(page.getByRole('heading', { name: /Your AI DJ/ })).toBeVisible();
+	// The first five static presets fill every slot with no personalized
+	// identity to draw from -- the sixth ("party warmup") never fits.
+	await expect(page.getByRole('button', { name: 'deep work focus' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'chill and relax' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'party warmup' })).toHaveCount(0);
+	expect(unexpectedRequests).toEqual([]);
+});
+
+test('authenticated home page shows a personalized shortcut chip ahead of the static presets', async ({
+	page
+}) => {
+	const unexpectedRequests = await mockApi(page, {
+		authenticated: true,
+		promptShortcuts: [{ prompt: 'my usual gym flow', count: 5 }]
+	});
+
+	await page.goto('/');
+	await expect(page.getByRole('heading', { name: /Your AI DJ/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'my usual gym flow' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'deep work focus' })).toBeVisible();
+	// The personalized chip took one of the five slots, so the fifth static
+	// preset that a guest would see is bumped out.
+	await expect(page.getByRole('button', { name: 'chill and relax' })).toHaveCount(0);
+
+	// Clicking a personalized chip behaves exactly like a static preset --
+	// it fills the prompt box with the chip's own stored prompt text.
+	await page.getByRole('button', { name: 'my usual gym flow' }).click();
+	await expect(page.getByPlaceholder(/emotional Arabic vocals/)).toHaveValue('my usual gym flow');
 	expect(unexpectedRequests).toEqual([]);
 });

@@ -59,6 +59,20 @@ WEIGHT_ARTIST_MATCH = float(os.getenv("WEIGHT_ARTIST_MATCH", "0.5"))
 # WEIGHT_TAG -- strong enough to matter, not strong enough to override a
 # genuinely well-matched candidate on its own.
 WEIGHT_DIVERSITY = float(os.getenv("WEIGHT_DIVERSITY", "0.15"))
+# Independent of the much weaker _GENRE_ENERGY fallback (energy_score
+# below), which only ever applies when a candidate has neither tag nor mood
+# data at all: this checks the requested energy level against a candidate's
+# own tags directly, whenever both exist, regardless of whether other
+# signals are also available. This is what makes a *learned* energy
+# preference actually move ranked results -- session_manager._apply_preference
+# mutates intent.energy on an otherwise-neutral prompt the same way an
+# explicit "high energy" prompt would set it, and this signal is what
+# translates that into a real ranking effect (see
+# backend/scripts/eval_preferences.py for the labeled evaluation that
+# motivated adding it -- the old energy_score alone showed ~0 measurable
+# improvement for tracks that had any tag/mood metadata at all, i.e. most
+# real Audius tracks).
+WEIGHT_ENERGY_ALIGNMENT = float(os.getenv("WEIGHT_ENERGY_ALIGNMENT", "0.15"))
 
 # A small hardcoded heuristic table, not a measured value: Audius rarely
 # returns per-track energy/BPM data, so this approximates "does this genre
@@ -78,6 +92,14 @@ _GENRE_ENERGY = {
     "classical": "low",
     "jazz": "low",
 }
+
+# Feeds WEIGHT_ENERGY_ALIGNMENT's energy_alignment_score below. "medium"
+# deliberately has no term -- same "too vague to search on usefully" call
+# query_planner._ENERGY_QUERY_TERMS already makes for the identical energy
+# levels -- so a neutral prompt's ranking is completely unaffected by this
+# signal; it only ever activates for an explicit or preference-learned
+# high/low energy request.
+_ENERGY_TAG_TERMS = {"high": "energy", "low": "chill"}
 
 
 def _to_track(item: dict) -> Track | None:
@@ -256,6 +278,14 @@ def _score_candidates(
         ):
             energy_score = 1.0 if _GENRE_ENERGY[track.genre.lower()] == intent.energy else 0.0
 
+        # Deliberately independent of tag_score/mood_score's presence
+        # (unlike energy_score above) -- see WEIGHT_ENERGY_ALIGNMENT's
+        # module comment for why this exists as its own signal.
+        energy_alignment_score = None
+        energy_term = _ENERGY_TAG_TERMS.get(intent.energy)
+        if energy_term and track.tags:
+            energy_alignment_score = 1.0 if energy_term in track.tags.lower() else 0.0
+
         artist_match_score = None
         is_required_artist_match = False
         if required_artist:
@@ -282,6 +312,7 @@ def _score_candidates(
             (WEIGHT_MOOD, mood_score),
             (WEIGHT_TAG, tag_score),
             (WEIGHT_ENERGY, energy_score),
+            (WEIGHT_ENERGY_ALIGNMENT, energy_alignment_score),
             (WEIGHT_ARTIST_MATCH, artist_match_score),
             (WEIGHT_DIVERSITY, diversity_score),
         )
@@ -297,6 +328,7 @@ def _score_candidates(
             "mood": mood_score,
             "tag": tag_score,
             "energy": energy_score,
+            "energy_alignment": energy_alignment_score,
             "artist_match": artist_match_score,
             "diversity": diversity_score,
             "total": total,

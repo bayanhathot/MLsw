@@ -22,10 +22,41 @@
 	 */
 
 	import { PRESETS } from '$lib/constants/presets.js';
+	import { authStore } from '$lib/stores/authStore.js';
+	import { getPromptShortcuts } from '$lib/services/promptShortcutsApi.js';
+	import { mergeShortcuts } from '$lib/utils/shortcuts.js';
 
 	/**
 	 * @typedef {import("$lib/types.js").Preset} Preset
 	 */
+
+	// Personalized shortcuts only ever exist for a logged-in identity (see
+	// backend routers/profiles.py's GET /me/prompt-shortcuts) -- a guest
+	// stays on the static PRESETS list alone, never even making the request.
+	let personalizedShortcuts = $state(/** @type {{ prompt: string, count: number }[]} */ ([]));
+
+	$effect(() => {
+		if ($authStore.status !== 'authenticated') {
+			personalizedShortcuts = [];
+			return;
+		}
+		let cancelled = false;
+		getPromptShortcuts()
+			.then((shortcuts) => {
+				if (!cancelled) personalizedShortcuts = shortcuts;
+			})
+			.catch(() => {
+				// Best-effort only, same as prepareNext()'s optional prefetch --
+				// the static PRESETS list is always a complete fallback on its
+				// own, so a failed fetch here is never user-facing.
+				if (!cancelled) personalizedShortcuts = [];
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	let shortcutChips = $derived(mergeShortcuts(personalizedShortcuts, PRESETS, 5));
 
 	/**
 	 * @type {{
@@ -101,7 +132,7 @@
 		</div>
 
 		<div class="shortcut-row" aria-label="Quick vibe shortcuts">
-			{#each PRESETS.slice(0, 5) as preset (preset.label)}
+			{#each shortcutChips as preset (preset.label)}
 				<button class="preset-chip" type="button" onclick={() => usePreset(preset)}>
 					{preset.label}
 				</button>

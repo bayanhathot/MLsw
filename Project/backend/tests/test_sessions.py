@@ -157,6 +157,44 @@ def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
     assert neutral.json()["vibeLabel"] == "Gym energy"
 
 
+def test_preference_is_not_applied_when_the_new_prompt_names_an_artist(
+    client, db_session, monkeypatch
+):
+    # A learned preference only ever biases a *neutral* prompt -- one naming
+    # an artist is never neutral, regardless of how strong the preference
+    # is, since the user asked for something specific this time.
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
+    client.post(f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"})
+    preference = db_session.query(UserPreference).filter_by(user_id=user["id"]).one()
+    assert preference.feedback == "more_energy"
+    assert preference.score > 0
+
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    named = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    row = db_session.query(DJSession).filter_by(id=named["id"]).one()
+    assert row.intent_json["energy"] == "medium"
+
+
+def test_preference_is_not_applied_when_the_new_prompt_sets_explicit_energy(client, db_session):
+    # Same scoping rule from the other direction: a prompt with its own
+    # explicit energy word is never neutral either, so a learned
+    # more_energy preference must not override what this prompt actually
+    # asked for.
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
+    client.post(f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"})
+    preference = db_session.query(UserPreference).filter_by(user_id=user["id"]).one()
+    assert preference.feedback == "more_energy"
+    assert preference.score > 0
+
+    chill = client.post("/sessions/start", json={"prompt": "chill vibes for reading"}).json()
+    row = db_session.query(DJSession).filter_by(id=chill["id"]).one()
+    assert row.intent_json["energy"] == "low"
+
+
 def test_feedback_mutates_intent_but_never_touches_original_intent(client, db_session):
     session = client.post("/sessions/start", json={"prompt": "a balanced mix"}).json()
     row = db_session.query(DJSession).filter_by(id=session["id"]).one()

@@ -26,7 +26,7 @@ migrations, and then starts the API and UI.
 | --- | --- |
 | Svelte UI, player controls, and cookie-auth client | Implemented |
 | FastAPI auth, CSRF origin guard, and rate limits | Implemented |
-| Persistent sessions, feedback, and user preferences | Implemented, retriever-agnostic (works against catalog or Audius) |
+| Persistent sessions, feedback, and user preferences | Implemented, retriever-agnostic (works against catalog or Audius); ranking improvement verified by a labeled eval (`backend/scripts/eval_preferences.py`); personalized prompt-shortcut chips (`GET /users/me/prompt-shortcuts`) |
 | Consolidated AI-DJ pipeline: catalog + Audius candidate retrieval, librosa segment selection, deterministic transition planning | Implemented |
 | Real pydub/ffmpeg audio rendering and crossfading (mixes + sessions) | Implemented |
 | Catalog track upload (album/artist/lyrics + audio) with async BPM/key/segment analysis | Implemented |

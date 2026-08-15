@@ -132,3 +132,29 @@ class UserPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
+
+
+class PromptShortcut(Base):
+    """A logged-in user's own repeated prompt *intent*, clustered by a
+    normalized signature (mood + energy + vocals + genres + whether an
+    artist was required) rather than exact text -- see
+    services/prompt_shortcuts.py's signature_for(). Once a signature has
+    been seen enough times (PROMPT_SHORTCUT_MIN_USES), it's eligible to
+    replace a static preset chip in PromptComposer.svelte with the user's
+    own most-recent phrasing for that intent."""
+
+    __tablename__ = "prompt_shortcuts"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    signature: Mapped[str] = mapped_column(String(160), primary_key=True)
+    # The representative prompt text shown/reused as the chip's label and
+    # fill-in text -- overwritten with the most-recent prompt seen for this
+    # signature on every match, so it stays current with how the user
+    # actually phrases this intent today.
+    prompt: Mapped[str] = mapped_column(String(300), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )

@@ -21,10 +21,17 @@ from app.schemas import (
     ProfileRead,
     ProfileStatsRead,
     ProfileUpdate,
+    PromptShortcutRead,
     PublicMusicIdentityRead,
     PublicProfileRead,
 )
-from app.services import mix_service, music_identity_service, profile_service, social_service
+from app.services import (
+    mix_service,
+    music_identity_service,
+    profile_service,
+    prompt_shortcuts,
+    social_service,
+)
 from app.services.auth_service import get_user_by_username
 
 router = APIRouter(prefix="/users", tags=["profiles"])
@@ -65,6 +72,17 @@ def get_preferences(current_user: User = Depends(get_current_user), db: Session 
         .order_by(UserPreference.score.desc(), UserPreference.count.desc())
         .all()
     )
+
+
+@router.get("/me/prompt-shortcuts", response_model=list[PromptShortcutRead])
+def get_prompt_shortcuts(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """A logged-in user's own repeated-intent prompt shortcuts (see
+    services/prompt_shortcuts.py), ranked by frequency then recency. Guests
+    have no identity to key off, so PromptComposer.svelte only calls this
+    for an authenticated user and falls back to the static PRESETS list
+    entirely otherwise."""
+
+    return prompt_shortcuts.top_shortcuts(db, current_user.id)
 
 
 @router.get("/me/music-identity", response_model=MusicIdentityRead)

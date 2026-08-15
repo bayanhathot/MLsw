@@ -179,6 +179,11 @@ class PreferenceRead(BaseModel):
     count: int
 
 
+class PromptShortcutRead(BaseModel):
+    prompt: str
+    count: int
+
+
 # Forum, messaging, and upload contracts are defined here so every endpoint
 # shares the same validation policy.
 AttachmentKind = Literal["image", "video", "audio"]

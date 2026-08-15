@@ -41,7 +41,7 @@ from app.services.pipeline.orchestrator import (
     retrieve_candidates_with_fallback,
 )
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
-from app.services import known_broken_tracks, session_candidate_pool
+from app.services import known_broken_tracks, prompt_shortcuts, session_candidate_pool
 
 logger = logging.getLogger(__name__)
 
@@ -607,7 +607,14 @@ def serialize_session(session: DJSession) -> SessionRead:
 
 def _initial_intent(
     prompt: str, db: Session, user_id: int | None, vibe: VibeUnderstander
-) -> PromptIntent:
+) -> tuple[PromptIntent, PromptIntent]:
+    """Returns (the intent this resolution actually uses -- possibly
+    preference-biased, see _apply_preference -- and the raw intent
+    vibe.understand() parsed from `prompt` before any bias). Callers that
+    need to know what the user *actually* asked for this time (prompt_shortcuts'
+    signature clustering) want the raw one; _resolve_and_render wants the
+    first."""
+
     intent = vibe.understand(prompt)
     is_neutral = intent.energy == "medium" and intent.vocals == "neutral" and not intent.artist
     if is_neutral and user_id is not None:
@@ -620,8 +627,8 @@ def _initial_intent(
         for preference in preferences:
             biased = _apply_preference(intent, preference.feedback)
             if biased is not None:
-                return biased
-    return intent
+                return biased, intent
+    return intent, intent
 
 
 def create_session(
@@ -636,7 +643,7 @@ def create_session(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> SessionRead:
-    intent = _initial_intent(prompt, db, user_id, vibe)
+    intent, raw_intent = _initial_intent(prompt, db, user_id, vibe)
     # Generated up front (not left to the DJSession constructor below) so
     # _resolve_and_render can key session_candidate_pool by this session's
     # real, final id from its very first resolution -- a brand-new id has
@@ -671,6 +678,11 @@ def create_session(
         played_artists_json=[track.artist],
     )
     db.add(session)
+    if user_id is not None:
+        # Keyed by the raw (un-biased) intent -- a signature must reflect
+        # what this prompt actually asked for, not whatever an unrelated
+        # past preference happened to nudge energy/vocals toward.
+        prompt_shortcuts.record_prompt(db, user_id, prompt, raw_intent)
     db.commit()
     db.refresh(session)
     notify_pipeline_debug_change()
