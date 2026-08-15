@@ -20,12 +20,11 @@ frontend dev server proxies `/api` to `127.0.0.1:5000` by default.
 ## Layout
 
 - `app/routers/` — `auth`, `sessions`, `mixes`, `catalog`, `forum`, `social`,
-  `profiles`, `messaging`, `uploads`, `listening`, `debug`, `media`.
+  `profiles`, `messaging`, `uploads`, `listening`, `debug`, `media`, `realtime`.
 - `app/services/` — business logic, one module per concern
   (`session_manager`, `mix_service`, `prompt_parser`, `audius_service`,
   `audio_analysis`, `upload_queue`, `music_identity_service`,
-  `notification_service`, `community_service`, `social_service`,
-  `profile_service`, `auth_service`, ...).
+  `channel_hub`, `social_service`, `profile_service`, `auth_service`, ...).
 - `app/services/pipeline/` — the AI-DJ pipeline: `interfaces.py` defines the
   five stage ABCs (`VibeUnderstander`, `CandidateRetriever`,
   `SegmentSelector`, `TransitionPlanner`, `AudioRenderer`);
@@ -132,8 +131,10 @@ python -m alembic check
 
 ## Operational scripts
 
-- `python -m app.seed` — idempotent demo-data seed, opt-in only
-  (`ALLOW_DEMO_SEED=true`); never runs on startup. Creates `.invalid`-domain
+- `python -m app.seed` — idempotent demo-data seed, on by default
+  (`ALLOW_DEMO_SEED=true`); runs automatically as part of the `migrate`
+  service on every deploy (see docker-compose.yml), so the app launches
+  pre-seeded. Set `ALLOW_DEMO_SEED=false` to opt out. Creates `.invalid`-domain
   demo accounts.
 - `python -m app.cleanup_uploads` — dry-run by default; reports orphaned
   attachment files. Add `--delete --confirm-backend-stopped` to actually

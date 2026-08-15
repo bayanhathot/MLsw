@@ -38,8 +38,8 @@ def test_friend_request_search_and_relationship_state(client, second_client):
 
 
 def test_channel_hub_receives_user_notification_on_friend_request_and_accept(client, second_client, monkeypatch):
-    """social.py keeps notification_hub.publish's existing shape but now also
-    mirrors it onto channel_hub's "user:{id}" channel (see channel_hub.py)."""
+    """social.py publishes friend-request notifications onto channel_hub's
+    "user:{id}" channel (see channel_hub.py)."""
 
     from unittest.mock import AsyncMock
 

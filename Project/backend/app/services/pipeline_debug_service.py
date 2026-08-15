@@ -1,11 +1,10 @@
 """Process-local realtime invalidation for the internal pipeline debug panel.
 
-Mirrors community_service.CommunityHub exactly: the broadcast payload carries
-no trace data, only an invalidation signal, so a client always re-fetches the
-current state through the authorized, flag-gated REST endpoint
-(routers/debug.py) rather than trusting anything pushed over the socket. A
-future multi-worker deployment can replace this hub with Redis pub/sub
-without changing either API, same as the other hubs.
+The broadcast payload carries no trace data, only an invalidation signal, so
+a client always re-fetches the current state through the authorized,
+flag-gated REST endpoint (routers/debug.py) rather than trusting anything
+pushed over the socket. A future multi-worker deployment can replace this
+hub with Redis pub/sub without changing the API, same as channel_hub.py.
 """
 
 import logging

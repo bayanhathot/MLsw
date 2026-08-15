@@ -1,8 +1,8 @@
 """Unified real-time channel endpoint (ChannelHub).
 
-Purely additive alongside /ws/notifications (messaging.py) and /ws/community
-(forum.py) -- see services/channel_hub.py's module docstring. A later phase
-migrates callers over to this; those two endpoints are untouched for now.
+The sole real-time system for forum/messaging/social/mixes events -- see
+services/channel_hub.py's module docstring. Every caller publishes through
+channel_hub.
 """
 
 import json

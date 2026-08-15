@@ -46,6 +46,10 @@ x-backend-environment: &backend-environment
   # Not yet used by any app code -- purely additive infrastructure, see
   # app/core/redis_client.py.
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  # Cold-seeds clearly labelled demo users/posts/comments on every deploy
+  # (see app/seed.py) -- idempotent, so safe to leave on. Set to false to
+  # opt out.
+  ALLOW_DEMO_SEED: ${ALLOW_DEMO_SEED:-true}
 
 services:
   postgres:
@@ -68,7 +72,7 @@ services:
   migrate:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
     environment: *backend-environment
-    command: ["python", "-m", "alembic", "upgrade", "head"]
+    command: ["/bin/sh", "-c", "python -m alembic upgrade head && python -m app.seed"]
     depends_on:
       postgres:
         condition: service_healthy

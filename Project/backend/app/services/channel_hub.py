@@ -1,11 +1,9 @@
 """ChannelHub: multi-channel WebSocket fanout backed by Redis pub/sub.
 
-New alongside (not replacing yet) notification_service.NotificationHub and
-community_service.CommunityHub -- see those modules' docstrings for the
-process-local predecessors this coexists with until a later phase migrates
-callers over. Every connection is auto-subscribed to "user:{their_id}" on
-connect, plus zero or more explicit channels ("post:42", "feed:discussions",
-"conversation:7") added via .subscribe().
+The sole real-time system for forum/messaging/social/mixes events. Every
+connection is auto-subscribed to "user:{their_id}" on connect, plus zero or
+more explicit channels ("post:42", "feed:discussions", "conversation:7")
+added via .subscribe().
 
 Redis is the single source of truth for delivery, even within one process:
 publish() only writes to one fixed Redis channel; a single background task

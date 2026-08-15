@@ -44,6 +44,10 @@ x-backend-environment: &backend-environment
   UPLOAD_JOB_TTL_SECONDS: ${UPLOAD_JOB_TTL_SECONDS:-3600}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
   ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-false}
+  # Cold-seeds clearly labelled demo users/posts/comments on every deploy
+  # (see app/seed.py) -- idempotent, so safe to leave on. Set to false to
+  # opt out.
+  ALLOW_DEMO_SEED: ${ALLOW_DEMO_SEED:-true}
 
 services:
   postgres:
@@ -70,7 +74,7 @@ services:
     build:
       context: ./backend
     environment: *backend-environment
-    command: ["python", "-m", "alembic", "upgrade", "head"]
+    command: ["/bin/sh", "-c", "python -m alembic upgrade head && python -m app.seed"]
     depends_on:
       postgres:
         condition: service_healthy

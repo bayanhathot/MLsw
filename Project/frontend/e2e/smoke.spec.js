@@ -40,13 +40,17 @@ const emptyIdentity = {
 /**
  * Mock the API boundary while exercising the production Svelte UI.
  * @param {import('@playwright/test').Page} page
- * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[] }} options
+ * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void }} options
  */
-async function mockApi(page, { authenticated = false, promptShortcuts = [] } = {}) {
+async function mockApi(
+	page,
+	{ authenticated = false, promptShortcuts = [], onRealtimeSocket } = {}
+) {
 	const unexpectedRequests = [];
 
 	await page.routeWebSocket('**/api/ws', (socket) => {
 		socket.onMessage(() => {});
+		onRealtimeSocket?.(socket);
 	});
 
 	await page.route('**/api/**', async (route) => {
@@ -201,5 +205,56 @@ test('authenticated home page shows a personalized shortcut chip ahead of the st
 	// it fills the prompt box with the chip's own stored prompt text.
 	await page.getByRole('button', { name: 'my usual gym flow' }).click();
 	await expect(page.getByPlaceholder(/emotional Arabic vocals/)).toHaveValue('my usual gym flow');
+	expect(unexpectedRequests).toEqual([]);
+});
+
+test('Community feed applies live post_created and post_deleted WS events with no reload', async ({
+	page
+}) => {
+	/** @type {import('@playwright/test').WebSocketRoute | null} */
+	let realtimeSocket = null;
+	const unexpectedRequests = await mockApi(page, {
+		authenticated: true,
+		onRealtimeSocket: (socket) => {
+			realtimeSocket = socket;
+		}
+	});
+
+	await page.goto('/community');
+	await expect(page.getByRole('heading', { name: 'Community' })).toBeVisible();
+	await expect(page.getByText('No posts here yet. Start the conversation.')).toBeVisible();
+
+	// realtimeSocket.js only opens /ws once authStore reports an
+	// authenticated user, which itself only lands after /api/auth/me
+	// resolves -- wait for the mocked handshake before pushing frames.
+	await expect.poll(() => realtimeSocket !== null).toBe(true);
+
+	const livePost = {
+		id: 501,
+		author_id: 2,
+		author_username: 'other-listener',
+		title: 'Live update',
+		body: 'This arrived over the wire, no reload needed',
+		is_anonymous: false,
+		kind: 'status',
+		visibility: 'public',
+		mix: null,
+		can_delete: false,
+		score: 0,
+		comment_count: 0,
+		my_vote: 0,
+		attachments: [],
+		created_at: '2026-08-16T00:00:00Z'
+	};
+	await /** @type {import('@playwright/test').WebSocketRoute} */ (realtimeSocket).send(
+		JSON.stringify({ channel: 'feed:status', type: 'post_created', data: livePost })
+	);
+	await expect(page.getByText('This arrived over the wire, no reload needed')).toBeVisible();
+
+	await /** @type {import('@playwright/test').WebSocketRoute} */ (realtimeSocket).send(
+		JSON.stringify({ channel: 'feed:status', type: 'post_deleted', data: { post_id: 501 } })
+	);
+	await expect(page.getByText('This arrived over the wire, no reload needed')).toHaveCount(0);
+
 	expect(unexpectedRequests).toEqual([]);
 });

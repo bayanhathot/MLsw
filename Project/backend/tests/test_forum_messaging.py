@@ -1,8 +1,6 @@
 import time
 
 from conftest import register_and_login
-import pytest
-from starlette.websockets import WebSocketDisconnect
 
 
 def _upload_audio(uploading_client, filename="clip.mp3"):
@@ -33,7 +31,7 @@ def test_public_anonymous_post_comment_votes_and_profile_stats(client, second_cl
     from unittest.mock import AsyncMock
 
     publish = AsyncMock()
-    monkeypatch.setattr("app.routers.forum.notification_hub.publish", publish)
+    monkeypatch.setattr("app.routers.forum.channel_hub.publish", publish)
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
     post_response = client.post(
@@ -53,10 +51,13 @@ def test_public_anonymous_post_comment_votes_and_profile_stats(client, second_cl
     voted = second_client.post(f"/posts/{post['id']}/vote", json={"value": 1})
     assert voted.json()["score"] == 1
     assert voted.json()["my_vote"] == 1
-    # Replaying an identical vote is idempotent and sends no extra notification.
+    # Replaying an identical vote is idempotent and sends no extra notification
+    # (channel_hub.publish still fires a "vote_changed" event on every vote
+    # attempt regardless, so only the "notification"-typed calls are counted).
     assert second_client.post(f"/posts/{post['id']}/vote", json={"value": 1}).json()["score"] == 1
     assert len(client.get("/notifications").json()) == 1
-    assert publish.await_count == 1
+    notification_calls = [call for call in publish.await_args_list if call.args[1] == "notification"]
+    assert len(notification_calls) == 1
     # Upsert changes the vote instead of creating two reactions.
     assert second_client.post(f"/posts/{post['id']}/vote", json={"value": -1}).json()["score"] == -1
 
@@ -76,7 +77,7 @@ def test_direct_messages_are_private_and_notify(client, second_client, monkeypat
     from unittest.mock import AsyncMock
 
     publish = AsyncMock()
-    monkeypatch.setattr("app.routers.messaging.notification_hub.publish", publish)
+    monkeypatch.setattr("app.routers.messaging.channel_hub.publish", publish)
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
 
@@ -92,7 +93,11 @@ def test_direct_messages_are_private_and_notify(client, second_client, monkeypat
     )
     assert sent.status_code == 201
     assert sent.json()["sender_username"] == "alice"
-    pushed = publish.await_args.args[1]
+    # channel_hub is a shared singleton, so this monkeypatch also captures
+    # the friend-request/accept notifications above -- only the most recent
+    # "notification"-typed call is the direct-message one under test.
+    notification_calls = [call for call in publish.await_args_list if call.args[1] == "notification"]
+    pushed = notification_calls[-1].args[2]
     assert pushed["kind"] == "direct_message"
     assert pushed["direct_message"]["body"] == "private hello"
     history = second_client.get("/messages/alice")
@@ -108,7 +113,7 @@ def test_anonymous_comment_notification_does_not_reveal_author(client, second_cl
     from unittest.mock import AsyncMock
 
     publish = AsyncMock()
-    monkeypatch.setattr("app.routers.forum.notification_hub.publish", publish)
+    monkeypatch.setattr("app.routers.forum.channel_hub.publish", publish)
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
     post = client.post(
@@ -122,7 +127,8 @@ def test_anonymous_comment_notification_does_not_reveal_author(client, second_cl
     assert comment.status_code == 201
     assert comment.json()["author_username"] == "Anonymous"
     persisted = client.get("/notifications").json()[0]
-    pushed = publish.await_args.args[1]
+    notification_calls = [call for call in publish.await_args_list if call.args[1] == "notification"]
+    pushed = notification_calls[0].args[2]
     assert persisted["message"] == "Someone commented on your post."
     assert pushed["message"] == "Someone commented on your post."
     assert "bob" not in persisted["message"].lower()
@@ -241,11 +247,10 @@ def test_conversations_are_bounded_to_friends_and_paginated(client, second_clien
 
 
 def test_channel_hub_receives_typed_events_for_posts_and_comments(client, second_client, monkeypatch):
-    """channel_hub.publish is the new system running alongside
-    notification_hub/community_hub (see services/channel_hub.py): every
-    forum write should now also emit a typed event on the matching
+    """channel_hub.publish (see services/channel_hub.py) is the sole
+    real-time system: every forum write emits a typed event on the matching
     "post:{id}"/"feed:{kind}" channel, plus a "user:{author_id}" mirror of
-    any Notification that was created -- without touching the old hubs."""
+    any Notification that was created."""
 
     from unittest.mock import AsyncMock
 
@@ -318,12 +323,3 @@ def test_channel_hub_receives_message_created_on_both_conversation_channels(clie
     assert calls[f"conversation:{bob_id}"][2]["body"] == "hi bob"
     assert calls[f"conversation:{alice_id}"][1] == "message_created"
     assert calls[f"conversation:{alice_id}"][2]["body"] == "hi bob"
-
-
-def test_notification_websocket_rejects_untrusted_origin(client):
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            "/ws/notifications", headers={"Origin": "https://evil.example"}
-        ):
-            pass
-    assert exc_info.value.code == 4403

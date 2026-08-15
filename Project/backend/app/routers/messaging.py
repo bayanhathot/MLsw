@@ -1,23 +1,20 @@
 """Friend-based direct messages plus durable/push notifications."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.core.config import cors_origins
 from app.core.rate_limit import write_rate_limit
-from app.core.security import decode_access_token
 from app.core.time import utc_now
-from app.database.database import SessionLocal, get_db
+from app.database.database import get_db
 from app.database.models.attachment import Attachment
 from app.database.models.messaging import DirectMessage, Notification
 from app.database.models.profile import Profile
 from app.database.models.user import User
-from app.routers.auth import ACCESS_TOKEN_COOKIE_NAME, get_current_user
+from app.routers.auth import get_current_user
 from app.schemas import AttachmentRead, ConversationRead, MessageCreate, MessageRead, NotificationRead
 from app.services import forum_service, social_service
 from app.services.auth_service import get_user_by_username
-from app.services.notification_service import notification_hub
 from app.services.channel_hub import channel_hub
 
 router = APIRouter(tags=["messaging"])
@@ -123,7 +120,6 @@ async def send_message(
             **NotificationRead.model_validate(notification).model_dump(mode="json"),
             "direct_message": message_read.model_dump(mode="json"),
         }
-        await notification_hub.publish(recipient.id, notification_payload)
         await channel_hub.publish(f"user:{recipient.id}", "notification", notification_payload)
     # "conversation:{id}" is keyed by the *other* participant's user id (see
     # routers/realtime.py's subscribe authorization), so the same DM is one
@@ -189,31 +185,3 @@ def mark_read(notification_id: int, _: None = Depends(write_rate_limit), current
     db.commit()
     db.refresh(notification)
     return notification
-
-
-@router.websocket("/ws/notifications")
-async def notification_socket(websocket: WebSocket):
-    origin = (websocket.headers.get("origin") or "").rstrip("/")
-    if origin and origin not in cors_origins():
-        await websocket.close(code=4403)
-        return
-    token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
-    subject = decode_access_token(token) if token else None
-    try:
-        user_id = int(subject) if subject is not None else None
-    except ValueError:
-        user_id = None
-    if user_id is None:
-        await websocket.close(code=4401)
-        return
-    with SessionLocal() as db:
-        user = db.query(User).filter_by(id=user_id, is_active=True).first()
-    if user is None:
-        await websocket.close(code=4401)
-        return
-    await notification_hub.connect(user_id, websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        notification_hub.disconnect(user_id, websocket)

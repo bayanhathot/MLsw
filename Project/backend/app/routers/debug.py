@@ -1,8 +1,7 @@
 """Internal AI-DJ pipeline and Ollama observability.
 
 Gated behind ENABLE_PIPELINE_DEBUG only (app.core.config.pipeline_debug_enabled,
-off by default -- the same explicit-opt-in shape as ALLOW_DEMO_SEED in
-app/seed.py). Deliberately does NOT require a logged-in user: this exists to
+off by default). Deliberately does NOT require a logged-in user: this exists to
 diagnose live pipeline failures (e.g. "why won't this track play") from a
 freshly-deployed environment where creating/logging into an account is
 exactly the kind of extra step that gets in the way of a live incident.
@@ -78,10 +77,10 @@ def read_pipeline_debug(
 
 @router.websocket("/ws")
 async def pipeline_debug_socket(websocket: WebSocket):
-    """Invalidation-only push, same shape as /posts/ws/community: a client
-    reconnecting here re-fetches GET /debug/pipeline rather than trusting
-    anything pushed over the socket. Origin-checked and ENABLE_PIPELINE_DEBUG
-    -gated, same as the GET route -- no login required, see module docstring."""
+    """Invalidation-only push: a client reconnecting here re-fetches
+    GET /debug/pipeline rather than trusting anything pushed over the socket.
+    Origin-checked and ENABLE_PIPELINE_DEBUG-gated, same as the GET route --
+    no login required, see module docstring."""
 
     origin = (websocket.headers.get("origin") or "").rstrip("/")
     if origin and origin not in cors_origins():

@@ -99,6 +99,7 @@
 				channel,
 				(type, data) => {
 					if (type === 'post_created') handleLivePostCreated(data, mode);
+					else if (type === 'post_deleted') handleLivePostDeleted(data);
 				},
 				{ onResync: () => void loadActive() }
 			)
@@ -125,6 +126,15 @@
 		}
 		if (post.visibility !== 'public') return;
 		posts = [post, ...posts.filter((item) => item.id !== post.id)];
+	}
+
+	/** @param {unknown} raw */
+	function handleLivePostDeleted(raw) {
+		const payload = /** @type {Record<string, any>} */ (raw || {});
+		const postId = Number(payload.post_id);
+		// Filtering out an id that was never in the list is a harmless
+		// no-op, so this needs no per-mode special-casing like creation does.
+		posts = posts.filter((item) => item.id !== postId);
 	}
 
 	/** @param {'friends'|'explore'|'discussions'|'people'} tab */

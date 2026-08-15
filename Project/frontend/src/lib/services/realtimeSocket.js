@@ -1,9 +1,7 @@
 /**
  * Single realtime WebSocket client for the whole app (GET /ws, see backend
- * app/routers/realtime.py + app/services/channel_hub.py). Replaces the old
- * per-feature sockets (messagingApi.js's /ws/notifications,
- * forumApi.js's /ws/community) with one connection that fans typed events
- * out to whichever components have asked for them.
+ * app/routers/realtime.py + app/services/channel_hub.py) -- one connection
+ * that fans typed events out to whichever components have asked for them.
  *
  * Connection lifecycle is owned entirely here, driven by authStore: one
  * socket opens on login and closes on logout, so components never manage a

@@ -1,11 +1,17 @@
-"""Opt-in, idempotent cold seed for clearly labelled demo forum data.
+"""Idempotent cold seed for clearly labelled demo forum data.
 
-Run only when intentionally preparing a demo environment::
+Runs by default as part of every deploy's one-shot `migrate` step (see
+docker-compose.yml/docker-compose.prod.yml), right after `alembic upgrade
+head`, so the app always launches pre-seeded. Every insert is look-before-
+write on a natural key (username/title/comment body/vote), so re-running it
+on every redeploy is safe and never creates duplicates. Set
+ALLOW_DEMO_SEED=false to opt out entirely; when disabled, main() is a no-op
+(prints and returns 0) rather than failing, since it may be chained with
+other startup commands.
 
-    ALLOW_DEMO_SEED=true python -m app.seed
+Manual run::
 
-It is never called during application startup and refuses to run without the
-explicit environment flag, so production data cannot be silently populated.
+    python -m app.seed
 """
 
 import os
@@ -81,8 +87,9 @@ def seed_demo_data(db: Session) -> dict[str, int]:
 
 
 def main() -> None:
-    if os.getenv("ALLOW_DEMO_SEED", "false").lower() not in {"1", "true", "yes"}:
-        raise SystemExit("Refusing to seed: set ALLOW_DEMO_SEED=true explicitly.")
+    if os.getenv("ALLOW_DEMO_SEED", "true").lower() not in {"1", "true", "yes"}:
+        print("Demo seed skipped: ALLOW_DEMO_SEED is explicitly disabled.")
+        return
     with SessionLocal() as db:
         result = seed_demo_data(db)
     print(f"Demo seed complete: {result}")

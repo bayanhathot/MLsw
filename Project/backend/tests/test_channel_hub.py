@@ -1,11 +1,7 @@
-"""Coverage for the new ChannelHub (app.services.channel_hub) and its /ws
+"""Coverage for ChannelHub (app.services.channel_hub) and its /ws
 endpoint (app.routers.realtime): local delivery filtering, the always-on
 "user:{id}" auto-subscription, publish()'s fail-open behavior when Redis
 isn't configured, and the /ws authorization rules for subscribing.
-
-NotificationHub/CommunityHub and /ws/notifications//ws/community are a
-separate, still-active system (see test_forum_messaging.py) -- untouched by
-any of this.
 """
 
 import json

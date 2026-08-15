@@ -99,8 +99,8 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
 
 
 def test_channel_hub_receives_user_notification_on_mix_like(client, second_client, monkeypatch):
-    """mixes.py keeps notification_hub.publish's existing shape but now also
-    mirrors it onto channel_hub's "user:{id}" channel (see channel_hub.py)."""
+    """mixes.py publishes a mix-like notification onto channel_hub's
+    "user:{id}" channel (see channel_hub.py)."""
 
     from unittest.mock import AsyncMock
 

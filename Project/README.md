@@ -34,8 +34,12 @@ prompt classification; `docker-compose.yml`'s local default for
 `VIBE_LLM_PROVIDER` is `none`, while `docker-compose.prod.yml` and the app's
 own fallback both default to `ollama`.
 
-To add clearly labelled sample forum records to a local demo only, run the
-idempotent seed explicitly; application startup never seeds data:
+Compose seeds clearly labelled demo users/posts/comments (`app/seed.py`)
+automatically as part of the one-shot `migrate` service, right after Alembic
+runs, so the app always launches pre-seeded. It's idempotent -- re-running it
+on every `docker compose up` / redeploy never creates duplicates -- so it's
+safe to leave on; set `ALLOW_DEMO_SEED=false` to opt out. To re-run it
+manually against a running deployment (e.g. after opting out at deploy time):
 
 ```powershell
 docker compose exec -e ALLOW_DEMO_SEED=true backend python -m app.seed

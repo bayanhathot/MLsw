@@ -120,6 +120,12 @@
 			if (!comments.some((item) => item.id === commentId)) return;
 			comments = comments.filter((item) => item.id !== commentId);
 			onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - 1) });
+		} else if (type === 'post_deleted') {
+			// Reuses the same removal path the manual "Delete post" button
+			// already triggers, so a post deleted by its author elsewhere
+			// disappears from this open thread too instead of erroring on
+			// the next interaction with it.
+			onDelete(post.id);
 		}
 	}
 

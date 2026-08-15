@@ -1,10 +1,9 @@
 """Music-first community posts with a dedicated discussion mode."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import cors_origins
 from app.core.rate_limit import write_rate_limit
 from app.database.database import get_db
 from app.database.models.forum import ForumComment, ForumCommentVote, ForumPost, ForumPostVote
@@ -13,8 +12,6 @@ from app.database.models.user import User
 from app.routers.auth import get_current_user, get_optional_current_user
 from app.schemas import CommentCreate, CommentRead, NotificationRead, PostCreate, PostRead, VoteRequest
 from app.services import forum_service, social_service
-from app.services.notification_service import notification_hub
-from app.services.community_service import community_hub
 from app.services.channel_hub import channel_hub
 
 router = APIRouter(prefix="/posts", tags=["community"])
@@ -64,7 +61,6 @@ async def create_post(
     db.commit()
     db.refresh(post)
     result = forum_service.build_post(db, post, current_user.id)
-    await community_hub.publish_change()
     await channel_hub.publish(f"feed:{post.kind}", "post_created", result.model_dump(mode="json"))
     return result
 
@@ -112,13 +108,15 @@ async def delete_post(post_id: int, _: None = Depends(write_rate_limit), current
     post = forum_service.post_or_404(db, post_id)
     if post.author_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the author can delete this post.")
+    kind = post.kind  # capture before delete -- the object is gone after db.commit()
     media_paths = forum_service.attachment_paths(db, "post", post.id)
     for comment in db.query(ForumComment).filter_by(post_id=post.id).all():
         media_paths.extend(forum_service.attachment_paths(db, "comment", comment.id))
     db.delete(post)
     db.commit()
     forum_service.delete_files(media_paths)
-    await community_hub.publish_change()
+    await channel_hub.publish(f"feed:{kind}", "post_deleted", {"post_id": post_id})
+    await channel_hub.publish(f"post:{post_id}", "post_deleted", {"post_id": post_id})
 
 
 async def _vote_post(post_id: int, value: int | None, user: User, db: Session):
@@ -131,9 +129,7 @@ async def _vote_post(post_id: int, value: int | None, user: User, db: Session):
     result = forum_service.build_post(db, post, user.id)
     if notification:
         notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
-        await notification_hub.publish(post.author_id, notification_payload)
         await channel_hub.publish(f"user:{post.author_id}", "notification", notification_payload)
-    await community_hub.publish_change()
     await channel_hub.publish(f"post:{post.id}", "vote_changed", {"score": result.score})
     return result
 
@@ -198,9 +194,7 @@ async def create_comment(
     result = forum_service.build_comment(db, comment, current_user.id)
     if notification:
         notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
-        await notification_hub.publish(post.author_id, notification_payload)
         await channel_hub.publish(f"user:{post.author_id}", "notification", notification_payload)
-    await community_hub.publish_change()
     await channel_hub.publish(f"post:{post.id}", "comment_created", result.model_dump(mode="json"))
     return result
 
@@ -216,7 +210,6 @@ async def delete_comment(post_id: int, comment_id: int, _: None = Depends(write_
     db.delete(comment)
     db.commit()
     forum_service.delete_files(media_paths)
-    await community_hub.publish_change()
     await channel_hub.publish(f"post:{post_id}", "comment_deleted", {"comment_id": comment_id})
 
 
@@ -238,9 +231,7 @@ async def _vote_comment(comment_id: int, value: int | None, user: User, db: Sess
     result = forum_service.build_comment(db, comment, user.id)
     if notification:
         notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
-        await notification_hub.publish(comment.author_id, notification_payload)
         await channel_hub.publish(f"user:{comment.author_id}", "notification", notification_payload)
-    await community_hub.publish_change()
     await channel_hub.publish(
         f"post:{comment.post_id}", "comment_vote_changed", {"comment_id": comment.id, "score": result.score}
     )
@@ -255,17 +246,3 @@ async def vote_comment(comment_id: int, request: VoteRequest, _: None = Depends(
 @router.delete("/comments/{comment_id}/vote", response_model=CommentRead)
 async def remove_comment_vote(comment_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return await _vote_comment(comment_id, None, current_user, db)
-
-
-@router.websocket("/ws/community")
-async def community_socket(websocket: WebSocket):
-    origin = (websocket.headers.get("origin") or "").rstrip("/")
-    if origin and origin not in cors_origins():
-        await websocket.close(code=4403)
-        return
-    await community_hub.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        community_hub.disconnect(websocket)
