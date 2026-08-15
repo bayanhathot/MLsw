@@ -12,6 +12,14 @@ on:
           rollback-production job). Leave blank for a normal manual run.
         required: false
         type: string
+      run_backup_drill:
+        description: >-
+          Run a live backup/restore drill against production (see the
+          backup-restore-drill job) instead of a normal run. Restores into
+          a scratch database/volume only -- production is never touched.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,10 +32,13 @@ jobs:
   backend-tests:
     name: Backend tests
     runs-on: ubuntu-latest
-    # A manual run dispatched to perform a rollback (rollback_sha set) only
-    # needs the rollback-production job below -- skip the normal
-    # test/build/publish chain rather than running it pointlessly.
-    if: github.event_name != 'workflow_dispatch' || inputs.rollback_sha == ''
+    # A manual run dispatched to perform a rollback (rollback_sha set) or a
+    # backup/restore drill (run_backup_drill true) only needs its own job
+    # below -- skip the normal test/build/publish chain rather than running
+    # it pointlessly.
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (inputs.rollback_sha == '' && inputs.run_backup_drill != true)
     defaults:
       run:
         working-directory: Project/backend
@@ -97,7 +108,9 @@ jobs:
   frontend-checks:
     name: Frontend checks
     runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_dispatch' || inputs.rollback_sha == ''
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (inputs.rollback_sha == '' && inputs.run_backup_drill != true)
     defaults:
       run:
         working-directory: Project/frontend
@@ -294,7 +307,7 @@ jobs:
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
           scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
-          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       - name: Log the VM in to GHCR
         env:
@@ -391,7 +404,7 @@ jobs:
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
           scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
-          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       - name: Log the VM in to GHCR
         env:
@@ -424,3 +437,91 @@ jobs:
           --retry 12 --retry-delay 5 --retry-all-errors --retry-connrefused
           --max-time 30
           "${PUBLIC_BASE_URL%/}/api/db-health"
+
+  backup-restore-drill:
+    name: Backup/restore drill against production
+    runs-on: ubuntu-latest
+    # Manual only, and mutually exclusive with rollback (each is its own
+    # deliberate dispatch, not something to combine into one run -- if both
+    # inputs are somehow set at once, rollback_sha wins and this is
+    # skipped). Runs a real backup.sh and restore.sh against a scratch
+    # database/volume on the VM -- production itself is never written to.
+    # See deploy/README.md's Operations section and
+    # deploy/backup-restore-drill.sh.
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.run_backup_drill == true &&
+      inputs.rollback_sha == '' && vars.VM_DEPLOY_ENABLED == 'true'
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate drill configuration
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          for name in SSH_HOST SSH_USER GHCR_USERNAME PUBLIC_BASE_URL SSH_PRIVATE_KEY GHCR_READ_TOKEN; do
+            test -n "${!name:-}" || { echo "${name} is not configured" >&2; exit 1; }
+          done
+
+      # Same TOFU host-key handling as deploy-production/rollback-production
+      # -- see rollback-production's identical step for the trade-off note.
+      - name: Configure SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/cuemix_deploy"
+          chmod 600 "${HOME}/.ssh/cuemix_deploy"
+          {
+            echo "Host *"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  UserKnownHostsFile ${HOME}/.ssh/known_hosts"
+          } > "${HOME}/.ssh/config"
+          chmod 600 "${HOME}/.ssh/config"
+
+      # Refreshes deploy/backup-restore-drill.sh (and its siblings) on the
+      # VM from this ref, same as every other job that talks to it --
+      # never assumes whatever is already there is current.
+      - name: Upload deployment definitions
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+        run: |
+          ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+
+      # Captures stdout+stderr to a file instead of letting a failure
+      # short-circuit the step immediately, so the *next* step can still
+      # publish whatever the drill managed to print (including partial
+      # progress on a failure) to the job summary -- then re-raises the
+      # drill's own exit code so the job still fails correctly.
+      - name: Run the backup/restore drill on the VM
+        id: drill
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+        run: |
+          set +e
+          ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy DRILL_ID='${{ github.run_id }}' bash \$HOME/cuemix-deploy/deploy/backup-restore-drill.sh" \
+            > drill-output.txt 2>&1
+          exit_code=$?
+          cat drill-output.txt
+          exit "${exit_code}"
+
+      - name: Publish drill result to the job summary
+        if: always()
+        run: |
+          {
+            echo "### Backup/restore drill result: ${{ steps.drill.outcome }}"
+            echo '```'
+            cat drill-output.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

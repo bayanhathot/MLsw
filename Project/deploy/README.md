@@ -74,7 +74,27 @@ scratch database/volume first** (pass `--target-db`/
 `--target-uploads-volume` with a different name) before ever restoring over
 production — a scratch target is created as a separate Postgres database or
 Docker volume alongside the real one, so production is never touched by a
-drill:
+drill.
+
+**Preferred way to verify a restore: the `backup-restore-drill` GitHub
+Actions job**, not manual SSH access. It runs `deploy/backup.sh` and
+`deploy/restore.sh` (into a run-unique scratch database/volume) over one
+SSH connection the runner holds only for the job's lifetime — no human or
+external agent needs the production SSH key just to check backups still
+restore correctly:
+
+1. GitHub → **Actions** → **Cuemix CI** → **Run workflow**.
+2. Set **run_backup_drill** to `true` (leave **rollback_sha** blank).
+3. Run. The job backs up, restores into `cuemix_restore_drill_<run id>` /
+   `cuemix-restore-drill-<run id>_uploads_data`, compares row/file counts
+   against production, deletes the scratch database/volume, and fails the
+   job if either script errored or the restored counts came back zero while
+   production wasn't empty. Results (backup filenames, row/file counts,
+   pass/fail) are written to the run's **Summary** tab — readable by
+   anyone/anything with repo read access, no VM access needed.
+
+Manual restore (a real disaster, or a drill without GitHub access) uses the
+same script directly on the VM:
 
 ```bash
 # Drill / verification -- does not touch the live database or volume:
