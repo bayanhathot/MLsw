@@ -176,11 +176,18 @@ for `main`): require the **Backend tests**, **Frontend checks**, and
 
 Required on the `production` GitHub environment (GitHub → Settings →
 Environments → `production`): at least one protection rule (required
-reviewers and/or a wait timer) so `deploy-production` and
-`rollback-production` — both of which target the live VM — cannot run
-unattended on an unreviewed push.
+reviewers and/or a wait timer) so `deploy-production`,
+`rollback-production`, and `backup-restore-drill` — all three of which
+touch the live VM — cannot run unattended on an unreviewed push or a
+casual manual dispatch.
 
-**Verified:** <!-- BRANCH_PROTECTION_VERIFIED -->
+**Status: not yet verified.** Both of the above require repository
+**Settings** access (Branches / Environments), which is admin-only —
+neither this session's git identity nor an unauthenticated API call can
+read or change them. **Action needed from whoever has repo-admin access**
+(the repository owner): open both Settings pages above and confirm the
+required checks / environment protection rule are actually in place, then
+update this line to record what was found.
 
 ## Attachments and data
 

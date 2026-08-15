@@ -881,7 +881,13 @@ auto-deployed from `main` on green CI.
   cost of checking from GitHub's own infrastructure rather than truly
   outside it, and GitHub's scheduled-run queuing delay under load (roughly
   "noticed within half an hour," not a tight SLA).
-- **Branch/environment protection:** <!-- BRANCH_PROTECTION_VERIFIED -->
+- **Branch/environment protection: not yet verified.** Confirming the
+  Backend tests/Frontend checks/Container builds required status checks on
+  `main`, and a required-reviewer or wait-timer rule on the `production`
+  environment, needs repository Settings access (admin-only) that this
+  session's git identity and unauthenticated API calls do not have. See
+  [`deploy/README.md`](deploy/README.md#branch-and-environment-protection)
+  -- action item for whoever holds repo-admin access.
 
 Render garbage collection, metrics, and alerts (beyond the uptime check
 above) remain open, matching this review's original "High: unbounded guest
