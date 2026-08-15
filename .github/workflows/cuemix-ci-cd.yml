@@ -24,9 +24,22 @@ on:
 permissions:
   contents: read
 
+# A manual workflow_dispatch run (rollback or backup-restore-drill) must
+# never cancel, or be cancelled by, an ordinary push/PR run on the same
+# ref/branch -- github.ref is "refs/heads/main" for *both* a push to main
+# and a workflow_dispatch launched against main, so a single ref-keyed
+# group here would let a one-off manual dispatch silently cancel an
+# in-flight push's tests/build/publish/deploy (observed live: a rollback
+# dispatch cancelled the push pipeline for the commit that introduced this
+# very fix, before its images had published). Every workflow_dispatch run
+# gets its own unique group (keyed by run_id, so it never collides with
+# anything and cancel-in-progress is moot for it); push/PR runs keep the
+# original ref-keyed group with cancel-in-progress, so a newer push to the
+# same branch/PR still cancels an older, now-stale one as before.
 concurrency:
-  group: cuemix-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    cuemix-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   backend-tests:

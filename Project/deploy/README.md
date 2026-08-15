@@ -139,11 +139,19 @@ the database to that point in time. A rollback that also needs to undo a
 migration or bad data change needs a database restore alongside it (see
 Restore above).
 
-**Rollback drill result:** performed live on <!-- DRILL_DATE -->, rolling
-back from the SHA current at the time to the previous one and confirming
-the site served the older version. See
-[ARCHITECTURE_REVIEW.md](../ARCHITECTURE_REVIEW.md) for the exact SHAs and
-what was observed.
+**Rollback drill result:** performed live on 2026-08-15, rolling back to
+`10ef342609eb59cb8f374d7425203f076d9aacf8`. Confirmed via `docker ps` on
+the VM that both `cuemix-production-backend-1` and
+`cuemix-production-frontend-1` were running images tagged with the
+rollback SHA, and the job's own health-endpoint check passed. This drill
+also caught a real concurrency-group bug: a manual `workflow_dispatch` run
+shared its concurrency group with ordinary push-triggered CI runs on the
+same branch, so a rollback/drill dispatch could silently cancel an
+in-flight push's own test/build/publish/deploy before its images ever
+published (`cuemix-ci-cd.yml`'s `concurrency.group` now keys
+`workflow_dispatch` runs by `run_id` instead). Production was rolled
+forward again afterward to restore the latest commit. See
+[ARCHITECTURE_REVIEW.md](../ARCHITECTURE_REVIEW.md) for the full detail.
 
 ### Uptime monitoring
 
