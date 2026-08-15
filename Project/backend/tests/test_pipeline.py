@@ -2,11 +2,15 @@
 indirectly: fuzzy artist matching, segment selection, and transition
 planning."""
 
+import os
+import time
+from pathlib import Path
+
 import pytest
 
 from app.database.models.catalog import CatalogTrack
 from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
-from app.services.pipeline import audius_retriever
+from app.services.pipeline import audio_renderer, audius_retriever
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
 from app.services.pipeline.audius_retriever import (
     MIN_POOL_SIZE,
@@ -630,6 +634,47 @@ def test_audio_renderer_degrades_to_pass_through_when_a_track_cannot_be_fetched(
     composite = renderer.render([segment, other], [plan])
     assert composite.is_pass_through is True
     assert len(composite.offsets) == 2
+
+
+_DEMO_WAV_PATH = Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "zonix-demo.wav"
+
+
+def _local_file_segment() -> SelectedSegment:
+    # local_path set (a real WAV, read natively by pydub) so _load_clip
+    # succeeds without a network call, and _export() actually runs --
+    # the pass-through path above never reaches _export() at all.
+    return SelectedSegment(
+        track=_track(local_path=str(_DEMO_WAV_PATH)),
+        start_second=0,
+        end_second=1,
+        method="whole_clip",
+        bpm=None,
+        musical_key=None,
+    )
+
+
+def test_export_sweeps_a_render_older_than_the_ttl():
+    directory = audio_renderer._render_dir()
+    stale_path = directory / "stale.wav"
+    stale_path.write_bytes(b"stale placeholder bytes")
+    old_mtime = time.time() - audio_renderer.RENDERED_AUDIO_TTL_SECONDS - 60
+    os.utime(stale_path, (old_mtime, old_mtime))
+
+    rendered = PydubAudioRenderer().render([_local_file_segment()], [])
+
+    assert rendered.is_pass_through is False  # sanity: _export() really ran
+    assert not stale_path.exists()
+
+
+def test_export_leaves_a_fresh_render_alone():
+    directory = audio_renderer._render_dir()
+    fresh_path = directory / "fresh.wav"
+    fresh_path.write_bytes(b"fresh placeholder bytes")
+
+    rendered = PydubAudioRenderer().render([_local_file_segment()], [])
+
+    assert rendered.is_pass_through is False
+    assert fresh_path.exists()
 
 
 def test_vibe_provider_defaults_to_ollama_and_degrades_without_config(monkeypatch):

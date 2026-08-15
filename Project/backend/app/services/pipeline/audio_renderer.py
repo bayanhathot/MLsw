@@ -13,6 +13,8 @@ instead of fabricating a crossfade that never happened.
 """
 
 import logging
+import os
+import time
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -31,6 +33,16 @@ logger = logging.getLogger(__name__)
 RENDER_SUBDIR = "renders"
 _MAX_REMOTE_BYTES = 15 * 1024 * 1024
 _REMOTE_TIMEOUT_SECONDS = 8.0
+
+# Unlike every other cache in this codebase (audius_service.py's search
+# cache, session_candidate_pool.py's pool cache), rendered files had no
+# eviction policy at all -- every render (including a prepare_next() one
+# that's never actually consumed, e.g. invalidated by feedback before
+# advance_session() gets to it) permanently occupies disk. Long enough that
+# a slow listener, or a prepared-but-not-yet-consumed prefetch render, isn't
+# deleted while it might still be needed; short enough not to grow unbounded
+# on a small VM disk.
+RENDERED_AUDIO_TTL_SECONDS = float(os.getenv("RENDERED_AUDIO_TTL_SECONDS", "3600"))
 
 
 def _render_dir() -> Path:
@@ -87,11 +99,31 @@ def _load_clip(segment: SelectedSegment) -> AudioSegment | None:
     return audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
 
 
+def _sweep_stale_renders(directory: Path) -> None:
+    """Opportunistic, best-effort cleanup: deletes rendered files whose mtime
+    is older than RENDERED_AUDIO_TTL_SECONDS. Run on every _export() call
+    rather than on a schedule, since there's no background task runner in
+    this codebase to hang a periodic job off of -- the same "piggyback on
+    the next real call" idiom audius_service.py's cache TTL uses. A
+    filesystem error here must never break an actual render, so the whole
+    sweep is best-effort."""
+
+    try:
+        cutoff = time.time() - RENDERED_AUDIO_TTL_SECONDS
+        for path in directory.iterdir():
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _export(audio: AudioSegment) -> str:
     # WAV export/import is pure-Python in pydub (no ffmpeg subprocess), so
     # the core crossfade path works even where ffmpeg isn't installed;
     # ffmpeg is still what makes decoding compressed uploads/streams possible.
-    path = _render_dir() / f"{uuid4().hex}.wav"
+    directory = _render_dir()
+    _sweep_stale_renders(directory)
+    path = directory / f"{uuid4().hex}.wav"
     audio.export(path, format="wav")
     return public_api_url(f"/media/renders/{path.name}")
 
