@@ -131,3 +131,69 @@ def test_is_known_broken_returns_true_for_a_row_still_within_ttl(db_session):
     db_session.commit()
 
     assert known_broken_tracks.is_known_broken(db_session, "audius:1") is True
+
+
+def test_a_5xx_failure_expires_on_the_short_transient_ttl_not_the_long_one(db_session):
+    # A 503 is far more likely to be the provider having a bad moment than
+    # the track actually being gone (confirmed live: a track that 503'd was
+    # playable and well-liked on Audius's own site minutes later) -- it
+    # must not be remembered for a full day the same way a 403 is.
+    stale_for_transient_only = utc_now() - timedelta(
+        seconds=known_broken_tracks.TRANSIENT_KNOWN_BROKEN_TTL_SECONDS + 30
+    )
+    db_session.add(
+        KnownBrokenTrack(
+            track_key="audius:1",
+            source="audius",
+            source_track_id="1",
+            title="T",
+            fallback_reason="download_failed_http_503",
+            failure_count=1,
+            last_seen_at=stale_for_transient_only,
+        )
+    )
+    db_session.commit()
+
+    assert known_broken_tracks.is_known_broken(db_session, "audius:1") is False
+
+
+def test_a_5xx_failure_is_still_known_broken_within_the_transient_ttl(db_session):
+    recent_at = utc_now() - timedelta(
+        seconds=known_broken_tracks.TRANSIENT_KNOWN_BROKEN_TTL_SECONDS - 30
+    )
+    db_session.add(
+        KnownBrokenTrack(
+            track_key="audius:1",
+            source="audius",
+            source_track_id="1",
+            title="T",
+            fallback_reason="download_failed_http_503",
+            failure_count=1,
+            last_seen_at=recent_at,
+        )
+    )
+    db_session.commit()
+
+    assert known_broken_tracks.is_known_broken(db_session, "audius:1") is True
+
+
+def test_a_4xx_failure_still_uses_the_long_ttl_despite_the_transient_window_passing(db_session):
+    # Sanity check that _is_likely_permanent's branch actually matters: the
+    # same age that expires a 503 must NOT expire a 403.
+    aged_past_transient_but_not_permanent_ttl = utc_now() - timedelta(
+        seconds=known_broken_tracks.TRANSIENT_KNOWN_BROKEN_TTL_SECONDS + 30
+    )
+    db_session.add(
+        KnownBrokenTrack(
+            track_key="audius:1",
+            source="audius",
+            source_track_id="1",
+            title="T",
+            fallback_reason="download_failed_http_403",
+            failure_count=1,
+            last_seen_at=aged_past_transient_but_not_permanent_ttl,
+        )
+    )
+    db_session.commit()
+
+    assert known_broken_tracks.is_known_broken(db_session, "audius:1") is True

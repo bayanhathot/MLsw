@@ -27,21 +27,50 @@ from app.database.models.session import KnownBrokenTrack
 from app.schemas import Track
 
 # How long a KnownBrokenTrack row is trusted before a session is willing to
-# try that track again. Long enough to actually save repeated failed
-# download attempts across a burst of sessions hitting the same broken
-# track (the observed case: 5+ sessions in a row); short enough that a
-# track which becomes available again isn't skipped indefinitely.
+# try that track again, for a failure that looks likely to still be true
+# tomorrow (see _is_likely_permanent) -- e.g. a 403/404, or a download that
+# succeeded but decoded to something that isn't valid audio. Long enough to
+# actually save repeated failed download attempts across a burst of
+# sessions hitting the same broken track (the observed case: 5+ sessions in
+# a row); short enough that a track which becomes available again isn't
+# skipped indefinitely.
 KNOWN_BROKEN_TRACK_TTL_SECONDS = 86400.0
+
+# Everything else -- a 5xx, a connection reset, a timeout, an exceeded size
+# cap -- more plausibly reflects the provider (or network) having a bad
+# moment than the track itself being gone (confirmed live: a track that
+# 503'd once was, minutes later, playable and well-liked on Audius's own
+# site). Remembered only briefly, so a session tries again soon instead of
+# writing a perfectly fine track off for a full day over one blip.
+TRANSIENT_KNOWN_BROKEN_TTL_SECONDS = 300.0
 
 
 def _track_key(track: Track) -> str:
     return f"{track.source}:{track.source_track_id}"
 
 
+def _is_likely_permanent(fallback_reason: str) -> bool:
+    """True for the failure modes worth remembering for the long
+    KNOWN_BROKEN_TRACK_TTL_SECONDS window: a 4xx (403 Forbidden, 404 Not
+    Found, ...) means the provider deliberately won't serve this track, and
+    a decode failure means the bytes it did serve aren't valid audio --
+    both are properties of the track, not the moment. Everything else
+    defaults to the short TRANSIENT_KNOWN_BROKEN_TTL_SECONDS instead of
+    trying to enumerate every possible transient httpx/network exception
+    name; the cost of guessing wrong here is one extra download attempt
+    per TTL window, never a track wrongly skipped forever."""
+
+    return fallback_reason.startswith("download_failed_http_4") or fallback_reason.startswith(
+        "decode_failed_"
+    )
+
+
 def is_known_broken(db: Session, track_key: str) -> bool:
-    """False for no entry, or an entry older than KNOWN_BROKEN_TRACK_TTL_SECONDS
-    -- callers never need to distinguish why, same "miss is always safe"
-    contract as session_candidate_pool.get(). An expired row is deleted here
+    """False for no entry, or an entry past its TTL (see
+    KNOWN_BROKEN_TRACK_TTL_SECONDS / TRANSIENT_KNOWN_BROKEN_TTL_SECONDS,
+    chosen by the recorded failure's own likely permanence) -- callers never
+    need to distinguish why, same "miss is always safe" contract as
+    session_candidate_pool.get(). An expired row is deleted here
     (piggybacked on this lookup) rather than on a timer -- this codebase has
     no background task runner, so cleanup always rides along with a real
     call, same idiom as audio_renderer._sweep_stale_renders()."""
@@ -49,7 +78,12 @@ def is_known_broken(db: Session, track_key: str) -> bool:
     row = db.get(KnownBrokenTrack, track_key)
     if row is None:
         return False
-    if utc_now() - row.last_seen_at >= timedelta(seconds=KNOWN_BROKEN_TRACK_TTL_SECONDS):
+    ttl = (
+        KNOWN_BROKEN_TRACK_TTL_SECONDS
+        if _is_likely_permanent(row.fallback_reason)
+        else TRANSIENT_KNOWN_BROKEN_TTL_SECONDS
+    )
+    if utc_now() - row.last_seen_at >= timedelta(seconds=ttl):
         db.delete(row)
         return False
     return True
