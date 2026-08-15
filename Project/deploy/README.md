@@ -108,10 +108,16 @@ DEPLOY_ROOT=~/cuemix-deploy bash ~/cuemix-deploy/deploy/restore.sh \
   --uploads ~/cuemix-backups/uploads-<timestamp>.tar.gz
 ```
 
-**Restore drill result:** run end to end against a scratch database and a
-scratch volume (not production) on <!-- DRILL_DATE -->. See
-[ARCHITECTURE_REVIEW.md](../ARCHITECTURE_REVIEW.md) for the exact commands
-run and row/file counts observed.
+**Restore drill result:** run via the `backup-restore-drill` GitHub Actions
+job on 2026-08-15 (run ID `31899351678`). Backed up production
+(`db-20260815T174839Z.sql.gz` / `uploads-20260815T174839Z.tar.gz`), restored
+into scratch database `cuemix_restore_drill_31899351678` and scratch volume
+`cuemix-restore-drill-31899351678_uploads_data`, and confirmed an exact
+match against production at the time: **12/12 database rows, 9/9 uploaded
+files**. Scratch resources were dropped automatically afterward; production
+was never written to. See
+[ARCHITECTURE_REVIEW.md](../ARCHITECTURE_REVIEW.md) for the full drill
+output.
 
 ### Rollback
 

@@ -828,7 +828,29 @@ auto-deployed from `main` on green CI.
 - **Restore:** [`deploy/restore.sh`](deploy/restore.sh#L1) restores a
   `backup.sh` archive into either the live production database/volume or a
   named scratch database/volume alongside it.
-  **Drill performed:** <!-- DRILL_DATE --><!-- DRILL_DETAILS -->
+  [`deploy/backup-restore-drill.sh`](deploy/backup-restore-drill.sh#L1),
+  wired to the `backup-restore-drill` `workflow_dispatch` job in
+  [`.github/workflows/cuemix-ci-cd.yml`](.github/workflows/cuemix-ci-cd.yml#L440),
+  runs the whole backup -> restore-into-scratch -> verify -> cleanup cycle
+  over one SSH connection the runner holds only for the job's lifetime, so
+  no human or external agent needs the production SSH key just to verify
+  backups still restore correctly.
+  **Drill performed:** via that job on 2026-08-15 (run ID `31899351678`).
+  Backed up production (`db-20260815T174839Z.sql.gz` /
+  `uploads-20260815T174839Z.tar.gz`), restored into scratch database
+  `cuemix_restore_drill_31899351678` and scratch volume
+  `cuemix-restore-drill-31899351678_uploads_data`, and confirmed an exact
+  match against production at the time -- **12/12 database rows** across 26
+  tables (`dj_sessions`: 4, `catalog_tracks`: 4, `session_feedback`: 2,
+  `known_broken_tracks`: 1, `alembic_version`: 1, the rest 0) and **9/9
+  uploaded files**. Scratch resources were dropped automatically on exit;
+  production was never written to. One bug was caught and fixed by this
+  drill's first (failing) run: `docker compose exec` against `postgres`
+  still requires `BACKEND_IMAGE`/`FRONTEND_IMAGE` to be set, since Compose
+  interpolates the entire file (including the unrelated
+  `migrate`/`backend`/`frontend` services) before running any subcommand --
+  `backup.sh`/`restore.sh`/`backup-restore-drill.sh` now export harmless
+  placeholders for both.
 - **Rollback:** every image is already tagged by commit SHA
   (`ghcr.io/<owner>/cuemix-backend:<sha>`); a `workflow_dispatch` input
   (`rollback_sha`) on the `rollback-production` job in
