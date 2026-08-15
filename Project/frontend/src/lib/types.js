@@ -269,6 +269,7 @@
  * @property {boolean} isPlaybackBuffering
  * @property {boolean} hasEnded
  * @property {boolean} isStopping
+ * @property {boolean} isChangingVibe
  * @property {boolean} isFeedbackPending
  * @property {string | null} pendingFeedback
  * @property {string | null} selectedFeedback

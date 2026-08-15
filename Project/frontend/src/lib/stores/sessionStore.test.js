@@ -64,6 +64,79 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+describe('sessionStore.start (change vibe while already playing)', () => {
+	it('keeps the current session/playback untouched while the new vibe is loading', async () => {
+		await startPlayingSession();
+		const before = get(sessionStore);
+
+		const startCall = deferred();
+		apiMocks.startSession.mockReturnValueOnce(startCall.promise);
+		apiMocks.stopSession.mockResolvedValueOnce(undefined);
+		sessionStore.setPrompt('energetic techno');
+		const startPromise = sessionStore.start();
+
+		const midFlight = get(sessionStore);
+		expect(midFlight.session).toBe(before.session);
+		expect(midFlight.isPlaying).toBe(before.isPlaying);
+		expect(midFlight.playbackRequested).toBe(before.playbackRequested);
+		expect(midFlight.isPlaybackBuffering).toBe(before.isPlaybackBuffering);
+		expect(midFlight.status).toBe('playing');
+		expect(midFlight.isChangingVibe).toBe(true);
+
+		startCall.resolve(makeSession({ id: 'session-2', prompt: 'energetic techno' }));
+		await startPromise;
+	});
+
+	it('swaps to the new session and requests playback once it arrives', async () => {
+		await startPlayingSession();
+		apiMocks.startSession.mockResolvedValueOnce(makeSession({ id: 'session-2' }));
+		apiMocks.stopSession.mockResolvedValueOnce(undefined);
+		sessionStore.setPrompt('energetic techno');
+
+		const ok = await sessionStore.start();
+
+		expect(ok).toBe(true);
+		const after = get(sessionStore);
+		expect(after.session?.id).toBe('session-2');
+		expect(after.status).toBe('playing');
+		expect(after.playbackRequested).toBe(true);
+		expect(after.isPlaybackBuffering).toBe(true);
+		expect(after.isChangingVibe).toBe(false);
+	});
+
+	it('keeps the old session playing (not ERROR) when the new vibe fails to load', async () => {
+		await startPlayingSession();
+		const before = get(sessionStore);
+		apiMocks.startSession.mockRejectedValueOnce(new Error('audius unreachable'));
+		sessionStore.setPrompt('energetic techno');
+
+		const ok = await sessionStore.start();
+
+		expect(ok).toBe(false);
+		const after = get(sessionStore);
+		expect(after.status).toBe('playing');
+		expect(after.session).toBe(before.session);
+		expect(after.playbackRequested).toBe(before.playbackRequested);
+		expect(after.isChangingVibe).toBe(false);
+		expect(after.error).toContain('audius unreachable');
+	});
+
+	it('still resets straight to the loading state for a true fresh start (nothing playing yet)', async () => {
+		sessionStore.setPrompt('chill lofi beats');
+		const startCall = deferred();
+		apiMocks.startSession.mockReturnValueOnce(startCall.promise);
+		const startPromise = sessionStore.start();
+
+		const midFlight = get(sessionStore);
+		expect(midFlight.status).toBe('starting');
+		expect(midFlight.session).toBeNull();
+		expect(midFlight.isChangingVibe).toBe(false);
+
+		startCall.resolve(makeSession());
+		await startPromise;
+	});
+});
+
 describe('sessionStore.prepareNext', () => {
 	it('returns the prepared audioUrl when nothing interrupts it', async () => {
 		await startPlayingSession();

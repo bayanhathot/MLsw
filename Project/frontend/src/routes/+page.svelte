@@ -85,7 +85,7 @@
 		<div class={isSessionActive ? 'prompt-overlay' : ''}>
 			<PromptComposer
 				prompt={$sessionStore.prompt}
-				isStarting={$sessionStore.status === APP_STATES.STARTING}
+				isStarting={$sessionStore.status === APP_STATES.STARTING || $sessionStore.isChangingVibe}
 				isOverlay={isSessionActive}
 				showCancel={isSessionActive}
 				startLabel={isSessionActive ? 'Update vibe' : '▶ Start AI DJ'}

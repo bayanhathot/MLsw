@@ -24,6 +24,7 @@ function initialState() {
 		isPlaybackBuffering: false,
 		hasEnded: false,
 		isStopping: false,
+		isChangingVibe: false,
 		isFeedbackPending: false,
 		pendingFeedback: null,
 		reasoningOpen: false,
@@ -193,6 +194,14 @@ function createSessionStore() {
 				return false;
 			}
 
+			// "Change vibe" reuses this same start() -- when a session is already
+			// playing, the currently-audible track must keep playing right up
+			// until the new vibe's session actually arrives (never an
+			// interruption just because a new prompt was submitted). A true
+			// fresh start (nothing playing yet) still resets straight to the
+			// loading state, since there's nothing to preserve.
+			const isChangingVibeWhilePlaying =
+				latestState.status === APP_STATES.PLAYING && Boolean(latestState.session);
 			const previousSessionId = latestState.session?.id;
 			abortPendingRequests();
 			const requestVersion = ++lifecycleVersion;
@@ -201,21 +210,26 @@ function createSessionStore() {
 			update((state) => ({
 				...state,
 				prompt,
-				status: APP_STATES.STARTING,
 				currentStep: 'Creating your mix',
-				progress: 20,
-				session: null,
-				isPlaying: false,
-				playbackRequested: false,
-				isPlaybackBuffering: false,
-				hasEnded: false,
+				playbackError: null,
+				error: null,
+				isChangingVibe: isChangingVibeWhilePlaying,
+				...(isChangingVibeWhilePlaying
+					? {}
+					: {
+							status: APP_STATES.STARTING,
+							progress: 20,
+							session: null,
+							isPlaying: false,
+							playbackRequested: false,
+							isPlaybackBuffering: false,
+							hasEnded: false,
+							selectedFeedback: null
+						}),
 				isStopping: false,
 				isFeedbackPending: false,
 				pendingFeedback: null,
-				reasoningOpen: false,
-				selectedFeedback: null,
-				playbackError: null,
-				error: null
+				reasoningOpen: false
 			}));
 
 			try {
@@ -236,7 +250,10 @@ function createSessionStore() {
 					session,
 					playbackRequested: true,
 					isPlaying: false,
-					isPlaybackBuffering: true
+					isPlaybackBuffering: true,
+					hasEnded: false,
+					selectedFeedback: null,
+					isChangingVibe: false
 				}));
 
 				if (previousSessionId && previousSessionId !== session.id) {
@@ -251,13 +268,25 @@ function createSessionStore() {
 
 				update((state) => ({
 					...state,
-					status: APP_STATES.ERROR,
-					currentStep: 'Unable to start',
-					progress: 0,
-					isPlaying: false,
-					playbackRequested: false,
-					isPlaybackBuffering: false,
-					error: messageFrom(error)
+					isChangingVibe: false,
+					...(isChangingVibeWhilePlaying
+						? {
+								// The old vibe is still perfectly fine -- keep it playing
+								// rather than dropping into a dead ERROR state just because
+								// the *new* vibe failed to load.
+								status: APP_STATES.PLAYING,
+								currentStep: 'Zone active',
+								error: `Could not update the vibe: ${messageFrom(error)}`
+							}
+						: {
+								status: APP_STATES.ERROR,
+								currentStep: 'Unable to start',
+								progress: 0,
+								isPlaying: false,
+								playbackRequested: false,
+								isPlaybackBuffering: false,
+								error: messageFrom(error)
+							})
 				}));
 				return false;
 			} finally {
