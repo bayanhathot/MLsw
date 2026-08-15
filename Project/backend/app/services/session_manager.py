@@ -65,6 +65,18 @@ _CANDIDATE_POOL_REFRESH_THRESHOLD = 3
 # current track actually ends" -- not act as a general-purpose cache.
 PREPARED_NEXT_TTL_SECONDS = float(os.getenv("PREPARED_NEXT_TTL_SECONDS", "300"))
 
+# How many ranked candidates _resolve_and_render will actually try rendering
+# before giving up and keeping the last (failed) attempt's pass-through --
+# a track whose audio genuinely can't be fetched/decoded (AudioRenderer
+# degrades to a pass-through pointing at a URL that's then often *also*
+# broken for the listener, e.g. the source track being unavailable at the
+# provider -- see RenderedAudio.fallback_reason) is skipped in favor of the
+# next-ranked candidate instead of stopping the resolution there. Capped so
+# a systemically broken source can't turn one resolution into a string of
+# slow, doomed download attempts (each up to
+# audio_renderer._REMOTE_TIMEOUT_SECONDS).
+AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", "3"))
+
 COVER_URL = "/brand/zonix-logo.svg"
 
 _ENERGY_LEVELS = ["low", "medium", "high"]
@@ -275,6 +287,13 @@ def _resolve_and_render(
     is part of the fingerprint and is the one field every current mutation
     path touches -- naturally misses and forces a fresh retrieval; nothing
     here has to special-case "was this feedback-driven" to get that right.
+
+    Rendering itself can still fail per-track (the source audio genuinely
+    unavailable/undecodable, e.g. Audius returning a 4xx for that specific
+    track) even though retrieval/ranking succeeded -- see
+    AUDIO_RENDER_RETRY_LIMIT: rather than accepting the first candidate's
+    failed pass-through, up to that many ranked candidates are tried before
+    giving up and keeping the last attempt.
     """
 
     fingerprint = session_candidate_pool.fingerprint_for(intent)
@@ -300,13 +319,37 @@ def _resolve_and_render(
             db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
         )
         session_candidate_pool.put(session_id, fingerprint, candidates)
-    track = next(
-        (candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys),
-        candidates[0],
-    )
-    segment = selector.select(db, track)
-    transition = planner.plan(previous_segment, segment, prefers_smoother=prefers_smoother)
-    rendered = renderer.render([segment], [transition])
+    fresh_candidates = [
+        candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys
+    ] or candidates
+
+    # Try candidates in ranked order until one actually renders, rather than
+    # settling for the first candidate's pass-through if its audio couldn't
+    # be fetched/decoded. skipped_tracks -- surfaced in the pipeline debug
+    # trace below -- records what was tried and discarded along the way, so
+    # a "why did it play something odd" question is answerable without
+    # backend logs. Skipped candidates are never marked "played" (they
+    # never played), so they remain eligible on a future resolution too.
+    skipped_tracks: list[dict] = []
+    attempts = fresh_candidates[:AUDIO_RENDER_RETRY_LIMIT]
+    for index, candidate in enumerate(attempts):
+        track = candidate
+        segment = selector.select(db, track)
+        transition = planner.plan(previous_segment, segment, prefers_smoother=prefers_smoother)
+        rendered = renderer.render([segment], [transition])
+        # Stop -- and keep this attempt, whatever it is -- once it succeeds,
+        # or once the retry budget is spent: the last attempt is always the
+        # final result, even a failed one, never itself recorded as
+        # "skipped" (that label is only for a candidate discarded in favor
+        # of a different one that was tried next).
+        if not rendered.is_pass_through or index == len(attempts) - 1:
+            break
+        skipped_tracks.append({
+            "source": track.source,
+            "source_track_id": track.source_track_id,
+            "title": track.title,
+            "fallback_reason": rendered.fallback_reason,
+        })
 
     now_playing = {
         "title": track.title,
@@ -378,6 +421,10 @@ def _resolve_and_render(
             # download or the decode fail).
             "resolved_audio_url": rendered.audio_url,
             "fallback_reason": rendered.fallback_reason,
+            # Candidates tried and discarded before landing on `track`
+            # (empty when the first candidate rendered fine) -- see
+            # AUDIO_RENDER_RETRY_LIMIT.
+            "skipped_tracks": skipped_tracks,
         },
         "resolved_at": utc_now().isoformat(),
     }

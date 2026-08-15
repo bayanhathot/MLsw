@@ -175,6 +175,83 @@ def test_feedback_mutates_intent_but_never_touches_original_intent(client, db_se
     assert row.original_intent_json["energy"] == "medium"
 
 
+def test_create_session_skips_a_candidate_whose_audio_cannot_be_rendered(client, monkeypatch, db_session):
+    # A track that ranks first but whose audio genuinely can't be fetched
+    # (e.g. Audius returning a 4xx for that specific track) must not become
+    # a dead pass-through -- the next-ranked candidate should be tried
+    # instead, same as if the first one simply hadn't been offered.
+    tracks = [
+        {
+            "title": "Broken Track", "artist": "Artist A",
+            "audio_url": "https://audio.example/broken", "source_track_id": "broken-1",
+            "duration": 100, "source": "audius",
+        },
+        {
+            "title": "Good Track", "artist": "Artist B",
+            "audio_url": "https://audio.example/good", "source_track_id": "good-1",
+            "duration": 100, "source": "audius",
+        },
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+
+    def fake_download(url):
+        if url.endswith("/broken"):
+            return None, "download_failed_http_403"
+        return _DEMO_WAV_BYTES, None
+
+    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", fake_download)
+
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    assert session["nowPlaying"]["title"] == "Good Track"
+    assert session["nowPlaying"]["artist"] == "Artist B"
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    audio_trace = row.pipeline_trace_json["audio_renderer"]
+    assert audio_trace["is_pass_through"] is False
+    assert len(audio_trace["skipped_tracks"]) == 1
+    assert audio_trace["skipped_tracks"][0]["source_track_id"] == "broken-1"
+    assert audio_trace["skipped_tracks"][0]["fallback_reason"] == "download_failed_http_403"
+
+
+def test_create_session_falls_back_to_pass_through_when_every_candidate_fails_to_render(
+    client, monkeypatch, db_session
+):
+    # A systemically broken source (or a whole pool of unavailable tracks)
+    # must not turn one resolution into an unbounded string of doomed
+    # download attempts -- capped at AUDIO_RENDER_RETRY_LIMIT, then the
+    # session lands on the last attempt's honest pass-through rather than
+    # erroring out.
+    tracks = [
+        {
+            "title": f"Broken {i}", "artist": "Artist",
+            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
+            "duration": 100, "source": "audius",
+        }
+        for i in range(5)
+    ]
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_http_403"),
+    )
+
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    # The retry-capped final attempt -- the (limit)th candidate tried, not
+    # the first and not all 5.
+    assert session["nowPlaying"]["title"] == f"Broken {session_manager.AUDIO_RENDER_RETRY_LIMIT - 1}"
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    audio_trace = row.pipeline_trace_json["audio_renderer"]
+    assert audio_trace["is_pass_through"] is True
+    assert len(audio_trace["skipped_tracks"]) == session_manager.AUDIO_RENDER_RETRY_LIMIT - 1
+
+
 def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(client, monkeypatch):
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []

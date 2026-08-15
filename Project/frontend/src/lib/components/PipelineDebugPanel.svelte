@@ -207,6 +207,16 @@
 											<dt>Playing from</dt>
 											<dd class="debug-url">{trace.audio_renderer?.resolved_audio_url || '—'}</dd>
 										</div>
+										{#if trace.audio_renderer?.skipped_tracks?.length}
+											<div>
+												<dt>Skipped</dt>
+												<dd class="bad">
+													{#each trace.audio_renderer.skipped_tracks as skipped (skipped.source_track_id)}
+														&ldquo;{skipped.title}&rdquo; ({skipped.fallback_reason})&nbsp;
+													{/each}
+												</dd>
+											</div>
+										{/if}
 									</dl>
 								{:else}
 									<p class="debug-empty">No trace recorded yet.</p>
