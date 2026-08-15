@@ -115,9 +115,7 @@ into scratch database `cuemix_restore_drill_31899351678` and scratch volume
 `cuemix-restore-drill-31899351678_uploads_data`, and confirmed an exact
 match against production at the time: **12/12 database rows, 9/9 uploaded
 files**. Scratch resources were dropped automatically afterward; production
-was never written to. See
-[ARCHITECTURE_REVIEW.md](../ARCHITECTURE_REVIEW.md) for the full drill
-output.
+was never written to.
 
 ### Rollback
 
@@ -150,8 +148,7 @@ same branch, so a rollback/drill dispatch could silently cancel an
 in-flight push's own test/build/publish/deploy before its images ever
 published (`cuemix-ci-cd.yml`'s `concurrency.group` now keys
 `workflow_dispatch` runs by `run_id` instead). Production was rolled
-forward again afterward to restore the latest commit. See
-[ARCHITECTURE_REVIEW.md](../ARCHITECTURE_REVIEW.md) for the full detail.
+forward again afterward to restore the latest commit.
 
 ### Uptime monitoring
 

@@ -1,15 +1,22 @@
 # Cuemix
 
-Cuemix is a SvelteKit, FastAPI, and PostgreSQL prototype for prompt-guided DJ
-sessions. Session start/feedback and mix generation are routed through one
-consolidated, swappable AI-DJ pipeline (`VibeUnderstander` -> deterministic
-catalog/Audius `CandidateRetriever` -> librosa `SegmentSelector` ->
-deterministic `TransitionPlanner` -> pydub/ffmpeg `AudioRenderer`) — see
-[AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) for the full write-up. It is not a
-trained music model: candidate ordering is deterministic string similarity,
-keyword rules, and BPM/key arithmetic throughout, with one optional,
-schema-constrained LLM call (a fully local Ollama model, the sole LLM option)
-for prompt classification.
+Cuemix is a SvelteKit + FastAPI + PostgreSQL prototype for prompt-guided DJ
+sessions, plus a mix library and social layer built on top of it. It is not a
+trained AI DJ: candidate ordering runs on deterministic string similarity,
+keyword rules, reciprocal-rank fusion, and BPM/key arithmetic, with one
+optional, schema-constrained LLM call (a local Ollama model, the sole LLM
+option) used only for prompt classification, never for track selection or
+ranking.
+
+The AI-DJ pipeline is `VibeUnderstander -> CandidateRetriever -> SegmentSelector
+-> TransitionPlanner -> AudioRenderer`, each stage an interface in
+`backend/app/services/pipeline/interfaces.py` with a swappable implementation
+bound in `pipeline/dependencies.py`. Candidates come from a local catalog or
+Audius; segments are chosen with librosa; transitions are planned
+deterministically and rendered with pydub/ffmpeg. Live sessions currently
+render one audio segment at a time (the transition planner's output is
+explanatory metadata, not an audible crossfade); saved multi-track mixes do
+crossfade for real.
 
 ## Quick start
 
@@ -18,41 +25,14 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
-Open the app at <http://localhost:8080> and API docs at
-<http://localhost:8080/api/docs>. Compose waits for PostgreSQL, applies all Alembic
-migrations, and then starts the API and UI.
-
-| Capability | Status |
-| --- | --- |
-| Svelte UI, player controls, and cookie-auth client | Implemented |
-| FastAPI auth, CSRF origin guard, and rate limits | Implemented |
-| Persistent sessions, feedback, and user preferences | Implemented, retriever-agnostic (works against catalog or Audius); ranking improvement verified by a labeled eval (`backend/scripts/eval_preferences.py`); personalized prompt-shortcut chips (`GET /users/me/prompt-shortcuts`) |
-| Consolidated AI-DJ pipeline: catalog + Audius candidate retrieval, librosa segment selection, deterministic transition planning | Implemented |
-| Real pydub/ffmpeg audio rendering and crossfading (mixes + sessions) | Implemented |
-| Catalog track upload (album/artist/lyrics + audio) with async BPM/key/segment analysis | Implemented |
-| Fuzzy artist-name catalog search (Postgres pg_trgm, pure-Python fallback) | Implemented |
-| Mix library/feed, publishing, likes, and saves | Implemented UI/API vertical slice |
-| Community: Friends/Explore/Discussions/People, posts/comments/votes, native mix sharing, and attachments | Implemented UI/API vertical slice |
-| Social-first public profiles, mutual friends, search/discovery, friend-only DMs, live/durable notifications, block/report | Implemented UI/API vertical slice |
-| Music Identity analytics, raw listening events, period filters, and private/friends/public visibility | Implemented full-stack infrastructure; Listening DNA ML intentionally deferred |
-| Bounded upload queue and persistent attachment volume | Implemented prototype; queue state is process-local |
-| Trained ranking/recommendation model | Deliberately not implemented; see [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) |
-| LLM prompt refinement | Implemented; Ollama (local, sole option, `VIBE_LLM_PROVIDER`) or off (`none`) |
-| CI | Runs on every push/PR: backend tests + 80% coverage gate, frontend checks/tests/e2e, container builds |
-| Azure CD | Live at `https://sweng-group-18.eastus.cloudapp.azure.com`; auto-deploys `main` on green CI, with backup (`deploy/backup.sh`), restore (`deploy/restore.sh`), rollback (`workflow_dispatch` → `rollback-production`), and an uptime check (`.github/workflows/uptime-check.yml`) — see [deploy/README.md](deploy/README.md#operations) |
-
-The complete architecture, commands, limitations, security notes, and roadmap
-are in [CUEMIX_PROJECT_README.md](CUEMIX_PROJECT_README.md). The AI-DJ pipeline
-(stages, why each is swappable, deterministic-vs-LLM breakdown, and what's
-deferred) is in [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md). Music Identity data
-flow, privacy, future ML integration points, and a debugging checklist are in
-[MUSIC_IDENTITY.md](MUSIC_IDENTITY.md). The V3 social-product architecture and
-debugging flow are in [SOCIAL_PRODUCT_V3.md](SOCIAL_PRODUCT_V3.md), with an
-implementation summary in [IMPLEMENTATION_REPORT_V3.md](IMPLEMENTATION_REPORT_V3.md).
-Deployment prerequisites are in [deploy/README.md](deploy/README.md).
-Generated dependencies and caches have been removed from the current Git
-index; the cleanup record and optional history-rewrite notes are in
-[deploy/TRACKED_ARTIFACT_CLEANUP.md](deploy/TRACKED_ARTIFACT_CLEANUP.md).
+Open the app at <http://localhost:8080> and the API docs at
+<http://localhost:8080/api/docs>. Compose applies all Alembic migrations
+before starting the API and UI. The Ollama container starts by default, but
+the model isn't pulled automatically — run
+`docker compose exec ollama ollama pull qwen3:8b` once to actually use LLM
+prompt classification; `docker-compose.yml`'s local default for
+`VIBE_LLM_PROVIDER` is `none`, while `docker-compose.prod.yml` and the app's
+own fallback both default to `ollama`.
 
 To add clearly labelled sample forum records to a local demo only, run the
 idempotent seed explicitly; application startup never seeds data:
@@ -60,6 +40,33 @@ idempotent seed explicitly; application startup never seeds data:
 ```powershell
 docker compose exec -e ALLOW_DEMO_SEED=true backend python -m app.seed
 ```
+
+## What's implemented
+
+| Area | Status |
+| --- | --- |
+| Svelte UI, player controls, cookie-auth client | Implemented |
+| FastAPI auth (PBKDF2-SHA256), CSRF/origin guard, rate limits | Implemented |
+| Persistent sessions, feedback, preferences, personalized prompt-shortcut chips | Implemented, retriever-agnostic |
+| AI-DJ pipeline: catalog + Audius retrieval, librosa segment selection, deterministic transition planning | Implemented |
+| pydub/ffmpeg audio rendering | Implemented for saved mixes (real crossfades); live sessions render one segment at a time |
+| Catalog track upload with async BPM/key/segment analysis | Implemented |
+| Fuzzy artist-name catalog search (Postgres pg_trgm, pure-Python fallback) | Implemented |
+| Mix library, publishing, likes, saves | Implemented |
+| Community: Friends/Explore/Discussions/People, posts/comments/votes, mix sharing, attachments | Implemented |
+| Public profiles, mutual friends, friend-only DMs, live/durable notifications, block/report | Implemented |
+| Music Identity analytics (listening history, period filters, visibility controls) | Implemented; a "Listening DNA" ML feature is a stable but deliberately unimplemented contract |
+| Trained ranking/recommendation model | Deliberately not implemented |
+| LLM prompt refinement | Implemented; local Ollama (sole option) or off (`VIBE_LLM_PROVIDER=none`) |
+| CI | Every push/PR runs backend tests (80% coverage gate), frontend checks/tests/e2e, and container builds |
+| Azure CD | Live at `https://sweng-group-18.eastus.cloudapp.azure.com`; auto-deploys `main` on green CI — see [deploy/README.md](deploy/README.md) |
+
+## Repo layout
+
+- [backend/](backend/README.md) — FastAPI app, AI-DJ pipeline, Alembic migrations, tests.
+- [frontend/](frontend/README.md) — SvelteKit UI.
+- [deploy/](deploy/README.md) — production Compose stack, backup/restore/rollback, CI/CD operations.
+- [SECURITY.md](SECURITY.md) — vulnerability reporting and known exceptions.
 
 ## Required checks
 
@@ -82,7 +89,6 @@ npm run test:e2e
 ```
 
 Do not commit `.env`, virtual environments, `node_modules`, model downloads,
-DVC/MLflow caches, or unlicensed audio. Runtime demo playback uses the original,
-reproducibly generated `cuemix-demo.wav`. The old uncleared MP3 is excluded from
-the current revision and container builds, but its old blob remains in Git
-history until a separately coordinated rewrite; future MP3 staging uses Git LFS.
+or unlicensed audio. Runtime demo playback uses an original, procedurally
+generated `cuemix-demo.wav` (see [backend/app/static/audio/GENERATED_AUDIO.md](backend/app/static/audio/GENERATED_AUDIO.md))
+— no third-party sample.

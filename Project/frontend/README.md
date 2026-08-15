@@ -26,9 +26,7 @@ The production image serves the static build with unprivileged Nginx. Nginx prox
 - `/login` and `/register` — HTTP-only cookie authentication.
 
 `/forum` and `/social` still exist only as compatibility redirects to
-`/community` and `/messages` respectively — see
-[SOCIAL_PRODUCT_V3.md](../SOCIAL_PRODUCT_V3.md) for the full navigation
-rationale.
+`/community` and `/messages` respectively.
 
 ## Quality gates
 
