@@ -559,6 +559,83 @@ def test_stop_session_clears_a_prepared_item(client, monkeypatch, db_session):
     assert row.prepared_next_json is None
 
 
+def test_prepare_next_discards_its_result_if_the_session_is_stopped_while_it_is_in_flight(
+    client, monkeypatch, db_session
+):
+    # Simulates the race PHASE_C_PREFETCH_DESIGN.md section 3.5 describes:
+    # stop_session() commits *while* prepare_next()'s own retrieval/render
+    # work is still running, via a genuinely separate DB session (db_session,
+    # distinct from the one the /prepare-next request itself uses) -- proving
+    # prepare_next's pre-write re-check catches this, not just
+    # advance_session's own re-validation at consume time (which only
+    # protects against serving a stale item, not against writing one).
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+
+    original_resolve = session_manager._resolve_and_render
+
+    def resolve_then_stop_concurrently(*args, **kwargs):
+        result = original_resolve(*args, **kwargs)
+        concurrent_row = db_session.query(DJSession).filter_by(id=session_id).one()
+        concurrent_row.status = "stopped"
+        concurrent_row.prepared_next_json = None
+        db_session.commit()
+        return result
+
+    monkeypatch.setattr(session_manager, "_resolve_and_render", resolve_then_stop_concurrently)
+
+    response = client.post(f"/sessions/{session_id}/prepare-next")
+    assert response.status_code == 200
+    assert response.json()["prepared"] is False  # discarded, not resurrected
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    db_session.refresh(row)
+    assert row.status == "stopped"
+    assert row.prepared_next_json is None
+
+
+def test_prepare_next_discards_its_result_if_intent_changes_while_it_is_in_flight(
+    client, monkeypatch, db_session
+):
+    # Same race as above, but via a concurrent apply_feedback()-style intent
+    # mutation (a different fingerprint) instead of a stop.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+
+    original_resolve = session_manager._resolve_and_render
+    mutated_energy = {"value": None}
+
+    def resolve_then_mutate_intent_concurrently(*args, **kwargs):
+        result = original_resolve(*args, **kwargs)
+        concurrent_row = db_session.query(DJSession).filter_by(id=session_id).one()
+        mutated_intent = dict(concurrent_row.intent_json)
+        mutated_intent["energy"] = "low" if mutated_intent["energy"] != "low" else "high"
+        mutated_energy["value"] = mutated_intent["energy"]
+        concurrent_row.intent_json = mutated_intent
+        concurrent_row.prepared_next_json = None
+        db_session.commit()
+        return result
+
+    monkeypatch.setattr(
+        session_manager, "_resolve_and_render", resolve_then_mutate_intent_concurrently
+    )
+
+    response = client.post(f"/sessions/{session_id}/prepare-next")
+    assert response.status_code == 200
+    assert response.json()["prepared"] is False  # discarded, not resurrected
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    db_session.refresh(row)
+    assert row.intent_json["energy"] == mutated_energy["value"]  # the concurrent mutation stuck
+    assert row.prepared_next_json is None
+
+
 def test_advance_rejects_a_stopped_session(client):
     session = client.post("/sessions/start", json={"prompt": "smooth focus music"}).json()
     assert client.post(f"/sessions/{session['id']}/stop").status_code == 200

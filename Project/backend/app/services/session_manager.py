@@ -713,7 +713,18 @@ def prepare_next(
     Guarded by a per-session Lock so two near-simultaneous calls for the
     same session don't both pay for a full retrieval/render -- see the
     module-level _prepare_locks comment for why this is a latency nicety,
-    not a correctness requirement (section 3.5)."""
+    not a correctness requirement (section 3.5).
+
+    A different race matters more: stop_session() or apply_feedback()
+    (the branch that clears prepared_next_json on intent mutation) can
+    commit *while* this function's own retrieval/render work is still
+    running. Without a re-check, this function's eventual write would land
+    afterward and silently resurrect a prepared item on a session that was
+    just stopped, or whose intent just changed -- so right before writing,
+    the session's current state is re-fetched and re-validated against the
+    fingerprint this resolution actually ran against, and the result is
+    discarded (not written) if either no longer matches. This is a normal,
+    expected outcome of the race, not an error."""
 
     if session.status != "playing":
         return
@@ -743,6 +754,18 @@ def prepare_next(
             # Nothing to prepare ahead of time; advance_session falls back to
             # its own real resolution when it's actually called, same as it
             # always has.
+            return
+
+        # Re-fetch and re-validate right before writing: stop_session() or
+        # apply_feedback() may have committed while the retrieval/render
+        # work above was in flight. db.refresh() picks up whatever is
+        # actually committed now, not whatever this function saw when it
+        # started -- a plain re-check of the in-memory `session` object
+        # wouldn't catch a change made through a different Session/request.
+        db.refresh(session)
+        current_intent = PromptIntent.model_validate(session.intent_json)
+        current_fingerprint = session_candidate_pool.fingerprint_for(current_intent)
+        if session.status != "playing" or current_fingerprint != fingerprint:
             return
 
         session.prepared_next_json = {
