@@ -38,8 +38,8 @@ migrations, and then starts the API and UI.
 | Bounded upload queue and persistent attachment volume | Implemented prototype; queue state is process-local |
 | Trained ranking/recommendation model | Deliberately not implemented; see [AI_DJ_PIPELINE.md](AI_DJ_PIPELINE.md) |
 | LLM prompt refinement | Implemented; Ollama (local, sole option, `VIBE_LLM_PROVIDER`) or off (`none`) |
-| CI | Installed at repository root; the first hosted run is still pending |
-| Azure CD | Template only; VM, DNS, secrets, and first deployment are external prerequisites |
+| CI | Runs on every push/PR: backend tests + 80% coverage gate, frontend checks/tests/e2e, container builds |
+| Azure CD | Live at `https://sweng-group-18.eastus.cloudapp.azure.com`; auto-deploys `main` on green CI, with backup (`deploy/backup.sh`), restore (`deploy/restore.sh`), rollback (`workflow_dispatch` → `rollback-production`), and an uptime check (`.github/workflows/uptime-check.yml`) — see [deploy/README.md](deploy/README.md#operations) |
 
 The complete architecture, commands, limitations, security notes, and roadmap
 are in [CUEMIX_PROJECT_README.md](CUEMIX_PROJECT_README.md). The AI-DJ pipeline

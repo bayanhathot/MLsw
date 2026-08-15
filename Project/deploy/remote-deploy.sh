@@ -70,3 +70,17 @@ else
   echo "The app will run on the deterministic parser until this is retried" >&2
   echo "manually: docker compose exec ollama ollama pull ${ollama_model}" >&2
 fi
+
+# Install (or refresh) a daily backup cron job -- idempotent, so this is
+# safe to run on every deploy, not just the first. Runs as whichever user
+# this script itself runs as (the SSH deploy user), consistent with
+# DEPLOY_ROOT already being that user's home-relative path. See
+# deploy/backup.sh and deploy/README.md's Operations section.
+cron_marker="# cuemix-backup (managed by remote-deploy.sh -- do not edit by hand)"
+cron_line="0 3 * * * DEPLOY_ROOT=${DEPLOY_ROOT} /usr/bin/env bash ${DEPLOY_ROOT}/deploy/backup.sh >> ${DEPLOY_ROOT}/../cuemix-backups/backup.log 2>&1 ${cron_marker}"
+existing_crontab="$(crontab -l 2>/dev/null | grep -v -F "${cron_marker}" || true)"
+{
+  printf '%s\n' "${existing_crontab}" | sed '/^$/d'
+  printf '%s\n' "${cron_line}"
+} | crontab -
+echo "Installed daily backup cron job (03:00 UTC): ${cron_line}"

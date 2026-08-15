@@ -487,12 +487,15 @@ runs:
 - Backend and frontend container builds.
 
 Image publishing is enabled only when `DEPLOY_ENABLED=true`; Azure deployment
-is separately gated by `VM_DEPLOY_ENABLED=true`. The deployment guide correctly
-describes the current deployment as a template rather than proof of a public
-deployment in [`deploy/README.md`](deploy/README.md#L37).
+is separately gated by `VM_DEPLOY_ENABLED=true`. **Update, post-review:** both
+are now `true` and the deployment is live -- see the addendum below and
+[`deploy/README.md`](deploy/README.md#L1), which no longer describes this as
+a template.
 
-There is currently no automated rollback, PostgreSQL/upload backup, restore
-exercise, render garbage collection, metrics, alerts, or external uptime check.
+There is currently no render garbage collection, metrics, or alerts. Backup,
+restore, rollback, and external uptime monitoring, listed as missing at the
+time of this review, are addressed in the addendum below; render GC,
+metrics, and alerts are not.
 
 ## Review findings
 
@@ -802,6 +805,52 @@ Neither change alters this review's other findings or its recommended
 implementation order; they are additive, scoped to the "Long-term memory"
 row of [`CUEMIX_PROJECT_README.md`](CUEMIX_PROJECT_README.md#L206)'s
 Course-feedback status table.
+
+## Addendum: deployment hardening (backup, restore, rollback, uptime)
+
+Closes the CI/CD row of
+[`CUEMIX_PROJECT_README.md`](CUEMIX_PROJECT_README.md#L211)'s
+Course-feedback status table and the gap this review flagged above
+("no automated rollback, PostgreSQL/upload backup, restore exercise, ...
+or external uptime check"). The deployment is live at
+`https://sweng-group-18.eastus.cloudapp.azure.com` (`VM_DEPLOY_ENABLED=true`),
+auto-deployed from `main` on green CI.
+
+- **Backup:** [`deploy/backup.sh`](deploy/backup.sh#L1), installed as a
+  daily 03:00 UTC cron job by
+  [`deploy/remote-deploy.sh`](deploy/remote-deploy.sh#L1) (idempotent, so
+  every deploy refreshes it). `pg_dump`s the production database and
+  archives the `cuemix-production_uploads_data` volume to a
+  retained-on-VM, timestamped directory (`~/cuemix-backups`), pruning
+  entries older than 14 days. Off-VM (object store) replication is not yet
+  implemented -- a disk/VM failure would still lose both the live data and
+  its backups.
+- **Restore:** [`deploy/restore.sh`](deploy/restore.sh#L1) restores a
+  `backup.sh` archive into either the live production database/volume or a
+  named scratch database/volume alongside it.
+  **Drill performed:** <!-- DRILL_DATE --><!-- DRILL_DETAILS -->
+- **Rollback:** every image is already tagged by commit SHA
+  (`ghcr.io/<owner>/cuemix-backend:<sha>`); a `workflow_dispatch` input
+  (`rollback_sha`) on the `rollback-production` job in
+  [`.github/workflows/cuemix-ci-cd.yml`](.github/workflows/cuemix-ci-cd.yml#L332)
+  redeploys that SHA's already-published images via
+  `deploy/remote-deploy.sh` with no rebuild, using that SHA's own
+  Compose/Caddy/deploy-script definitions.
+  **Drill performed:** <!-- ROLLBACK_DRILL_DETAILS -->
+- **External uptime check:**
+  [`.github/workflows/uptime-check.yml`](.github/workflows/uptime-check.yml#L1)
+  curls `$PUBLIC_BASE_URL/api/db-health` every 15 minutes and opens/updates
+  a GitHub issue labeled `uptime` on failure, closing it automatically on
+  recovery. A GitHub Actions workflow rather than a third-party monitor
+  (UptimeRobot/Better Uptime) -- no external account to provision, at the
+  cost of checking from GitHub's own infrastructure rather than truly
+  outside it, and GitHub's scheduled-run queuing delay under load (roughly
+  "noticed within half an hour," not a tight SLA).
+- **Branch/environment protection:** <!-- BRANCH_PROTECTION_VERIFIED -->
+
+Render garbage collection, metrics, and alerts (beyond the uptime check
+above) remain open, matching this review's original "High: unbounded guest
+and render growth" finding and recommended implementation order.
 
 ## Final assessment
 

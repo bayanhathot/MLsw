@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      rollback_sha:
+        description: >-
+          Full commit SHA to roll back production to (redeploys its
+          already-published ghcr.io images, no rebuild -- see the
+          rollback-production job). Leave blank for a normal manual run.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -16,6 +24,10 @@ jobs:
   backend-tests:
     name: Backend tests
     runs-on: ubuntu-latest
+    # A manual run dispatched to perform a rollback (rollback_sha set) only
+    # needs the rollback-production job below -- skip the normal
+    # test/build/publish chain rather than running it pointlessly.
+    if: github.event_name != 'workflow_dispatch' || inputs.rollback_sha == ''
     defaults:
       run:
         working-directory: Project/backend
@@ -85,6 +97,7 @@ jobs:
   frontend-checks:
     name: Frontend checks
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.rollback_sha == ''
     defaults:
       run:
         working-directory: Project/frontend
@@ -281,7 +294,7 @@ jobs:
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
           scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
-          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       - name: Log the VM in to GHCR
         env:
@@ -307,6 +320,102 @@ jobs:
       # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and
       # curl treats a TLS handshake failure (exit 35) as non-transient, so
       # plain --retry will not retry it and the check fails spuriously.
+      - name: Verify the public TLS database health endpoint
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+        run: >-
+          curl --fail --show-error
+          --retry 12 --retry-delay 5 --retry-all-errors --retry-connrefused
+          --max-time 30
+          "${PUBLIC_BASE_URL%/}/api/db-health"
+
+  rollback-production:
+    name: Roll back Azure VM to a prior SHA
+    runs-on: ubuntu-latest
+    # Manual only: redeploys images that were already published for
+    # `rollback_sha` (no rebuild) -- see deploy/README.md's Operations
+    # section for the drill this was verified with. Independent of
+    # publish-images/deploy-production, since a rollback deliberately skips
+    # straight past building/testing the current ref.
+    if: github.event_name == 'workflow_dispatch' && inputs.rollback_sha != '' && vars.VM_DEPLOY_ENABLED == 'true'
+    environment: production
+    steps:
+      - name: Check out the rollback ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.rollback_sha }}
+
+      - name: Validate rollback configuration
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          ROLLBACK_SHA: ${{ inputs.rollback_sha }}
+        run: |
+          for name in SSH_HOST SSH_USER GHCR_USERNAME PUBLIC_BASE_URL SSH_PRIVATE_KEY GHCR_READ_TOKEN; do
+            test -n "${!name:-}" || { echo "${name} is not configured" >&2; exit 1; }
+          done
+          case "${PUBLIC_BASE_URL}" in
+            https://*) ;;
+            *) echo "PUBLIC_BASE_URL must start with https://" >&2; exit 1 ;;
+          esac
+          if ! [[ "${ROLLBACK_SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "rollback_sha must be a 7-40 character hex commit SHA, got: ${ROLLBACK_SHA}" >&2
+            exit 1
+          fi
+
+      - name: Configure SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/cuemix_deploy"
+          chmod 600 "${HOME}/.ssh/cuemix_deploy"
+          {
+            echo "Host *"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  UserKnownHostsFile ${HOME}/.ssh/known_hosts"
+          } > "${HOME}/.ssh/config"
+          chmod 600 "${HOME}/.ssh/config"
+
+      # Uses the rollback ref's own copy of these files -- rolling back to an
+      # older commit means running with its Compose/Caddy/deploy-script
+      # definitions too, not the current ones layered onto old app images.
+      - name: Upload deployment definitions from the rollback ref
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+        run: |
+          ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+
+      - name: Log the VM in to GHCR
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_READ_TOKEN}" | ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
+            "docker login ghcr.io --username '${GHCR_USERNAME}' --password-stdin"
+
+      - name: Redeploy the rollback SHA's already-published images
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+        shell: bash
+        run: |
+          owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          backend_image="ghcr.io/${owner}/cuemix-backend:${{ inputs.rollback_sha }}"
+          frontend_image="ghcr.io/${owner}/cuemix-frontend:${{ inputs.rollback_sha }}"
+          echo "Rolling back to ${backend_image} / ${frontend_image}"
+          ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+
       - name: Verify the public TLS database health endpoint
         env:
           PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
