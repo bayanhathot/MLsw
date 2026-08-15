@@ -12,6 +12,9 @@ x-backend-environment: &backend-environment
   ROOT_PATH: ${ROOT_PATH:-/api}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
   TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+  # Not yet used by any app code -- purely additive infrastructure, see
+  # app/core/redis_client.py.
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
   # "none" here keeps local dev zero-friction (no LLM call made, even
   # though the ollama container below now starts by default); the app
   # itself defaults to "ollama", the sole LLM option, when this is unset
@@ -147,6 +150,22 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   ollama:
     image: ollama/ollama:0.11.4
     environment:
@@ -171,3 +190,4 @@ volumes:
   postgres_data:
   ollama_data:
   uploads_data:
+  redis_data:

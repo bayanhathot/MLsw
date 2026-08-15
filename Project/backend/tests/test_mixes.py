@@ -98,6 +98,29 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
     assert second_client.delete(f"/mixes/{mix['id']}/save").json()["is_saved"] is False
 
 
+def test_channel_hub_receives_user_notification_on_mix_like(client, second_client, monkeypatch):
+    """mixes.py keeps notification_hub.publish's existing shape but now also
+    mirrors it onto channel_hub's "user:{id}" channel (see channel_hub.py)."""
+
+    from unittest.mock import AsyncMock
+
+    _patch_audius(monkeypatch, sample_tracks())
+    publish = AsyncMock()
+    monkeypatch.setattr("app.routers.mixes.channel_hub.publish", publish)
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    mix = client.post("/mixes/start", json={"prompt": "energetic electronic"}).json()
+    assert client.post(f"/mixes/{mix['id']}/publish").status_code == 200
+    alice_id = client.get("/auth/me").json()["id"]
+
+    assert second_client.post(f"/mixes/{mix['id']}/like").json()["like_count"] == 1
+
+    channel, event_type, data = publish.await_args.args
+    assert channel == f"user:{alice_id}"
+    assert event_type == "notification"
+    assert data["kind"] == "mix_like"
+
+
 def test_blocked_owner_hides_direct_mix_access(client, second_client, monkeypatch):
     _patch_audius(monkeypatch, sample_tracks())
     register_and_login(client, "alice", "alice@example.com")

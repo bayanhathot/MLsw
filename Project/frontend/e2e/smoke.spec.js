@@ -45,10 +45,7 @@ const emptyIdentity = {
 async function mockApi(page, { authenticated = false, promptShortcuts = [] } = {}) {
 	const unexpectedRequests = [];
 
-	await page.routeWebSocket('**/api/ws/notifications', (socket) => {
-		socket.onMessage(() => {});
-	});
-	await page.routeWebSocket('**/api/posts/ws/community', (socket) => {
+	await page.routeWebSocket('**/api/ws', (socket) => {
 		socket.onMessage(() => {});
 	});
 

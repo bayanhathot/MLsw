@@ -7,7 +7,8 @@
 	import AttachmentUploader from '$lib/components/AttachmentUploader.svelte';
 	import ForumPostCard from '$lib/components/ForumPostCard.svelte';
 	import UserCard from '$lib/components/UserCard.svelte';
-	import { communityWebSocketUrl, createPost, getPosts } from '$lib/services/forumApi.js';
+	import { createPost, getPosts, normalizePost } from '$lib/services/forumApi.js';
+	import { subscribe } from '$lib/services/realtimeSocket.js';
 	import {
 		acceptFriendRequest,
 		cancelFriendRequest,
@@ -57,43 +58,80 @@
 	/** @type {Record<string, boolean>} */
 	let peopleBusy = $state({});
 	let searching = $state(false);
-	/** @type {WebSocket | null} */
-	let communitySocket = null;
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	let refreshTimer = null;
+	/** @type {(() => void)[]} */
+	let feedUnsubscribers = [];
 
 	onMount(() => {
 		const requested = page.url.searchParams.get('tab');
 		activeTab = isValidTab(requested) ? requested : 'explore';
 		void loadActive();
-		connectCommunitySocket();
+		subscribeToFeed(activeTab);
 	});
 
 	onDestroy(() => {
 		if (refreshTimer) clearTimeout(refreshTimer);
-		if (communitySocket) communitySocket.close();
+		unsubscribeFromFeed();
 	});
 
-	function connectCommunitySocket() {
-		const url = communityWebSocketUrl();
-		if (!url) return;
-		try {
-			communitySocket = new WebSocket(url);
-			communitySocket.onopen = () => communitySocket?.send('ready');
-			communitySocket.onmessage = () => {
-				if (activeTab === 'people') return;
-				if (refreshTimer) clearTimeout(refreshTimer);
-				refreshTimer = setTimeout(() => void loadActive(), 300);
-			};
-		} catch {
-			// Best-effort realtime/indicator behavior; REST state remains authoritative.
+	/** "feed:{kind}" is keyed by ForumPost.kind (discussion/status/mix_share),
+	 * not by this page's tab -- the discussions tab only ever shows that one
+	 * kind, while explore/friends show every kind. */
+	/** @param {'friends'|'explore'|'discussions'|'people'} mode */
+	function feedChannelsForMode(mode) {
+		return mode === 'discussions'
+			? ['feed:discussion']
+			: ['feed:discussion', 'feed:status', 'feed:mix_share'];
+	}
+
+	function unsubscribeFromFeed() {
+		for (const unsubscribe of feedUnsubscribers) unsubscribe();
+		feedUnsubscribers = [];
+	}
+
+	/** @param {'friends'|'explore'|'discussions'|'people'} mode */
+	function subscribeToFeed(mode) {
+		unsubscribeFromFeed();
+		if (mode === 'people') return;
+		feedUnsubscribers = feedChannelsForMode(mode).map((channel) =>
+			subscribe(
+				channel,
+				(type, data) => {
+					if (type === 'post_created') handleLivePostCreated(data, mode);
+				},
+				{ onResync: () => void loadActive() }
+			)
+		);
+	}
+
+	/** @param {unknown} raw @param {'friends'|'explore'|'discussions'} mode */
+	function handleLivePostCreated(raw, mode) {
+		if (mode === 'friends') {
+			// The payload alone doesn't say whether the author is a friend --
+			// "feed:{kind}" broadcasts every post of that kind to every
+			// authenticated subscriber (see routers/realtime.py), unfiltered
+			// by audience. A debounced refetch through the REST feed (which
+			// *does* apply that filter) is the safe way to pick this up.
+			if (refreshTimer) clearTimeout(refreshTimer);
+			refreshTimer = setTimeout(() => void loadActive(), 300);
+			return;
 		}
+		let post;
+		try {
+			post = normalizePost(raw);
+		} catch {
+			return;
+		}
+		if (post.visibility !== 'public') return;
+		posts = [post, ...posts.filter((item) => item.id !== post.id)];
 	}
 
 	/** @param {'friends'|'explore'|'discussions'|'people'} tab */
 	async function switchTab(tab) {
 		activeTab = tab;
 		error = '';
+		subscribeToFeed(tab);
 		await goto(resolve(`/community?tab=${tab}`), { replaceState: true, noScroll: true });
 		await loadActive();
 	}

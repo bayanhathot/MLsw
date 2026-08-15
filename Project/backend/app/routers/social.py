@@ -15,6 +15,7 @@ from app.schemas import FriendRequestRead, NotificationRead, ReportCreate, UserC
 from app.services import forum_service, social_service
 from app.services.auth_service import get_user_by_username
 from app.services.notification_service import notification_hub
+from app.services.channel_hub import channel_hub
 
 router = APIRouter(tags=["social graph"])
 
@@ -163,7 +164,9 @@ async def send_friend_request(
     db.commit()
     db.refresh(item)
     if notification:
-        await notification_hub.publish(other.id, NotificationRead.model_validate(notification).model_dump(mode="json"))
+        notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
+        await notification_hub.publish(other.id, notification_payload)
+        await channel_hub.publish(f"user:{other.id}", "notification", notification_payload)
     return _request_read(db, item, current_user.id)
 
 
@@ -183,7 +186,9 @@ async def _accept_request(db: Session, item: FriendRequest, current_user: User) 
     db.commit()
     db.refresh(item)
     if notification:
-        await notification_hub.publish(item.sender_id, NotificationRead.model_validate(notification).model_dump(mode="json"))
+        notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
+        await notification_hub.publish(item.sender_id, notification_payload)
+        await channel_hub.publish(f"user:{item.sender_id}", "notification", notification_payload)
     return _request_read(db, item, current_user.id)
 
 

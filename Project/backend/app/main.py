@@ -17,6 +17,7 @@ selector-information endpoints.
 import os
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -30,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.database.database import get_db
 from app.core.config import cors_origins
+from app.core.redis_client import check_redis_health
 from app.routers.auth import router as auth_router
 from app.routers.catalog import router as catalog_router
 from app.routers.media import router as media_router
@@ -42,6 +44,8 @@ from app.routers.profiles import router as profiles_router
 from app.routers.uploads import router as uploads_router
 from app.routers.social import router as social_router
 from app.routers.debug import router as debug_router
+from app.routers.realtime import router as realtime_router
+from app.services.channel_hub import channel_hub
 
 # ---------------------------------------------------------
 # Create FastAPI app
@@ -54,11 +58,19 @@ from app.routers.debug import router as debug_router
 # Meaning:
 # app.main -> this file: backend/app/main.py
 # app      -> this FastAPI object below
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    await channel_hub.start_listener()
+    yield
+    await channel_hub.stop_listener()
+
+
 app = FastAPI(
     title="Cuemix Backend",
     description="Backend API for the Cuemix Smart AI DJ Mixer project.",
     version="0.2.0",
     root_path=os.getenv("ROOT_PATH", ""),
+    lifespan=_lifespan,
 )
 
 app.mount(
@@ -141,6 +153,7 @@ app.include_router(social_router)
 app.include_router(catalog_router)
 app.include_router(media_router)
 app.include_router(debug_router)
+app.include_router(realtime_router)
 
 
 # ---------------------------------------------------------
@@ -170,7 +183,7 @@ def root():
 # Database health endpoint
 # ---------------------------------------------------------
 @app.get("/db-health")
-def db_health(db: Session = Depends(get_db)):
+async def db_health(db: Session = Depends(get_db)):
     """
     Database health-check endpoint.
 
@@ -192,6 +205,11 @@ def db_health(db: Session = Depends(get_db)):
     It does not require any tables.
     This lets us test the database connection before creating real tables
     like users, artists, songs, and song_segments.
+
+    Redis is included here too (fail-open, see app.core.redis_client) so a
+    broken Redis connection is visible in the same place a broken Postgres
+    connection would be -- but unlike Postgres, nothing depends on Redis yet,
+    so an unreachable Redis never fails this endpoint's status code.
     """
 
     result = db.execute(text("SELECT 1")).scalar()
@@ -199,6 +217,7 @@ def db_health(db: Session = Depends(get_db)):
     return {
         "database": "connected",
         "result": result,
+        "redis": await check_redis_health(),
     }
 
 

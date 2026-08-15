@@ -9,10 +9,12 @@
 	import {
 		getConversation,
 		getConversations,
-		notificationWebSocketUrl,
+		normalizeMessage,
 		normalizeNotification,
 		sendDirectMessage
 	} from '$lib/services/messagingApi.js';
+	import { getPublicProfile } from '$lib/services/profileApi.js';
+	import { onUserEvent, subscribe } from '$lib/services/realtimeSocket.js';
 	import { deleteAttachment } from '$lib/services/uploadApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
 	import { formatUtcDate } from '$lib/utils/dates.js';
@@ -20,6 +22,8 @@
 	/** @type {import('$lib/types.js').Conversation[]} */
 	let conversations = $state([]);
 	let activeUsername = $state('');
+	/** @type {number | null} */
+	let otherUserId = $state(null);
 	/** @type {import('$lib/types.js').DirectMessage[]} */
 	let messages = $state([]);
 	let loading = $state(true);
@@ -30,8 +34,10 @@
 	/** @type {Record<string, any>[]} */
 	let attachments = $state([]);
 	let inboxLoadedFor = $state('');
-	/** @type {WebSocket | null} */
-	let socket = null;
+	/** @type {(() => void) | null} */
+	let unsubscribeUserEvents = null;
+	/** @type {(() => void) | null} */
+	let unsubscribeConversation = null;
 
 	$effect(() => {
 		if ($authStore.status === 'guest') {
@@ -42,56 +48,105 @@
 		if ($authStore.status === 'authenticated' && username && inboxLoadedFor !== username) {
 			inboxLoadedFor = username;
 			void loadInbox();
-			connectSocket();
+			connectUserEvents();
 		}
 	});
 
 	onDestroy(() => {
-		if (socket) socket.close();
+		disconnectUserEvents();
+		unsubscribeFromConversation();
 	});
 
-	function connectSocket() {
-		if (socket) socket.close();
-		const url = notificationWebSocketUrl();
-		if (!url) return;
-		try {
-			socket = new WebSocket(url);
-			socket.onopen = () => socket?.send('ready');
-			socket.onmessage = (/** @type {MessageEvent} */ event) => {
+	function disconnectUserEvents() {
+		if (unsubscribeUserEvents) {
+			unsubscribeUserEvents();
+			unsubscribeUserEvents = null;
+		}
+	}
+
+	/** Cross-conversation inbox updates: a DM into a thread that *isn't*
+	 * currently open only shows up here, on the always-on "user:{id}"
+	 * channel -- the per-thread "conversation:{id}" channel below is only
+	 * subscribed for the open thread. A message for the open thread can
+	 * arrive on *both* (they're deduped by id either way). */
+	function connectUserEvents() {
+		disconnectUserEvents();
+		unsubscribeUserEvents = onUserEvent(
+			(type, data) => {
+				if (type !== 'notification') return;
 				try {
-					const notification = normalizeNotification(JSON.parse(event.data));
+					const notification = normalizeNotification(data);
 					const incoming = notification.direct_message;
-					if (!incoming) return;
-					if (incoming.sender_username === activeUsername) {
-						if (!messages.some((item) => item.id === incoming.id))
-							messages = [...messages, incoming];
-						void getConversation(activeUsername)
-							.then((rows) => {
-								messages = rows;
-							})
-							.catch(() => {});
-					} else {
-						const existing = conversations.find(
-							(item) => item.username === incoming.sender_username
-						);
-						conversations = [
-							{
-								username: incoming.sender_username,
-								displayName: existing?.displayName || incoming.sender_username,
-								avatarUrl: existing?.avatarUrl || null,
-								lastMessage: incoming.body,
-								lastMessageAt: incoming.created_at,
-								unreadCount: (existing?.unreadCount || 0) + 1
-							},
-							...conversations.filter((item) => item.username !== incoming.sender_username)
-						];
-					}
+					if (incoming) applyIncomingMessage(incoming);
 				} catch {
 					// Best-effort realtime/indicator behavior; REST state remains authoritative.
 				}
-			};
+			},
+			{ onResync: () => void refreshConversationList() }
+		);
+	}
+
+	/** @param {import('$lib/types.js').DirectMessage} incoming */
+	function applyIncomingMessage(incoming) {
+		if (incoming.sender_username === activeUsername) {
+			if (!messages.some((item) => item.id === incoming.id)) messages = [...messages, incoming];
+			return;
+		}
+		const existing = conversations.find((item) => item.username === incoming.sender_username);
+		conversations = [
+			{
+				username: incoming.sender_username,
+				displayName: existing?.displayName || incoming.sender_username,
+				avatarUrl: existing?.avatarUrl || null,
+				lastMessage: incoming.body,
+				lastMessageAt: incoming.created_at,
+				unreadCount: (existing?.unreadCount || 0) + 1
+			},
+			...conversations.filter((item) => item.username !== incoming.sender_username)
+		];
+	}
+
+	async function refreshConversationList() {
+		try {
+			conversations = await getConversations();
 		} catch {
-			// Best-effort realtime/indicator behavior; REST state remains authoritative.
+			// Best-effort realtime resync; REST state remains authoritative.
+		}
+	}
+
+	function unsubscribeFromConversation() {
+		if (unsubscribeConversation) {
+			unsubscribeConversation();
+			unsubscribeConversation = null;
+		}
+	}
+
+	/** "conversation:{id}" is keyed by the *other* participant's user id
+	 * (see routers/realtime.py), so this only ever targets the thread
+	 * currently open on screen. */
+	function subscribeToConversation() {
+		unsubscribeFromConversation();
+		if (otherUserId == null) return;
+		unsubscribeConversation = subscribe(
+			`conversation:${otherUserId}`,
+			(type, data) => {
+				if (type !== 'message_created') return;
+				try {
+					applyIncomingMessage(normalizeMessage(data));
+				} catch {
+					// Best-effort realtime/indicator behavior; REST state remains authoritative.
+				}
+			},
+			{ onResync: () => void refreshActiveThread() }
+		);
+	}
+
+	async function refreshActiveThread() {
+		if (!activeUsername) return;
+		try {
+			messages = await getConversation(activeUsername);
+		} catch {
+			// Best-effort realtime resync; REST state remains authoritative.
 		}
 	}
 
@@ -114,6 +169,8 @@
 	async function openConversation(username) {
 		if (!username) return;
 		activeUsername = username;
+		otherUserId = null;
+		unsubscribeFromConversation();
 		loadingThread = true;
 		error = '';
 		try {
@@ -121,6 +178,12 @@
 			conversations = conversations.map((item) =>
 				item.username === username ? { ...item, unreadCount: 0 } : item
 			);
+			const myId = $authStore.user?.id;
+			const first = messages[0];
+			otherUserId = first
+				? Number(first.sender_id === myId ? first.recipient_id : first.sender_id)
+				: Number((await getPublicProfile(username)).id);
+			subscribeToConversation();
 			await goto(resolve(`/messages?with=${encodeURIComponent(username)}`), {
 				replaceState: true,
 				noScroll: true

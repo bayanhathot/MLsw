@@ -15,6 +15,7 @@ from app.schemas import CommentCreate, CommentRead, NotificationRead, PostCreate
 from app.services import forum_service, social_service
 from app.services.notification_service import notification_hub
 from app.services.community_service import community_hub
+from app.services.channel_hub import channel_hub
 
 router = APIRouter(prefix="/posts", tags=["community"])
 
@@ -64,6 +65,7 @@ async def create_post(
     db.refresh(post)
     result = forum_service.build_post(db, post, current_user.id)
     await community_hub.publish_change()
+    await channel_hub.publish(f"feed:{post.kind}", "post_created", result.model_dump(mode="json"))
     return result
 
 
@@ -126,10 +128,14 @@ async def _vote_post(post_id: int, value: int | None, user: User, db: Session):
     if value is not None and changed:
         notification = forum_service.notify(db, post.author_id, user.id, "post_vote", f"{user.username} reacted to your post.", "post", post.id)
     db.commit()
+    result = forum_service.build_post(db, post, user.id)
     if notification:
-        await notification_hub.publish(post.author_id, NotificationRead.model_validate(notification).model_dump(mode="json"))
+        notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
+        await notification_hub.publish(post.author_id, notification_payload)
+        await channel_hub.publish(f"user:{post.author_id}", "notification", notification_payload)
     await community_hub.publish_change()
-    return forum_service.build_post(db, post, user.id)
+    await channel_hub.publish(f"post:{post.id}", "vote_changed", {"score": result.score})
+    return result
 
 
 @router.post("/{post_id}/vote", response_model=PostRead)
@@ -189,10 +195,14 @@ async def create_comment(
     notification = forum_service.notify(db, post.author_id, current_user.id, "comment", f"{actor_label} commented on your post.", "post", post.id)
     db.commit()
     db.refresh(comment)
+    result = forum_service.build_comment(db, comment, current_user.id)
     if notification:
-        await notification_hub.publish(post.author_id, NotificationRead.model_validate(notification).model_dump(mode="json"))
+        notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
+        await notification_hub.publish(post.author_id, notification_payload)
+        await channel_hub.publish(f"user:{post.author_id}", "notification", notification_payload)
     await community_hub.publish_change()
-    return forum_service.build_comment(db, comment, current_user.id)
+    await channel_hub.publish(f"post:{post.id}", "comment_created", result.model_dump(mode="json"))
+    return result
 
 
 @router.delete("/{post_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -207,6 +217,7 @@ async def delete_comment(post_id: int, comment_id: int, _: None = Depends(write_
     db.commit()
     forum_service.delete_files(media_paths)
     await community_hub.publish_change()
+    await channel_hub.publish(f"post:{post_id}", "comment_deleted", {"comment_id": comment_id})
 
 
 def _visible_comment_or_404(db: Session, comment_id: int, viewer_id: int) -> ForumComment:
@@ -224,10 +235,16 @@ async def _vote_comment(comment_id: int, value: int | None, user: User, db: Sess
     if value is not None and changed:
         notification = forum_service.notify(db, comment.author_id, user.id, "comment_vote", f"{user.username} reacted to your comment.", "comment", comment.id)
     db.commit()
+    result = forum_service.build_comment(db, comment, user.id)
     if notification:
-        await notification_hub.publish(comment.author_id, NotificationRead.model_validate(notification).model_dump(mode="json"))
+        notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
+        await notification_hub.publish(comment.author_id, notification_payload)
+        await channel_hub.publish(f"user:{comment.author_id}", "notification", notification_payload)
     await community_hub.publish_change()
-    return forum_service.build_comment(db, comment, user.id)
+    await channel_hub.publish(
+        f"post:{comment.post_id}", "comment_vote_changed", {"comment_id": comment.id, "score": result.score}
+    )
+    return result
 
 
 @router.post("/comments/{comment_id}/vote", response_model=CommentRead)

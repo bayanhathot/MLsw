@@ -99,9 +99,21 @@
 			<div>
 				<p class="eyebrow">Current vibe</p>
 				<p class="prompt-preview">{$sessionStore.prompt}</p>
+				{#if $sessionStore.isChangingVibe}
+					<p class="vibe-updating" aria-live="polite">
+						<span class="spinner" aria-hidden="true"></span>
+						New vibe accepted — processing, current track keeps playing
+					</p>
+				{/if}
 			</div>
 
-			<button class="secondary-button" onclick={openPromptPanel}>Change vibe</button>
+			<button
+				class="secondary-button"
+				onclick={openPromptPanel}
+				disabled={$sessionStore.isChangingVibe}
+			>
+				{$sessionStore.isChangingVibe ? 'Updating…' : 'Change vibe'}
+			</button>
 		</section>
 	{/if}
 
@@ -134,6 +146,7 @@
 	isStopping={$sessionStore.isStopping}
 	isFeedbackPending={$sessionStore.isFeedbackPending}
 	pendingFeedback={$sessionStore.pendingFeedback}
+	isChangingVibe={$sessionStore.isChangingVibe}
 	selectedFeedback={$sessionStore.selectedFeedback}
 	playbackError={$sessionStore.playbackError}
 	onTogglePlay={sessionStore.togglePlay}
@@ -194,6 +207,39 @@
 		font-size: 15px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.vibe-updating {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 8px 0 0;
+		color: var(--accent-2);
+		font-size: 13px;
+		font-weight: 700;
+	}
+
+	.spinner {
+		display: inline-block;
+		width: 12px;
+		height: 12px;
+		flex: 0 0 auto;
+		border: 2px solid rgba(125, 183, 255, 0.25);
+		border-top-color: var(--accent-2);
+		border-radius: 50%;
+		animation: spin 0.7s linear infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation: none;
+		}
+	}
+
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.error-box {

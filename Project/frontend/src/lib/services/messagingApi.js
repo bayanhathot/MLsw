@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiRequest, backendMediaUrl } from './api.js';
+import { apiRequest, backendMediaUrl } from './api.js';
 
 /** @param {unknown} value */
 function normalizeAttachment(value) {
@@ -90,15 +90,4 @@ export async function markNotificationRead(notificationId) {
 	return normalizeNotification(
 		await apiRequest(`/notifications/${notificationId}/read`, { method: 'POST' })
 	);
-}
-
-export function notificationWebSocketUrl() {
-	if (typeof window === 'undefined') return '';
-	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	if (/^https?:\/\//.test(API_BASE_URL)) {
-		const url = new URL(`${API_BASE_URL}/ws/notifications`);
-		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-		return url.toString();
-	}
-	return `${protocol}//${window.location.host}${API_BASE_URL}/ws/notifications`;
 }

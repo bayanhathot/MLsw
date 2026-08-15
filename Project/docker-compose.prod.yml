@@ -43,6 +43,9 @@ x-backend-environment: &backend-environment
   # docs. "-1" means never unload, avoiding the cold-reload-from-disk latency
   # a request otherwise pays after 5+ minutes of inactivity.
   OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+  # Not yet used by any app code -- purely additive infrastructure, see
+  # app/core/redis_client.py.
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
 
 services:
   postgres:
@@ -108,6 +111,22 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -199,5 +218,6 @@ volumes:
   postgres_data:
   uploads_data:
   ollama_data:
+  redis_data:
   caddy_data:
   caddy_config:

@@ -7,9 +7,11 @@
 		deleteComment,
 		deletePost,
 		getComments,
+		normalizeComment,
 		voteComment,
 		votePost
 	} from '$lib/services/forumApi.js';
+	import { subscribe } from '$lib/services/realtimeSocket.js';
 	import AttachmentUploader from '$lib/components/AttachmentUploader.svelte';
 	import AttachmentMedia from '$lib/components/AttachmentMedia.svelte';
 	import { deleteAttachment } from '$lib/services/uploadApi.js';
@@ -52,13 +54,74 @@
 	/** @type {Record<number, boolean>} */
 	let commentDeleteBusy = $state({});
 	const commentsController = new AbortController();
+	/** @type {(() => void) | null} */
+	let unsubscribePostChannel = null;
 
 	onDestroy(() => {
 		commentsController.abort();
+		unsubscribeFromPostChannel();
 		for (const attachment of commentAttachments) {
 			void deleteAttachment(Number(attachment.id)).catch(() => {});
 		}
 	});
+
+	function unsubscribeFromPostChannel() {
+		if (unsubscribePostChannel) {
+			unsubscribePostChannel();
+			unsubscribePostChannel = null;
+		}
+	}
+
+	function subscribeToPostChannel() {
+		if (unsubscribePostChannel) return;
+		unsubscribePostChannel = subscribe(
+			`post:${post.id}`,
+			(type, data) => handlePostChannelEvent(type, data),
+			{
+				// No single-post refetch endpoint exists on the frontend yet,
+				// so a reconnect only resyncs the comment list, not the post's
+				// own score -- an acceptable gap for this rare edge case.
+				onResync: () => void refreshComments()
+			}
+		);
+	}
+
+	async function refreshComments() {
+		try {
+			comments = await getComments(post.id, { signal: commentsController.signal });
+			commentsLoaded = true;
+		} catch {
+			// Best-effort realtime resync; the comment list stays as-is.
+		}
+	}
+
+	/** @param {string} type @param {unknown} data */
+	function handlePostChannelEvent(type, data) {
+		const payload = /** @type {Record<string, any>} */ (data || {});
+		if (type === 'comment_created') {
+			let comment;
+			try {
+				comment = normalizeComment(payload);
+			} catch {
+				return;
+			}
+			if (comments.some((item) => item.id === comment.id)) return;
+			comments = [...comments, comment];
+			onUpdate({ ...post, commentCount: post.commentCount + 1 });
+		} else if (type === 'vote_changed') {
+			onUpdate({ ...post, score: Number(payload.score) });
+		} else if (type === 'comment_vote_changed') {
+			const commentId = Number(payload.comment_id);
+			comments = comments.map((item) =>
+				item.id === commentId ? { ...item, score: Number(payload.score) } : item
+			);
+		} else if (type === 'comment_deleted') {
+			const commentId = Number(payload.comment_id);
+			if (!comments.some((item) => item.id === commentId)) return;
+			comments = comments.filter((item) => item.id !== commentId);
+			onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - 1) });
+		}
+	}
 
 	/** @param {string} value */
 	function formatDate(value) {
@@ -71,7 +134,12 @@
 
 	async function toggleComments() {
 		commentsOpen = !commentsOpen;
-		if (!commentsOpen || commentsLoaded || commentsLoading) return;
+		if (!commentsOpen) {
+			unsubscribeFromPostChannel();
+			return;
+		}
+		subscribeToPostChannel();
+		if (commentsLoaded || commentsLoading) return;
 		commentsLoading = true;
 		error = '';
 		try {

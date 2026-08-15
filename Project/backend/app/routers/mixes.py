@@ -21,6 +21,7 @@ from app.schemas import (
 )
 from app.services import forum_service, mix_service, social_service
 from app.services.notification_service import notification_hub
+from app.services.channel_hub import channel_hub
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
     get_catalog_candidate_retriever,
@@ -240,9 +241,9 @@ async def like_mix(mix_id: int, _: None = Depends(write_rate_limit), current_use
         if notification:
             db.commit()
             db.refresh(notification)
-            await notification_hub.publish(
-                mix.owner_id, NotificationRead.model_validate(notification).model_dump(mode="json")
-            )
+            notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
+            await notification_hub.publish(mix.owner_id, notification_payload)
+            await channel_hub.publish(f"user:{mix.owner_id}", "notification", notification_payload)
     return result
 
 

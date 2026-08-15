@@ -1,6 +1,6 @@
 /** Public forum API: posts, comments, and reversible votes. */
 
-import { API_BASE_URL, apiRequest, backendMediaUrl } from './api.js';
+import { apiRequest, backendMediaUrl } from './api.js';
 
 /** @param {unknown} value @returns {'discussion'|'status'|'mix_share'} */
 function normalizePostKind(value) {
@@ -155,15 +155,4 @@ export async function voteComment(commentId, value) {
 			...(value === 0 ? {} : { body: JSON.stringify({ value }) })
 		})
 	);
-}
-
-export function communityWebSocketUrl() {
-	if (typeof window === 'undefined') return '';
-	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	if (/^https?:\/\//.test(API_BASE_URL)) {
-		const url = new URL(`${API_BASE_URL}/posts/ws/community`);
-		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-		return url.toString();
-	}
-	return `${protocol}//${window.location.host}${API_BASE_URL}/posts/ws/community`;
 }

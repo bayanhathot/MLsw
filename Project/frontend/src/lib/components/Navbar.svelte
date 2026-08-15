@@ -8,9 +8,9 @@
 		getConversations,
 		getNotifications,
 		markNotificationRead,
-		notificationWebSocketUrl,
 		normalizeNotification
 	} from '$lib/services/messagingApi.js';
+	import { onUserEvent } from '$lib/services/realtimeSocket.js';
 	import { authStore } from '$lib/stores/authStore.js';
 	import { parseUtcDate } from '$lib/utils/dates.js';
 
@@ -22,8 +22,8 @@
 	let notifications = $state([]);
 	let messageUnread = $state(0);
 	let socialLoadedFor = $state('');
-	/** @type {WebSocket | null} */
-	let socket = null;
+	/** @type {(() => void) | null} */
+	let unsubscribeUserEvents = null;
 
 	let unreadNotifications = $derived(notifications.filter((item) => !item.is_read).length);
 
@@ -32,17 +32,17 @@
 		if ($authStore.status === 'authenticated' && username && socialLoadedFor !== username) {
 			socialLoadedFor = username;
 			void loadSocialIndicators();
-			connectSocket();
+			connectUserEvents();
 		}
 		if ($authStore.status !== 'authenticated' && socialLoadedFor) {
 			socialLoadedFor = '';
 			notifications = [];
 			messageUnread = 0;
-			closeSocket();
+			disconnectUserEvents();
 		}
 	});
 
-	onDestroy(closeSocket);
+	onDestroy(disconnectUserEvents);
 
 	/** @param {string} path */
 	function isCurrent(path) {
@@ -62,32 +62,28 @@
 		}
 	}
 
-	function closeSocket() {
-		if (socket) {
-			socket.close();
-			socket = null;
+	function disconnectUserEvents() {
+		if (unsubscribeUserEvents) {
+			unsubscribeUserEvents();
+			unsubscribeUserEvents = null;
 		}
 	}
 
-	function connectSocket() {
-		closeSocket();
-		const url = notificationWebSocketUrl();
-		if (!url) return;
-		try {
-			socket = new WebSocket(url);
-			socket.onmessage = (/** @type {MessageEvent} */ event) => {
+	function connectUserEvents() {
+		disconnectUserEvents();
+		unsubscribeUserEvents = onUserEvent(
+			(type, data) => {
+				if (type !== 'notification') return;
 				try {
-					const item = normalizeNotification(JSON.parse(event.data));
+					const item = normalizeNotification(data);
 					notifications = [item, ...notifications.filter((existing) => existing.id !== item.id)];
 					if (item.kind === 'direct_message') messageUnread += 1;
 				} catch {
 					// Best-effort realtime/indicator behavior; REST state remains authoritative.
 				}
-			};
-			socket.onopen = () => socket?.send('ready');
-		} catch {
-			// Best-effort realtime/indicator behavior; REST state remains authoritative.
-		}
+			},
+			{ onResync: () => void loadSocialIndicators() }
+		);
 	}
 
 	/** @param {import('$lib/types.js').AppNotification} item */

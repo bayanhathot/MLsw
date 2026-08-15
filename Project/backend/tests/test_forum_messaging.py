@@ -240,6 +240,86 @@ def test_conversations_are_bounded_to_friends_and_paginated(client, second_clien
     assert len(limited) == 1
 
 
+def test_channel_hub_receives_typed_events_for_posts_and_comments(client, second_client, monkeypatch):
+    """channel_hub.publish is the new system running alongside
+    notification_hub/community_hub (see services/channel_hub.py): every
+    forum write should now also emit a typed event on the matching
+    "post:{id}"/"feed:{kind}" channel, plus a "user:{author_id}" mirror of
+    any Notification that was created -- without touching the old hubs."""
+
+    from unittest.mock import AsyncMock
+
+    publish = AsyncMock()
+    monkeypatch.setattr("app.routers.forum.channel_hub.publish", publish)
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+
+    post = client.post("/posts", json={"title": "Hello", "body": "world", "kind": "discussion"}).json()
+    channel, event_type, data = publish.await_args.args
+    assert channel == "feed:discussion"
+    assert event_type == "post_created"
+    assert data["id"] == post["id"]
+
+    publish.reset_mock()
+    voted = second_client.post(f"/posts/{post['id']}/vote", json={"value": 1}).json()
+    calls = {call.args[0]: call.args for call in publish.await_args_list}
+    assert calls[f"user:{post['author_id']}"][1] == "notification"
+    assert calls[f"post:{post['id']}"] == (f"post:{post['id']}", "vote_changed", {"score": voted["score"]})
+
+    publish.reset_mock()
+    comment = second_client.post(
+        f"/posts/{post['id']}/comments", json={"body": "nice", "is_anonymous": False}
+    ).json()
+    calls = {call.args[0]: call.args for call in publish.await_args_list}
+    assert calls[f"user:{post['author_id']}"][1] == "notification"
+    assert calls[f"post:{post['id']}"][1] == "comment_created"
+    assert calls[f"post:{post['id']}"][2]["id"] == comment["id"]
+
+    publish.reset_mock()
+    comment_vote = client.post(f"/posts/comments/{comment['id']}/vote", json={"value": 1}).json()
+    calls = {call.args[0]: call.args for call in publish.await_args_list}
+    assert calls[f"user:{comment['author_id']}"][1] == "notification"
+    assert calls[f"post:{post['id']}"] == (
+        f"post:{post['id']}",
+        "comment_vote_changed",
+        {"comment_id": comment["id"], "score": comment_vote["score"]},
+    )
+
+    publish.reset_mock()
+    # Only bob (the comment's author) may delete it.
+    assert second_client.delete(f"/posts/{post['id']}/comments/{comment['id']}").status_code == 204
+    channel, event_type, data = publish.await_args.args
+    assert channel == f"post:{post['id']}"
+    assert event_type == "comment_deleted"
+    assert data == {"comment_id": comment["id"]}
+
+
+def test_channel_hub_receives_message_created_on_both_conversation_channels(client, second_client, monkeypatch):
+    """"conversation:{id}" is keyed by the *other* participant's user id
+    (routers/realtime.py), so one DM must fan out as two channel_hub events
+    -- one per side's own view of the conversation -- plus the usual
+    "user:{recipient_id}" notification mirror."""
+
+    from unittest.mock import AsyncMock
+
+    publish = AsyncMock()
+    monkeypatch.setattr("app.routers.messaging.channel_hub.publish", publish)
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    _make_friends(client, second_client)
+    alice_id = client.get("/auth/me").json()["id"]
+    bob_id = second_client.get("/auth/me").json()["id"]
+
+    assert client.post("/messages", json={"recipient_username": "bob", "body": "hi bob"}).status_code == 201
+
+    calls = {call.args[0]: call.args for call in publish.await_args_list}
+    assert calls[f"user:{bob_id}"][1] == "notification"
+    assert calls[f"conversation:{bob_id}"][1] == "message_created"
+    assert calls[f"conversation:{bob_id}"][2]["body"] == "hi bob"
+    assert calls[f"conversation:{alice_id}"][1] == "message_created"
+    assert calls[f"conversation:{alice_id}"][2]["body"] == "hi bob"
+
+
 def test_notification_websocket_rejects_untrusted_origin(client):
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(

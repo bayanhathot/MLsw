@@ -14,7 +14,7 @@ export function getPipelineDebug() {
 	return apiRequest('/debug/pipeline');
 }
 
-/** Mirrors forumApi.communityWebSocketUrl()'s same-origin/proxy-safe URL construction. */
+/** Same same-origin/proxy-safe URL construction as realtimeSocket.js. */
 export function pipelineDebugWebSocketUrl() {
 	if (typeof window === 'undefined') return '';
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

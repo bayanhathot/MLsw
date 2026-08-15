@@ -23,6 +23,7 @@
 	 * isStopping?: boolean,
 	 * isFeedbackPending?: boolean,
 	 * pendingFeedback?: string | null,
+	 * isChangingVibe?: boolean,
 	 * selectedFeedback?: string | null,
 	 * playbackError?: string | null,
 	 * onTogglePlay?: () => void,
@@ -48,6 +49,7 @@
 		isStopping = false,
 		isFeedbackPending = false,
 		pendingFeedback = null,
+		isChangingVibe = false,
 		selectedFeedback = null,
 		playbackError = null,
 		onTogglePlay = () => {},
@@ -441,6 +443,13 @@
 			</div>
 		</div>
 
+		{#if isChangingVibe}
+			<p class="vibe-updating" aria-live="polite">
+				<span class="spinner" aria-hidden="true"></span>
+				New vibe accepted, processing — this track keeps playing until it's ready
+			</p>
+		{/if}
+
 		<div class="deck-controls">
 			<button
 				class="segment-button"
@@ -710,6 +719,39 @@
 		margin: 0;
 		color: #ff9aab;
 		font-size: 13px;
+	}
+
+	.vibe-updating {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+		color: var(--accent-2);
+		font-size: 13px;
+		font-weight: 700;
+	}
+
+	.spinner {
+		display: inline-block;
+		width: 12px;
+		height: 12px;
+		flex: 0 0 auto;
+		border: 2px solid rgba(125, 183, 255, 0.25);
+		border-top-color: var(--accent-2);
+		border-radius: 50%;
+		animation: spin 0.7s linear infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation: none;
+		}
+	}
+
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.hidden-audio {

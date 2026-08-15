@@ -37,6 +37,37 @@ def test_friend_request_search_and_relationship_state(client, second_client):
     assert client.get("/friends").json()[0]["username"] == "bob"
 
 
+def test_channel_hub_receives_user_notification_on_friend_request_and_accept(client, second_client, monkeypatch):
+    """social.py keeps notification_hub.publish's existing shape but now also
+    mirrors it onto channel_hub's "user:{id}" channel (see channel_hub.py)."""
+
+    from unittest.mock import AsyncMock
+
+    publish = AsyncMock()
+    monkeypatch.setattr("app.routers.social.channel_hub.publish", publish)
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    alice_id = client.get("/auth/me").json()["id"]
+    bob_id = second_client.get("/auth/me").json()["id"]
+
+    assert client.post("/friends/requests/bob").status_code == 201
+    channel, event_type, data = publish.await_args.args
+    assert channel == f"user:{bob_id}"
+    assert event_type == "notification"
+    assert data["kind"] == "friend_request"
+
+    publish.reset_mock()
+    request_id = next(
+        item["id"] for item in second_client.get("/friends/requests").json()
+        if item["sender_username"] == "alice"
+    )
+    assert second_client.post(f"/friends/requests/{request_id}/accept").status_code == 200
+    channel, event_type, data = publish.await_args.args
+    assert channel == f"user:{alice_id}"
+    assert event_type == "notification"
+    assert data["kind"] == "friend_accepted"
+
+
 def test_messages_are_denied_until_users_are_friends(client, second_client):
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")

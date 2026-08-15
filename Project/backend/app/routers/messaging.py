@@ -18,6 +18,7 @@ from app.schemas import AttachmentRead, ConversationRead, MessageCreate, Message
 from app.services import forum_service, social_service
 from app.services.auth_service import get_user_by_username
 from app.services.notification_service import notification_hub
+from app.services.channel_hub import channel_hub
 
 router = APIRouter(tags=["messaging"])
 
@@ -118,13 +119,19 @@ async def send_message(
     db.refresh(message)
     message_read = _message_read(db, message)
     if notification:
-        await notification_hub.publish(
-            recipient.id,
-            {
-                **NotificationRead.model_validate(notification).model_dump(mode="json"),
-                "direct_message": message_read.model_dump(mode="json"),
-            },
-        )
+        notification_payload = {
+            **NotificationRead.model_validate(notification).model_dump(mode="json"),
+            "direct_message": message_read.model_dump(mode="json"),
+        }
+        await notification_hub.publish(recipient.id, notification_payload)
+        await channel_hub.publish(f"user:{recipient.id}", "notification", notification_payload)
+    # "conversation:{id}" is keyed by the *other* participant's user id (see
+    # routers/realtime.py's subscribe authorization), so the same DM is one
+    # event on two differently-named channels -- one per side's own view of
+    # this conversation.
+    message_payload = message_read.model_dump(mode="json")
+    await channel_hub.publish(f"conversation:{recipient.id}", "message_created", message_payload)
+    await channel_hub.publish(f"conversation:{current_user.id}", "message_created", message_payload)
     return message_read
 
 
