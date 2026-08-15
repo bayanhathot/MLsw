@@ -1,8 +1,7 @@
 """Generated mix API and its public feed/private library."""
 
-from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.rate_limit import write_rate_limit

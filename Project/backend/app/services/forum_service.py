@@ -1,6 +1,6 @@
 """Forum persistence, response shaping, and attachment ownership rules."""
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
