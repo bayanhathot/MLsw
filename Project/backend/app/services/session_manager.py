@@ -9,6 +9,7 @@ against whichever CandidateRetriever originally served this session -- so it
 works the same whether that retriever is the local catalog or Audius.
 """
 
+import logging
 import os
 import time
 from threading import Lock
@@ -41,6 +42,8 @@ from app.services.pipeline.orchestrator import (
 )
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
 from app.services import known_broken_tracks, session_candidate_pool
+
+logger = logging.getLogger(__name__)
 
 # How many recently-played tracks a session remembers to avoid immediately
 # repeating one when advancing (requirement: continuous playback should work
@@ -769,6 +772,17 @@ def apply_feedback(
             # session on its current track rather than erroring out a live
             # session over one bad feedback mutation.
             pass
+        except Exception:
+            # Anything else genuinely unexpected (a bug, a transient DB
+            # error, ...) must not surface as a hard failure either --
+            # "Zero interruptions" means a session keeps playing through an
+            # unanticipated pipeline error the same way it already does
+            # through "nothing matched," not just the error conditions this
+            # code happened to anticipate. Logged so the underlying issue
+            # stays visible/fixable; never user-facing.
+            logger.exception(
+                "apply_feedback: unexpected error resolving session %s", session.id
+            )
 
     if session.user_id is not None and preference_key is not None:
         preference = (
@@ -864,6 +878,14 @@ def advance_session(
         # Nothing to advance to (e.g. Audius briefly unreachable); leave the
         # session on its current track rather than ending it outright.
         return serialize_session(session)
+    except Exception:
+        # Same "never a hard stop" guarantee for anything genuinely
+        # unexpected, not just the "nothing matched" case this code already
+        # anticipated -- see apply_feedback's identical guard. Logged so
+        # the underlying bug stays visible; the session just keeps playing
+        # its current track instead of surfacing a 500 that ends playback.
+        logger.exception("advance_session: unexpected error resolving session %s", session.id)
+        return serialize_session(session)
 
     pipeline_trace["vibe_understander"] = {
         "implementation": type(get_vibe_understander()).__name__,
@@ -954,6 +976,14 @@ def prepare_next(
             # Nothing to prepare ahead of time; advance_session falls back to
             # its own real resolution when it's actually called, same as it
             # always has.
+            return
+        except Exception:
+            # This is already a best-effort prefetch (see this function's
+            # docstring); an unanticipated error here must be even less
+            # visible than a NoMatchingCandidate, not more -- log it and
+            # let advance_session() do its own (now equally resilient)
+            # real resolution when it's actually needed.
+            logger.exception("prepare_next: unexpected error resolving session %s", session.id)
             return
 
         # Re-fetch and re-validate right before writing: stop_session() or

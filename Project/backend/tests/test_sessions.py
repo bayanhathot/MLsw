@@ -991,6 +991,26 @@ def test_advance_leaves_session_unchanged_when_nothing_matches(client, monkeypat
     assert response.json()["nowPlaying"]["title"] == session["nowPlaying"]["title"]
 
 
+def test_advance_leaves_session_unchanged_on_an_unanticipated_pipeline_error(client, monkeypatch):
+    # "Zero interruptions" must hold even for a genuinely unexpected bug in
+    # the pipeline (a DB error, a bad assumption, anything not already
+    # anticipated as NoMatchingCandidate) -- advance must still return 200
+    # with the session left exactly where it was, not a 500 that ends
+    # playback client-side.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated unexpected pipeline failure")
+
+    monkeypatch.setattr("app.services.pipeline.segment_selector.LibrosaSegmentSelector.select", boom)
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    assert response.json()["nowPlaying"]["title"] == session["nowPlaying"]["title"]
+
+
 def test_feedback_keeps_using_audius_on_every_re_resolution(client, monkeypatch):
     """Coaching feedback must keep re-resolving through Audius on every
     request, not just the one that created the session -- not regress to a

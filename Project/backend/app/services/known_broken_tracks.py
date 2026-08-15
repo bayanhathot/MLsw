@@ -19,6 +19,7 @@ in-memory-only registry would rarely accumulate useful history.
 
 from datetime import timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.time import utc_now
@@ -55,29 +56,45 @@ def is_known_broken(db: Session, track_key: str) -> bool:
 
 
 def mark_broken(db: Session, track: Track, fallback_reason: str) -> None:
-    """Upserts a KnownBrokenTrack row for `track`. Does not commit -- the
-    caller controls the transaction boundary, same as every other mutation
-    in session_manager.py's resolution flow."""
+    """Upserts a KnownBrokenTrack row for `track`, committing it immediately
+    -- unlike every other mutation in session_manager.py's resolution flow,
+    this can't wait for the caller's own db.commit(): prepare_next() and
+    advance_session() can run concurrently for the same session by design
+    (PHASE_C_PREFETCH_DESIGN.md), so two separate requests/DB sessions can
+    discover the same newly-broken track at nearly the same moment and both
+    try to insert the same track_key. The insert runs inside a
+    db.begin_nested() savepoint so a losing IntegrityError only rolls back
+    this one row -- not any unrelated pending work the caller, or an
+    earlier candidate in the same retry loop, already staged on this
+    Session -- and the loser then just updates the winner's row instead."""
 
     track_key = _track_key(track)
     row = db.get(KnownBrokenTrack, track_key)
     if row is None:
-        db.add(
-            KnownBrokenTrack(
-                track_key=track_key,
-                source=track.source,
-                source_track_id=track.source_track_id,
-                title=track.title,
-                fallback_reason=fallback_reason,
-                failure_count=1,
-            )
-        )
-        # Flushed (not committed -- the caller still owns that) so a second
-        # mark_broken call for the same track_key within the same
-        # transaction sees this row via db.get() above instead of also
-        # taking the insert branch and colliding on the primary key.
-        db.flush()
-        return
+        try:
+            with db.begin_nested():
+                db.add(
+                    KnownBrokenTrack(
+                        track_key=track_key,
+                        source=track.source,
+                        source_track_id=track.source_track_id,
+                        title=track.title,
+                        fallback_reason=fallback_reason,
+                        failure_count=1,
+                    )
+                )
+                db.flush()
+        except IntegrityError:
+            row = db.get(KnownBrokenTrack, track_key)
+            if row is None:
+                # A concurrent insert lost the race and yet no row is
+                # visible -- shouldn't happen (the conflict implies one
+                # exists), but never leave this uncommitted/unresolved.
+                return
+        else:
+            db.commit()
+            return
     row.failure_count += 1
     row.fallback_reason = fallback_reason
     row.last_seen_at = utc_now()
+    db.commit()
