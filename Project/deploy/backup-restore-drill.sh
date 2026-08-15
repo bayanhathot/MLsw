@@ -32,6 +32,12 @@ postgres_user="$(grep -E '^POSTGRES_USER=' .env | tail -n1 | cut -d= -f2-)"
 postgres_db="$(grep -E '^POSTGRES_DB=' .env | tail -n1 | cut -d= -f2-)"
 : "${postgres_user:?POSTGRES_USER is missing from .env}"
 : "${postgres_db:?POSTGRES_DB is missing from .env}"
+# See backup.sh's identical comment: Compose needs these to interpolate the
+# whole file even for an `exec` against postgres alone. Exported so
+# backup.sh/restore.sh, invoked below as separate processes, inherit them
+# too.
+export BACKEND_IMAGE="${BACKEND_IMAGE:-unused}"
+export FRONTEND_IMAGE="${FRONTEND_IMAGE:-unused}"
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 
 # Always drop the scratch database/volume, whether the drill below passes,

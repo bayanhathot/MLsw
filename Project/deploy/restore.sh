@@ -44,6 +44,10 @@ default_db="$(grep -E '^POSTGRES_DB=' .env | tail -n1 | cut -d= -f2-)"
 : "${default_db:?POSTGRES_DB is missing from .env}"
 target_db="${target_db:-${default_db}}"
 target_volume="${target_volume:-${VOLUME_PREFIX}_uploads_data}"
+# See backup.sh's identical comment: Compose needs these to interpolate the
+# whole file even for an `exec` against postgres alone.
+export BACKEND_IMAGE="${BACKEND_IMAGE:-unused}"
+export FRONTEND_IMAGE="${FRONTEND_IMAGE:-unused}"
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 
 if [ -n "${db_backup}" ]; then

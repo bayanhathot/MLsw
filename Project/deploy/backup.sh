@@ -25,6 +25,15 @@ postgres_user="$(grep -E '^POSTGRES_USER=' .env | tail -n1 | cut -d= -f2-)"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "${BACKUP_ROOT}"
 
+# docker-compose.prod.yml requires BACKEND_IMAGE/FRONTEND_IMAGE for the
+# migrate/backend/frontend services' `image:` interpolation -- Compose
+# validates the *whole* file before running any subcommand, including an
+# `exec` against postgres, which never references either. remote-deploy.sh
+# always has real values in scope when it runs; this script doesn't, so it
+# supplies harmless placeholders when nothing is already set (never used to
+# actually pull/run those services here).
+export BACKEND_IMAGE="${BACKEND_IMAGE:-unused}"
+export FRONTEND_IMAGE="${FRONTEND_IMAGE:-unused}"
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 
 db_backup="${BACKUP_ROOT}/db-${timestamp}.sql.gz"
