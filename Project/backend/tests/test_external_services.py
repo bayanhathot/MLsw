@@ -134,6 +134,60 @@ def test_prompt_parser_uses_deterministic_fallback_when_llm_fails(monkeypatch):
     assert "Never Existed" not in intent.search_query
 
 
+def test_ollama_think_mode_is_disabled_by_default_but_configurable(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    monkeypatch.delenv("OLLAMA_THINK_ENABLED", raising=False)
+
+    payloads = []
+
+    def fake_post(*args, **kwargs):
+        payloads.append(kwargs["json"])
+        return httpx.Response(
+            200,
+            json={
+                "response": '{"mood":"balanced","energy":"medium","vocals":"neutral","genres":[],"search_query":"x"}'
+            },
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+
+    prompt_parser.parse_prompt("chill lofi beats")
+    assert payloads[0]["think"] is False  # unset env var -> the safer default
+
+    monkeypatch.setenv("OLLAMA_THINK_ENABLED", "true")
+    prompt_parser.parse_prompt("chill lofi beats")
+    assert payloads[1]["think"] is True  # explicitly opted in via the env var
+
+
+def test_ollama_keep_alive_defaults_to_never_unload_but_is_configurable(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    monkeypatch.delenv("OLLAMA_KEEP_ALIVE", raising=False)
+
+    payloads = []
+
+    def fake_post(*args, **kwargs):
+        payloads.append(kwargs["json"])
+        return httpx.Response(
+            200,
+            json={
+                "response": '{"mood":"balanced","energy":"medium","vocals":"neutral","genres":[],"search_query":"x"}'
+            },
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+
+    prompt_parser.parse_prompt("chill lofi beats")
+    assert payloads[0]["keep_alive"] == "-1"  # unset env var -> never unload
+
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "30m")
+    prompt_parser.parse_prompt("chill lofi beats")
+    assert payloads[1]["keep_alive"] == "30m"  # passed through as-is, unparsed
+
+
 def test_valid_llm_classification_cannot_replace_catalog_search_text(monkeypatch):
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
     monkeypatch.setenv("OLLAMA_MODEL", "test-model")

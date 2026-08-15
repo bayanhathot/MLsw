@@ -258,6 +258,22 @@ def parse_prompt(prompt: str) -> PromptIntent:
     ok = False
     try:
         timeout_seconds = max(0.5, min(20.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
+        # Qwen3 models default to "thinking mode" on in Ollama, which emits a
+        # hidden reasoning block before the real answer and adds real latency
+        # to this classification-only call -- off by default here since
+        # that's the safer choice until a given deployment's GPU is confirmed
+        # to handle it within OLLAMA_TIMEOUT_SECONDS; flip per-environment via
+        # the env var alone, no code change needed.
+        think_enabled = os.getenv("OLLAMA_THINK_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+        # Ollama unloads an idle model from memory after its keep-alive window
+        # (5 minutes by default), so a request after any gap pays a full
+        # reload-from-disk before it can even start generating. A per-request
+        # "keep_alive" overrides the server-level default on every call (per
+        # Ollama's API docs), refreshing the timer on each real use on top of
+        # the container-level OLLAMA_KEEP_ALIVE setting. Passed through as-is
+        # -- Ollama accepts its own duration syntax directly ("-1", "30m",
+        # "1h"), so this never tries to parse/validate the format itself.
+        keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
         with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
             response = client.post(
                 f"{base_url}/api/generate",
@@ -269,6 +285,8 @@ def parse_prompt(prompt: str) -> PromptIntent:
                     # is structurally guaranteed valid, not just instructed.
                     "format": PromptIntent.model_json_schema(),
                     "stream": False,
+                    "think": think_enabled,
+                    "keep_alive": keep_alive,
                 },
             )
             response.raise_for_status()

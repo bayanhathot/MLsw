@@ -32,6 +32,17 @@ x-backend-environment: &backend-environment
   OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
   OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-15}
   OLLAMA_MAX_CONCURRENCY: ${OLLAMA_MAX_CONCURRENCY:-4}
+  # Qwen3's "thinking mode" adds real latency to the classification call and
+  # is the likely cause of Ollama call timeouts on unconfirmed GPUs -- off by
+  # default to reduce timeout risk; set to true once a deployment's GPU is
+  # confirmed to handle it within OLLAMA_TIMEOUT_SECONDS.
+  OLLAMA_THINK_ENABLED: ${OLLAMA_THINK_ENABLED:-false}
+  # How long Ollama keeps the model resident in memory (server-level default,
+  # also wired into the "ollama" service below); prompt_parser.py additionally
+  # sends this on every request, which refreshes the timer per Ollama's own
+  # docs. "-1" means never unload, avoiding the cold-reload-from-disk latency
+  # a request otherwise pays after 5+ minutes of inactivity.
+  OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
 
 services:
   postgres:
@@ -81,6 +92,12 @@ services:
   # `docker compose up`: `docker compose exec ollama ollama pull qwen3:8b`.
   ollama:
     image: ollama/ollama:0.11.4
+    environment:
+      # Ollama's own server-level env var (read natively by the ollama
+      # binary) -- same value as the backend's copy above, kept in sync so
+      # the container-level default and prompt_parser.py's per-request
+      # override agree.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
     volumes:
       - ollama_data:/root/.ollama
     expose:

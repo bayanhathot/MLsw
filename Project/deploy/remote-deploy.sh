@@ -45,7 +45,19 @@ if [ "${ollama_ready}" -eq 1 ]; then
   # a re-download once the model is already present), so this is safe and
   # cheap to run on every deploy, not just the first.
   echo "Ensuring Ollama model ${ollama_model} is pulled..."
-  if ! "${compose[@]}" exec -T ollama ollama pull "${ollama_model}"; then
+  if "${compose[@]}" exec -T ollama ollama pull "${ollama_model}"; then
+    # Force the model into memory now, at deploy time, rather than letting
+    # the first real classification request pay for a cold load from disk --
+    # Ollama unloads an idle model after its keep-alive window (see
+    # OLLAMA_KEEP_ALIVE) but nothing loads it back in until something asks.
+    # Same never-fail-the-deploy principle as the pull step above.
+    echo "Warming up Ollama model ${ollama_model}..."
+    if ! "${compose[@]}" exec -T ollama ollama run "${ollama_model}" "ok"; then
+      echo "warning: failed to warm up ${ollama_model}; the first real" >&2
+      echo "request will pay the cold-load cost instead. Warm it up" >&2
+      echo "manually: docker compose exec ollama ollama run ${ollama_model} ok" >&2
+    fi
+  else
     echo "warning: failed to pull ${ollama_model}; the app keeps working via" >&2
     echo "the deterministic prompt-parse fallback until this is retried" >&2
     echo "manually: docker compose exec ollama ollama pull ${ollama_model}" >&2
