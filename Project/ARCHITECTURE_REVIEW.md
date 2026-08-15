@@ -858,7 +858,20 @@ auto-deployed from `main` on green CI.
   redeploys that SHA's already-published images via
   `deploy/remote-deploy.sh` with no rebuild, using that SHA's own
   Compose/Caddy/deploy-script definitions.
-  **Drill performed:** <!-- ROLLBACK_DRILL_DETAILS -->
+  **Drill performed:** live on 2026-08-15, rolling back to
+  `10ef342609eb59cb8f374d7425203f076d9aacf8`. Confirmed via `docker ps` on
+  the VM that both `cuemix-production-backend-1` and
+  `cuemix-production-frontend-1` were running images tagged with that SHA,
+  and the job's own health-endpoint check passed. Rolled forward again
+  afterward. This drill caught a second real bug: the workflow's
+  `concurrency.group` was keyed only by `github.ref`, which is
+  `refs/heads/main` for both an ordinary push to `main` *and* a
+  `workflow_dispatch` run launched against `main` -- with
+  `cancel-in-progress: true`, a rollback/drill dispatch could (and did)
+  silently cancel an in-flight push's own test/build/publish/deploy job
+  before its images ever published, which is why the first "roll forward
+  to latest" attempt failed with "not found." `workflow_dispatch` runs now
+  get their own concurrency group, keyed by `run_id`.
 - **External uptime check:**
   [`.github/workflows/uptime-check.yml`](.github/workflows/uptime-check.yml#L1)
   curls `$PUBLIC_BASE_URL/api/db-health` every 15 minutes and opens/updates
