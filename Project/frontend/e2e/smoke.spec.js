@@ -96,6 +96,14 @@ async function mockApi(page, { authenticated = false } = {}) {
 			};
 		} else if (path === '/api/notifications' || path === '/api/conversations') {
 			payload = [];
+		} else if (path === '/api/debug/pipeline') {
+			// PipelineDebugPanel probes this on every page load, logged in or
+			// not (no login required by design, see routers/debug.py) -- the
+			// real backend 404s here whenever ENABLE_PIPELINE_DEBUG is off
+			// (the default), so this mirrors that rather than treating it as
+			// an unfixtured/unexpected call.
+			status = 404;
+			payload = { detail: 'Not found.' };
 		} else {
 			unexpectedRequests.push(`${request.method()} ${path}`);
 			status = 501;
