@@ -87,15 +87,40 @@ Performance and Concurrency criteria, in addition to the normal pytest gate:
   python -m scripts.eval_llm_reasoning
   ```
 
-  **Status: not yet run against a live model.** No Ollama instance was
-  reachable from the environment this script was written in. It needs to
-  be run against the deployment where `OLLAMA_MODEL` is actually pulled
-  (`docker-compose.prod.yml`'s `ollama` service on the Azure VM) — via
-  `docker compose --env-file .env --file docker-compose.prod.yml exec
-  backend python -m scripts.eval_llm_reasoning` — once this code has been
-  deployed there. This section should be updated with the real result
-  (pass/fail, exact percentages, latency, date, commit) the first time
-  that happens, whether it passes or not.
+  **Last verified result (2026-08-15, commit `74b9f06`, run live against
+  `docker-compose.prod.yml`'s `ollama` service on the Azure VM,
+  `qwen3:8b`):** **PASS.** Full reply:
+
+  > Track A: 120 BPM
+  > Track B: 128 BPM
+  >
+  > To calculate the percentage increase in tempo: (128 − 120) / 120 × 100
+  > = 6.7%
+  >
+  > So, the tempo increases by **6.7%** when transitioning from Track A
+  > (120 BPM) to Track B (128 BPM).
+
+  Numeric check: expected 6.7%, extracted 6.7% — **PASS** (exact match,
+  well within the ±1% tolerance). Context-retention check: both original
+  BPM values present, not hallucinated — **PASS**. Script-measured
+  round-trip latency: **22.7s** (`~45s` wall-clock including the
+  `docker compose exec` invocation overhead).
+
+  **Caveat worth flagging, not glossing over:** that 22.7s is well past
+  `prompt_parser.py`'s production `OLLAMA_TIMEOUT_SECONDS` default of
+  **3.0s**. This eval's 5-turn exchange is heavier than the single-shot
+  classification call `parse_prompt()` actually makes, so it isn't
+  proof the production path times out too — but it's close enough to
+  be a real open question, not a settled one. Worth measuring the
+  single-shot call's actual latency on this VM before trusting that
+  Ollama refinement succeeds more often than it silently falls back to
+  the deterministic parse in production.
+
+  First run (same day, same commit's predecessor `cb55619`) failed with
+  the script's own 10s default timeout before this fix
+  (`scripts/eval_llm_reasoning.py` wasn't even present in the deployed
+  image yet — see `74b9f06`, which added `COPY scripts ./scripts` to
+  `backend/Dockerfile`, a pre-existing gap this eval surfaced).
 
 ## Tests and checks
 

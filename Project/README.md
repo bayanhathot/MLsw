@@ -57,7 +57,7 @@ docker compose exec -e ALLOW_DEMO_SEED=true backend python -m app.seed
 | Public profiles, mutual friends, friend-only DMs, live/durable notifications, block/report | Implemented |
 | Music Identity analytics (listening history, period filters, visibility controls) | Implemented; a "Listening DNA" ML feature is a stable but deliberately unimplemented contract |
 | Trained ranking/recommendation model | Deliberately not implemented |
-| LLM prompt refinement | Implemented; local Ollama (sole option) or off (`VIBE_LLM_PROVIDER=none`). Concurrency (bounded admission, never blocks/crashes under load) verified 2026-08-15: 20 concurrent callers vs. a limit of 4 → high-water-mark 4/4, 0 failures — see [backend/README.md#evaluations](backend/README.md#evaluations). Math/context reasoning eval written but not yet run against a live model — pending. |
+| LLM prompt refinement | Implemented; local Ollama (sole option) or off (`VIBE_LLM_PROVIDER=none`). Verified 2026-08-15 against the live Azure VM (`qwen3:8b`): Concurrency (bounded admission, never blocks/crashes under load) — 20 concurrent callers vs. a limit of 4 → high-water-mark 4/4, 0 failures. Performance (multi-turn math + context retention) — PASS, exact 6.7% tempo-increase answer, both check types passed; see [backend/README.md#evaluations](backend/README.md#evaluations) for the full transcript and a caveat about production's shorter timeout. |
 | CI | Every push/PR runs backend tests (80% coverage gate), frontend checks/tests/e2e, and container builds |
 | Azure CD | Live at `https://sweng-group-18.eastus.cloudapp.azure.com`; auto-deploys `main` on green CI — see [deploy/README.md](deploy/README.md) |
 
