@@ -130,6 +130,53 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # remote-deploy.sh's own pull/warm-up step only runs during an actual
+  # push-triggered deploy (see cuemix-ci-cd.yml: `on: push`) -- it never
+  # fires on a plain VM reboot or `docker compose restart ollama`. Since
+  # `ollama` above uses `restart: unless-stopped`, a restart brings the
+  # container back with the model file still on the persisted `ollama_data`
+  # volume but nothing loaded into memory, and nothing re-checks it: the app
+  # silently reverts to the deterministic prompt-parse fallback until the
+  # next deploy or a manual `ollama pull`/`ollama run`. This sidecar is the
+  # backstop for exactly that gap -- it doesn't run its own server (reuses
+  # the same image purely for its `ollama` CLI, pointed at the real server
+  # via OLLAMA_HOST instead of starting one with `ollama serve`) and loops
+  # forever, self-healing on every start and periodically thereafter so a
+  # model that silently drops out mid-run also gets reloaded, not just once
+  # at boot.
+  ollama-keepalive:
+    image: ollama/ollama:0.11.4
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -u
+        model="$${OLLAMA_MODEL:-qwen3:8b}"
+        echo "ollama-keepalive: watching over $${model} on $${OLLAMA_HOST}"
+        while true; do
+          if ollama list >/dev/null 2>&1; then
+            if ! ollama list | awk '{print $$1}' | grep -qxF "$${model}"; then
+              echo "ollama-keepalive: $${model} missing, pulling..."
+              ollama pull "$${model}" || echo "ollama-keepalive: pull failed, will retry next cycle" >&2
+            fi
+            if ! ollama ps | awk '{print $$1}' | grep -qxF "$${model}"; then
+              echo "ollama-keepalive: $${model} not loaded, warming up..."
+              ollama run "$${model}" ok >/dev/null 2>&1 || echo "ollama-keepalive: warm-up failed, will retry next cycle" >&2
+            fi
+          else
+            echo "ollama-keepalive: server not reachable yet, will retry" >&2
+          fi
+          sleep 180
+        done
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   redis:
     image: redis:7.4-alpine
     volumes:

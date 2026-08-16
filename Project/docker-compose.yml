@@ -201,6 +201,15 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # NOT mirrored here on purpose (see docker-compose.prod.yml's
+  # ollama-keepalive for the real fix and its full rationale): local dev
+  # defaults VIBE_LLM_PROVIDER=none and never auto-pulls a model today, so a
+  # keepalive loop here would silently start downloading the multi-GB
+  # OLLAMA_MODEL on every `docker compose up` for developers who never asked
+  # for Ollama at all -- that fails the "low-cost" bar this fix needs to
+  # clear locally, even though it's the right call in production where the
+  # model is already expected to be present.
+
 volumes:
   postgres_data:
   ollama_data:
