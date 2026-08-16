@@ -153,13 +153,13 @@
 				href={resolve('/feed')}
 				onclick={() => (menuOpen = false)}>Discover</a
 			>
-			<a
-				class:active={isCurrent('/community') || isCurrent('/forum')}
-				class="nav-link"
-				href={resolve('/community')}
-				onclick={() => (menuOpen = false)}>Community</a
-			>
 			{#if $authStore.status === 'authenticated'}<a
+					class:active={isCurrent('/community') || isCurrent('/forum')}
+					class="nav-link"
+					href={resolve('/community')}
+					onclick={() => (menuOpen = false)}>Community</a
+				>
+				<a
 					class:active={isCurrent('/library')}
 					class="nav-link"
 					href={resolve('/library')}

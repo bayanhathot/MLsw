@@ -51,19 +51,21 @@ def test_malformed_and_expired_subjects_are_unauthorized(client):
 
 
 def test_optional_auth_endpoint_degrades_to_anonymous_on_stale_cookie(client):
-    # Guest-friendly routes must keep serving public content instead of 401ing
-    # a visitor whose cookie has expired or gone corrupt.
+    # Guest-friendly routes (unlike /posts/feed, which is Community and
+    # requires a real session -- see test_community_requires_auth.py) must
+    # keep serving public content instead of 401ing a visitor whose cookie
+    # has expired or gone corrupt.
     assert client.get("/mixes/feed").status_code == 200
 
     client.cookies.set(
         "cuemix_access_token", create_access_token("1", expires_delta=timedelta(seconds=-1))
     )
     assert client.get("/mixes/feed").status_code == 200
-    assert client.get("/posts/feed").status_code == 200
+    assert client.get("/posts/feed").status_code == 401
 
     client.cookies.set("cuemix_access_token", "not-a-token")
     assert client.get("/mixes/feed").status_code == 200
-    assert client.get("/posts/feed").status_code == 200
+    assert client.get("/posts/feed").status_code == 401
 
     # A required-auth endpoint must still reject the same stale cookie.
     assert client.get("/auth/me").status_code == 401

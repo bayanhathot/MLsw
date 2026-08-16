@@ -104,14 +104,21 @@ def public_friends(
     current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
+    # Deliberately guest-viewable, unlike the rest of this router: this is
+    # part of the public profile page (routes/users/[username]), the same
+    # feature as profiles.py's public_profile/public_music_identity/
+    # public_user_mixes -- none of which are gated either -- not the
+    # Community feed/social-graph-management surface this task's auth
+    # gating targets.
     user = _user_or_404(db, username)
-    if current_user is not None and social_service.has_block(db, user.id, current_user.id):
+    viewer_id = current_user.id if current_user else None
+    if viewer_id is not None and social_service.has_block(db, user.id, viewer_id):
         raise HTTPException(status_code=404, detail="Profile not found.")
     ids = social_service.friend_ids(db, user.id)
     if not ids:
         return []
     users = db.query(User).filter(User.id.in_(ids)).order_by(User.username.asc()).limit(100).all()
-    return [social_service.public_user_card(db, item, None) for item in users]
+    return [social_service.public_user_card(db, item, viewer_id) for item in users]
 
 
 @router.get("/friends/requests", response_model=list[FriendRequestRead])

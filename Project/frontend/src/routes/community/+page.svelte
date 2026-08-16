@@ -62,12 +62,29 @@
 	let refreshTimer = null;
 	/** @type {(() => void)[]} */
 	let feedUnsubscribers = [];
+	let initializedFor = $state('');
 
 	onMount(() => {
 		const requested = page.url.searchParams.get('tab');
 		activeTab = isValidTab(requested) ? requested : 'explore';
-		void loadActive();
-		subscribeToFeed(activeTab);
+	});
+
+	// Community is members-only end to end (see routers/forum.py and
+	// routers/social.py, which now require a real session on every read and
+	// write) -- same redirect-on-guest pattern as messages/library/profile,
+	// gating the initial load too so a signed-out visitor never fires a
+	// doomed request instead of just being sent to /login.
+	$effect(() => {
+		if ($authStore.status === 'guest') {
+			void goto(resolve('/login'));
+			return;
+		}
+		const username = $authStore.user?.username || '';
+		if ($authStore.status === 'authenticated' && username && initializedFor !== username) {
+			initializedFor = username;
+			void loadActive();
+			subscribeToFeed(activeTab);
+		}
 	});
 
 	onDestroy(() => {
@@ -305,6 +322,13 @@
 
 <svelte:head><title>Community | Cuemix</title></svelte:head>
 
+{#if $authStore.status !== 'authenticated'}
+	<main class="community-page">
+		<p class="redirect-notice">
+			{$authStore.status === 'checking' ? 'Checking your session…' : 'Redirecting to sign in…'}
+		</p>
+	</main>
+{:else}
 <main class="community-page">
 	<header class="hero">
 		<div>
@@ -492,12 +516,19 @@
 		</div>
 	{/if}
 </main>
+{/if}
 
 <style>
 	.community-page {
 		width: min(1180px, 100%);
 		margin: 0 auto;
 		padding: 42px 0 110px;
+	}
+	.redirect-notice {
+		display: grid;
+		min-height: 40vh;
+		place-content: center;
+		color: #8fa2bc;
 	}
 	.hero {
 		display: flex;

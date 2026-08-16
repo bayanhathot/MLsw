@@ -9,7 +9,7 @@ from app.database.database import get_db
 from app.database.models.forum import ForumComment, ForumCommentVote, ForumPost, ForumPostVote
 from app.database.models.mix import Mix
 from app.database.models.user import User
-from app.routers.auth import get_current_user, get_optional_current_user
+from app.routers.auth import get_current_user
 from app.schemas import CommentCreate, CommentRead, NotificationRead, PostCreate, PostRead, VoteRequest
 from app.services import forum_service, social_service
 from app.services.channel_hub import channel_hub
@@ -70,18 +70,16 @@ def feed(
     mode: str = Query(default="explore", pattern="^(explore|friends|discussions)$"),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
-    current_user: User | None = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(ForumPost)
-    blocked_ids = social_service.blocked_user_ids(db, current_user.id) if current_user else set()
+    blocked_ids = social_service.blocked_user_ids(db, current_user.id)
     if blocked_ids:
         query = query.filter(~ForumPost.author_id.in_(blocked_ids))
     if mode == "discussions":
         query = query.filter(ForumPost.kind == "discussion", ForumPost.visibility == "public")
     elif mode == "friends":
-        if current_user is None:
-            raise HTTPException(status_code=401, detail="Sign in to see your friends feed.")
         ids = social_service.friend_ids(db, current_user.id) | {current_user.id}
         query = query.filter(
             ForumPost.author_id.in_(ids),
@@ -90,17 +88,17 @@ def feed(
     else:
         query = query.filter(ForumPost.visibility == "public")
     posts = query.order_by(ForumPost.created_at.desc(), ForumPost.id.desc()).offset(offset).limit(limit).all()
-    return [forum_service.build_post(db, item, current_user.id if current_user else None) for item in posts]
+    return [forum_service.build_post(db, item, current_user.id) for item in posts]
 
 
 @router.get("/{post_id}", response_model=PostRead)
 def get_post(
     post_id: int,
-    current_user: User | None = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    post = _visible_or_404(db, post_id, current_user.id if current_user else None)
-    return forum_service.build_post(db, post, current_user.id if current_user else None)
+    post = _visible_or_404(db, post_id, current_user.id)
+    return forum_service.build_post(db, post, current_user.id)
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -159,17 +157,16 @@ def list_comments(
     post_id: int,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: User | None = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _visible_or_404(db, post_id, current_user.id if current_user else None)
+    _visible_or_404(db, post_id, current_user.id)
     query = db.query(ForumComment).filter_by(post_id=post_id)
-    if current_user is not None:
-        blocked_ids = social_service.blocked_user_ids(db, current_user.id)
-        if blocked_ids:
-            query = query.filter(~ForumComment.author_id.in_(blocked_ids))
+    blocked_ids = social_service.blocked_user_ids(db, current_user.id)
+    if blocked_ids:
+        query = query.filter(~ForumComment.author_id.in_(blocked_ids))
     comments = query.order_by(ForumComment.created_at.asc()).offset(offset).limit(limit).all()
-    return [forum_service.build_comment(db, item, current_user.id if current_user else None) for item in comments]
+    return [forum_service.build_comment(db, item, current_user.id) for item in comments]
 
 
 @router.post("/{post_id}/comments", response_model=CommentRead, status_code=status.HTTP_201_CREATED)
