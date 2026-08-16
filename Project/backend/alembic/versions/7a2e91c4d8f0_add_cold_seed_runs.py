@@ -23,9 +23,8 @@ def upgrade() -> None:
         sa.Column("random_seed", sa.Integer(), nullable=False),
         sa.Column("summary_json", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.UniqueConstraint("version", name="uq_cold_seed_runs_version"),
     )
-    op.create_index("ix_cold_seed_runs_version", "cold_seed_runs", ["version"])
+    op.create_index("ix_cold_seed_runs_version", "cold_seed_runs", ["version"], unique=True)
 
 
 def downgrade() -> None:
