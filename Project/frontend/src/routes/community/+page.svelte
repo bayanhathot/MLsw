@@ -329,193 +329,197 @@
 		</p>
 	</main>
 {:else}
-<main class="community-page">
-	<header class="hero">
-		<div>
-			<p class="eyebrow">Music is better together</p>
-			<h1>Community</h1>
-			<p>
-				Share what you are hearing, follow the sound of your friends, and meet listeners through
-				music.
-			</p>
-		</div>
-	</header>
-
-	<nav class="tabs" aria-label="Community sections">
-		{#each tabOptions as item (item[0])}
-			<button class:active={activeTab === item[0]} type="button" onclick={() => switchTab(item[0])}
-				>{item[1]}</button
-			>
-		{/each}
-	</nav>
-
-	{#if error}<div class="notice error" role="alert">{error}</div>{/if}
-
-	{#if activeTab === 'people'}
-		<section class="people-layout">
-			<div class="people-main">
-				<form
-					class="search-card"
-					onsubmit={(event) => {
-						event.preventDefault();
-						void runSearch();
-					}}
-				>
-					<div>
-						<p class="eyebrow">Find your people</p>
-						<h2>Search listeners</h2>
-					</div>
-					<div class="search-row">
-						<input
-							bind:value={query}
-							placeholder="Search by username or display name"
-							autocomplete="off"
-						/><button type="submit" disabled={searching || !query.trim()}
-							>{searching ? 'Searching…' : 'Search'}</button
-						>
-					</div>
-				</form>
-				{#if people.length}<div class="user-list">
-						{#each people as user (user.id)}<UserCard
-								{user}
-								busy={peopleBusy[user.username]}
-								onConnect={connect}
-								onCancel={cancel}
-								onAccept={accept}
-								onDecline={decline}
-							/>{/each}
-					</div>
-				{:else if query && !searching}<div class="empty">
-						No listeners matched that search.
-					</div>{/if}
+	<main class="community-page">
+		<header class="hero">
+			<div>
+				<p class="eyebrow">Music is better together</p>
+				<h1>Community</h1>
+				<p>
+					Share what you are hearing, follow the sound of your friends, and meet listeners through
+					music.
+				</p>
 			</div>
-			<aside>
-				<section class="side-card">
-					<p class="eyebrow">Requests</p>
-					<h3>Friend requests</h3>
-					{#each requests.filter((r) => r.receiver_username === $authStore.user?.username) as request (request.id)}
-						{#if request.other_user}<UserCard
-								user={{
-									...request.other_user,
-									displayName: request.other_user.display_name,
-									avatarUrl: request.other_user.avatar_url,
-									musicInterests: request.other_user.music_interests,
-									friendCount: request.other_user.friend_count,
-									mutualFriendCount: request.other_user.mutual_friend_count,
-									relationshipStatus: 'request_received'
-								}}
-								busy={peopleBusy[request.other_user.username]}
-								onAccept={accept}
-								onDecline={decline}
-							/>{/if}
-					{:else}<p class="muted">No incoming requests.</p>{/each}
-				</section>
-				<section class="side-card">
-					<p class="eyebrow">Your circle</p>
-					<h3>{friends.length} friends</h3>
-					<div class="friend-mini">
-						{#each friends.slice(0, 5) as friend (friend.id)}<a
-								href={resolve(`/users/${encodeURIComponent(friend.username)}`)}
-								>{friend.displayName || friend.username}<span>@{friend.username}</span></a
-							>{/each}
-					</div>
-				</section>
-			</aside>
-		</section>
-	{:else}
-		<div class="feed-layout">
-			<section class="stream">
-				{#if $authStore.status === 'authenticated'}
-					<form class="composer" onsubmit={handlePost}>
-						<div class="composer-heading">
-							<div class="composer-avatar">
-								{($authStore.user?.username || 'ZX').slice(0, 2).toUpperCase()}
-							</div>
-							<div>
-								<strong
-									>{activeTab === 'discussions'
-										? 'Start a music discussion'
-										: "What's playing?"}</strong
-								><span
-									>{activeTab === 'friends'
-										? 'Visible to friends'
-										: activeTab === 'discussions'
-											? 'Ask, compare, or debate music'
-											: 'Share with the Cuemix community'}</span
-								>
-							</div>
+		</header>
+
+		<nav class="tabs" aria-label="Community sections">
+			{#each tabOptions as item (item[0])}
+				<button
+					class:active={activeTab === item[0]}
+					type="button"
+					onclick={() => switchTab(item[0])}>{item[1]}</button
+				>
+			{/each}
+		</nav>
+
+		{#if error}<div class="notice error" role="alert">{error}</div>{/if}
+
+		{#if activeTab === 'people'}
+			<section class="people-layout">
+				<div class="people-main">
+					<form
+						class="search-card"
+						onsubmit={(event) => {
+							event.preventDefault();
+							void runSearch();
+						}}
+					>
+						<div>
+							<p class="eyebrow">Find your people</p>
+							<h2>Search listeners</h2>
 						</div>
-						{#if activeTab === 'discussions'}<input
-								bind:value={title}
-								maxlength="160"
-								required
-								placeholder="Discussion title"
-							/>{/if}
-						<textarea
-							bind:value={body}
-							maxlength="5000"
-							required
-							placeholder={activeTab === 'discussions'
-								? 'What do you want to discuss?'
-								: 'Share a thought, track discovery, or moment…'}></textarea>
-						<div class="composer-tools">
-							<AttachmentUploader
-								disabled={posting || attachments.length >= 8}
-								onUploaded={(item) => (attachments = [...attachments, item])}
-							/>
-							{#if activeTab === 'discussions'}<label
-									><input type="checkbox" bind:checked={anonymous} /> Anonymous</label
-								>{:else if activeTab === 'explore'}<select bind:value={visibility}
-									><option value="public">Everyone</option><option value="friends">Friends</option
-									></select
-								>{/if}
-							<button
-								class="post-button"
-								type="submit"
-								disabled={posting || !body.trim() || (activeTab === 'discussions' && !title.trim())}
-								>{posting ? 'Posting…' : 'Post'}</button
+						<div class="search-row">
+							<input
+								bind:value={query}
+								placeholder="Search by username or display name"
+								autocomplete="off"
+							/><button type="submit" disabled={searching || !query.trim()}
+								>{searching ? 'Searching…' : 'Search'}</button
 							>
 						</div>
-						{#if attachments.length}<div class="staged">
-								{#each attachments as item (item.id)}<span
-										>{item.filename}<button type="button" onclick={() => removeAttachment(item)}
-											>×</button
-										></span
-									>{/each}
-							</div>{/if}
 					</form>
-				{:else}<div class="signin-card">
-						Sign in to share music with the community. <a href={resolve('/login')}>Sign in</a>
-					</div>{/if}
-
-				{#if loading}<div class="empty">Loading the stream…</div>
-				{:else if posts.length === 0}<div class="empty">
-						{activeTab === 'friends'
-							? 'Your friends have not shared anything yet.'
-							: 'No posts here yet. Start the conversation.'}
-					</div>
-				{:else}<div class="post-list">
-						{#each posts as post (post.id)}<ForumPostCard
-								{post}
-								authenticated={$authStore.status === 'authenticated'}
-								onUpdate={(updated) =>
-									(posts = posts.map((p) => (p.id === updated.id ? updated : p)))}
-								onDelete={(id) => (posts = posts.filter((p) => p.id !== id))}
-								onRequireLogin={() => goto(resolve('/login'))}
-							/>{/each}
-					</div>{/if}
+					{#if people.length}<div class="user-list">
+							{#each people as user (user.id)}<UserCard
+									{user}
+									busy={peopleBusy[user.username]}
+									onConnect={connect}
+									onCancel={cancel}
+									onAccept={accept}
+									onDecline={decline}
+								/>{/each}
+						</div>
+					{:else if query && !searching}<div class="empty">
+							No listeners matched that search.
+						</div>{/if}
+				</div>
+				<aside>
+					<section class="side-card">
+						<p class="eyebrow">Requests</p>
+						<h3>Friend requests</h3>
+						{#each requests.filter((r) => r.receiver_username === $authStore.user?.username) as request (request.id)}
+							{#if request.other_user}<UserCard
+									user={{
+										...request.other_user,
+										displayName: request.other_user.display_name,
+										avatarUrl: request.other_user.avatar_url,
+										musicInterests: request.other_user.music_interests,
+										friendCount: request.other_user.friend_count,
+										mutualFriendCount: request.other_user.mutual_friend_count,
+										relationshipStatus: 'request_received'
+									}}
+									busy={peopleBusy[request.other_user.username]}
+									onAccept={accept}
+									onDecline={decline}
+								/>{/if}
+						{:else}<p class="muted">No incoming requests.</p>{/each}
+					</section>
+					<section class="side-card">
+						<p class="eyebrow">Your circle</p>
+						<h3>{friends.length} friends</h3>
+						<div class="friend-mini">
+							{#each friends.slice(0, 5) as friend (friend.id)}<a
+									href={resolve(`/users/${encodeURIComponent(friend.username)}`)}
+									>{friend.displayName || friend.username}<span>@{friend.username}</span></a
+								>{/each}
+						</div>
+					</section>
+				</aside>
 			</section>
-			<aside class="context-card">
-				<p class="eyebrow">Cuemix social loop</p>
-				<h3>Connect through sound</h3>
-				<p>
-					Listen → build your Music Identity → share a mix → friends react → discover more music.
-				</p>
-				<a href={resolve('/feed')}>Discover mixes →</a>
-			</aside>
-		</div>
-	{/if}
-</main>
+		{:else}
+			<div class="feed-layout">
+				<section class="stream">
+					{#if $authStore.status === 'authenticated'}
+						<form class="composer" onsubmit={handlePost}>
+							<div class="composer-heading">
+								<div class="composer-avatar">
+									{($authStore.user?.username || 'ZX').slice(0, 2).toUpperCase()}
+								</div>
+								<div>
+									<strong
+										>{activeTab === 'discussions'
+											? 'Start a music discussion'
+											: "What's playing?"}</strong
+									><span
+										>{activeTab === 'friends'
+											? 'Visible to friends'
+											: activeTab === 'discussions'
+												? 'Ask, compare, or debate music'
+												: 'Share with the Cuemix community'}</span
+									>
+								</div>
+							</div>
+							{#if activeTab === 'discussions'}<input
+									bind:value={title}
+									maxlength="160"
+									required
+									placeholder="Discussion title"
+								/>{/if}
+							<textarea
+								bind:value={body}
+								maxlength="5000"
+								required
+								placeholder={activeTab === 'discussions'
+									? 'What do you want to discuss?'
+									: 'Share a thought, track discovery, or moment…'}></textarea>
+							<div class="composer-tools">
+								<AttachmentUploader
+									disabled={posting || attachments.length >= 8}
+									onUploaded={(item) => (attachments = [...attachments, item])}
+								/>
+								{#if activeTab === 'discussions'}<label
+										><input type="checkbox" bind:checked={anonymous} /> Anonymous</label
+									>{:else if activeTab === 'explore'}<select bind:value={visibility}
+										><option value="public">Everyone</option><option value="friends">Friends</option
+										></select
+									>{/if}
+								<button
+									class="post-button"
+									type="submit"
+									disabled={posting ||
+										!body.trim() ||
+										(activeTab === 'discussions' && !title.trim())}
+									>{posting ? 'Posting…' : 'Post'}</button
+								>
+							</div>
+							{#if attachments.length}<div class="staged">
+									{#each attachments as item (item.id)}<span
+											>{item.filename}<button type="button" onclick={() => removeAttachment(item)}
+												>×</button
+											></span
+										>{/each}
+								</div>{/if}
+						</form>
+					{:else}<div class="signin-card">
+							Sign in to share music with the community. <a href={resolve('/login')}>Sign in</a>
+						</div>{/if}
+
+					{#if loading}<div class="empty">Loading the stream…</div>
+					{:else if posts.length === 0}<div class="empty">
+							{activeTab === 'friends'
+								? 'Your friends have not shared anything yet.'
+								: 'No posts here yet. Start the conversation.'}
+						</div>
+					{:else}<div class="post-list">
+							{#each posts as post (post.id)}<ForumPostCard
+									{post}
+									authenticated={$authStore.status === 'authenticated'}
+									onUpdate={(updated) =>
+										(posts = posts.map((p) => (p.id === updated.id ? updated : p)))}
+									onDelete={(id) => (posts = posts.filter((p) => p.id !== id))}
+									onRequireLogin={() => goto(resolve('/login'))}
+								/>{/each}
+						</div>{/if}
+				</section>
+				<aside class="context-card">
+					<p class="eyebrow">Cuemix social loop</p>
+					<h3>Connect through sound</h3>
+					<p>
+						Listen → build your Music Identity → share a mix → friends react → discover more music.
+					</p>
+					<a href={resolve('/feed')}>Discover mixes →</a>
+				</aside>
+			</div>
+		{/if}
+	</main>
 {/if}
 
 <style>

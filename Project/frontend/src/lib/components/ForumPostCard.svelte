@@ -499,10 +499,8 @@
 						{/if}
 					</div>
 					{#if !isReply}
-						<button
-							type="button"
-							class="reply-button"
-							onclick={() => startReply(comment)}>Reply</button
+						<button type="button" class="reply-button" onclick={() => startReply(comment)}
+							>Reply</button
 						>
 					{/if}
 					{#if comment.canDelete}
