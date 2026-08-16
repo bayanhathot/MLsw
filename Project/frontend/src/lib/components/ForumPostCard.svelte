@@ -44,6 +44,18 @@
 	let commentBody = $state('');
 	let commentAnonymous = $state(false);
 	let postingComment = $state(false);
+	/** @type {ForumComment | null} */
+	let replyingTo = $state(null);
+	/** Top-level comments (in order) each carrying their own replies -- single
+	 * level only, matching the backend's create_comment restriction. */
+	let commentThreads = $derived(
+		comments
+			.filter((item) => item.parentCommentId == null)
+			.map((item) => ({
+				comment: item,
+				replies: comments.filter((reply) => reply.parentCommentId === item.id)
+			}))
+	);
 	let commentAttachments = $state(/** @type {Record<string, any>[]} */ ([]));
 	let error = $state('');
 	let postVoteBusy = $state(false);
@@ -119,6 +131,7 @@
 			const commentId = Number(payload.comment_id);
 			if (!comments.some((item) => item.id === commentId)) return;
 			comments = comments.filter((item) => item.id !== commentId);
+			if (replyingTo?.id === commentId) replyingTo = null;
 			onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - 1) });
 		} else if (type === 'post_deleted') {
 			// Reuses the same removal path the manual "Delete post" button
@@ -194,19 +207,34 @@
 			const comment = await createComment(post.id, {
 				body,
 				isAnonymous: commentAnonymous,
-				attachmentIds: commentAttachments.map((item) => Number(item.id))
+				attachmentIds: commentAttachments.map((item) => Number(item.id)),
+				parentCommentId: replyingTo?.id ?? null
 			});
 			comments = [...comments, comment];
 			commentsLoaded = true;
 			commentBody = '';
 			commentAnonymous = false;
 			commentAttachments = [];
+			replyingTo = null;
 			onUpdate({ ...post, commentCount: post.commentCount + 1 });
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Could not add the comment.';
 		} finally {
 			postingComment = false;
 		}
+	}
+
+	/** @param {ForumComment} comment */
+	function startReply(comment) {
+		if (!authenticated) {
+			onRequireLogin();
+			return;
+		}
+		replyingTo = comment;
+	}
+
+	function cancelReply() {
+		replyingTo = null;
 	}
 
 	/** @param {Record<string, any>} attachment */
@@ -310,8 +338,13 @@
 		error = '';
 		try {
 			await deleteComment(post.id, comment.id);
-			comments = comments.filter((item) => item.id !== comment.id);
-			onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - 1) });
+			const removedIds = new Set([
+				comment.id,
+				...comments.filter((item) => item.parentCommentId === comment.id).map((item) => item.id)
+			]);
+			comments = comments.filter((item) => !removedIds.has(item.id));
+			if (replyingTo && removedIds.has(replyingTo.id)) replyingTo = null;
+			onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - removedIds.size) });
 		} catch (requestError) {
 			error =
 				requestError instanceof Error ? requestError.message : 'Could not delete the comment.';
@@ -426,71 +459,95 @@
 
 	{#if commentsOpen}
 		<section class="comments" aria-label={`Comments on ${post.title}`}>
+			{#snippet commentRow(/** @type {ForumComment} */ comment, /** @type {boolean} */ isReply)}
+				<article class="comment" class:reply={isReply}>
+					<div class="comment-copy">
+						{#if !comment.isAnonymous && comment.authorId}
+							<a
+								class="comment-author"
+								href={resolve(`/users/${encodeURIComponent(comment.authorUsername)}`)}
+								>{comment.authorUsername}</a
+							>
+						{:else}
+							<strong>{comment.authorUsername}</strong>
+						{/if}
+						<span>{comment.body}</span>
+						{#each comment.attachments as attachment (attachment.id)}
+							<AttachmentMedia {attachment} />
+						{/each}
+					</div>
+					<div class="votes compact" aria-label={`Comment score ${comment.score}`}>
+						<button
+							type="button"
+							class:active={comment.myVote === 1}
+							disabled={commentVoteBusy[comment.id] || commentDeleteBusy[comment.id]}
+							aria-label={post.kind === 'discussion' ? 'Upvote comment' : 'Like comment'}
+							aria-pressed={comment.myVote === 1}
+							onclick={() => handleCommentVote(comment, 1)}
+							>{post.kind === 'discussion' ? '▲' : '♥'}</button
+						>
+						<strong>{comment.score}</strong>
+						{#if post.kind === 'discussion'}
+							<button
+								type="button"
+								class:active={comment.myVote === -1}
+								disabled={commentVoteBusy[comment.id] || commentDeleteBusy[comment.id]}
+								aria-label="Downvote comment"
+								aria-pressed={comment.myVote === -1}
+								onclick={() => handleCommentVote(comment, -1)}>▼</button
+							>
+						{/if}
+					</div>
+					{#if !isReply}
+						<button
+							type="button"
+							class="reply-button"
+							onclick={() => startReply(comment)}>Reply</button
+						>
+					{/if}
+					{#if comment.canDelete}
+						<button
+							type="button"
+							class="delete-button compact-delete"
+							disabled={commentDeleteBusy[comment.id]}
+							onclick={() => handleDeleteComment(comment)}
+							>{commentDeleteBusy[comment.id] ? 'Deleting…' : 'Delete'}</button
+						>
+					{:else}
+						<button
+							type="button"
+							class="report-button compact-report"
+							onclick={() => handleReportComment(comment)}>Report</button
+						>
+					{/if}
+				</article>
+			{/snippet}
+
 			{#if commentsLoading}
 				<p role="status">Loading comments…</p>
 			{:else}
-				{#each comments as comment (comment.id)}
-					<article class="comment">
-						<div class="comment-copy">
-							{#if !comment.isAnonymous && comment.authorId}
-								<a
-									class="comment-author"
-									href={resolve(`/users/${encodeURIComponent(comment.authorUsername)}`)}
-									>{comment.authorUsername}</a
-								>
-							{:else}
-								<strong>{comment.authorUsername}</strong>
-							{/if}
-							<span>{comment.body}</span>
-							{#each comment.attachments as attachment (attachment.id)}
-								<AttachmentMedia {attachment} />
+				{#each commentThreads as thread (thread.comment.id)}
+					{@render commentRow(thread.comment, false)}
+					{#if thread.replies.length}
+						<div class="replies">
+							{#each thread.replies as reply (reply.id)}
+								{@render commentRow(reply, true)}
 							{/each}
 						</div>
-						<div class="votes compact" aria-label={`Comment score ${comment.score}`}>
-							<button
-								type="button"
-								class:active={comment.myVote === 1}
-								disabled={commentVoteBusy[comment.id] || commentDeleteBusy[comment.id]}
-								aria-label={post.kind === 'discussion' ? 'Upvote comment' : 'Like comment'}
-								aria-pressed={comment.myVote === 1}
-								onclick={() => handleCommentVote(comment, 1)}
-								>{post.kind === 'discussion' ? '▲' : '♥'}</button
-							>
-							<strong>{comment.score}</strong>
-							{#if post.kind === 'discussion'}
-								<button
-									type="button"
-									class:active={comment.myVote === -1}
-									disabled={commentVoteBusy[comment.id] || commentDeleteBusy[comment.id]}
-									aria-label="Downvote comment"
-									aria-pressed={comment.myVote === -1}
-									onclick={() => handleCommentVote(comment, -1)}>▼</button
-								>
-							{/if}
-						</div>
-						{#if comment.canDelete}
-							<button
-								type="button"
-								class="delete-button compact-delete"
-								disabled={commentDeleteBusy[comment.id]}
-								onclick={() => handleDeleteComment(comment)}
-								>{commentDeleteBusy[comment.id] ? 'Deleting…' : 'Delete'}</button
-							>
-						{:else}
-							<button
-								type="button"
-								class="report-button compact-report"
-								onclick={() => handleReportComment(comment)}>Report</button
-							>
-						{/if}
-					</article>
+					{/if}
 				{:else}
 					<p class="muted">No comments yet.</p>
 				{/each}
 			{/if}
 
 			<form class="comment-form" onsubmit={handleComment}>
-				<label for={`comment-${post.id}`}>Add a comment</label>
+				{#if replyingTo}
+					<div class="reply-context">
+						Replying to <strong>{replyingTo.authorUsername}</strong>
+						<button type="button" onclick={cancelReply}>Cancel</button>
+					</div>
+				{/if}
+				<label for={`comment-${post.id}`}>{replyingTo ? 'Add a reply' : 'Add a comment'}</label>
 				<textarea
 					id={`comment-${post.id}`}
 					bind:value={commentBody}
@@ -745,6 +802,37 @@
 	}
 	.compact-delete {
 		flex: 0 0 auto;
+	}
+	.replies {
+		display: grid;
+		gap: 10px;
+		padding-left: 28px;
+		border-left: 2px solid var(--border-muted);
+		margin-left: 12px;
+	}
+	.comment.reply {
+		background: rgba(255, 255, 255, 0.015);
+	}
+	.reply-button {
+		flex: 0 0 auto;
+		border: 0;
+		background: none;
+		color: var(--accent-2);
+		font-size: 11px;
+		font-weight: 800;
+	}
+	.reply-context {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--text-soft);
+		font-size: 12px;
+	}
+	.reply-context button {
+		border: 0;
+		background: none;
+		color: #60738d;
+		font-weight: 800;
 	}
 	.comment-form {
 		display: grid;

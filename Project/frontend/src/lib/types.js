@@ -136,6 +136,7 @@
  * @property {number} myVote
  * @property {ForumAttachment[]} attachments
  * @property {string} createdAt
+ * @property {number | null} parentCommentId
  */
 
 /**

@@ -33,6 +33,13 @@ class ForumComment(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     post_id: Mapped[int] = mapped_column(ForeignKey("forum_posts.id", ondelete="CASCADE"), nullable=False, index=True)
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Null for a top-level comment; set for a reply. Single-level only by
+    # convention (routers/forum.py rejects replying to a reply) even though
+    # the self-referential FK itself would allow deeper nesting -- see
+    # create_comment's docstring.
+    parent_comment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("forum_comments.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     is_anonymous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)

@@ -96,6 +96,25 @@ def test_cold_seed_creates_around_five_hundred_posts_with_valid_engagement(db_se
         assert comment.created_at >= users_by_id[comment.author_id].created_at
 
 
+def test_cold_seed_creates_logically_valid_nested_replies(db_session):
+    _run(db_session)
+
+    comments = db_session.query(ForumComment).all()
+    replies = [comment for comment in comments if comment.parent_comment_id is not None]
+    assert len(replies) > 0  # the whole point of this test
+
+    comments_by_id = {comment.id: comment for comment in comments}
+    for reply in replies:
+        parent = comments_by_id[reply.parent_comment_id]
+        assert parent.post_id == reply.post_id  # same-post rule the endpoint also enforces
+        assert parent.parent_comment_id is None  # single-level only, no reply-to-a-reply
+        assert reply.created_at >= parent.created_at
+        assert reply.author_id != parent.author_id  # nobody replies to themselves
+
+    notification_kinds = {row.kind for row in db_session.query(Notification).all()}
+    assert "comment_reply" in notification_kinds
+
+
 def test_cold_seed_creates_a_valid_social_graph(db_session):
     _run(db_session)
 

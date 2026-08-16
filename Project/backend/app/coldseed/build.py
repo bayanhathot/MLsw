@@ -854,6 +854,7 @@ def _seed_forum(
     db.flush()  # assigns .id to every post at once
 
     all_comments: list[tuple[SeededUser, ForumComment]] = []
+    post_top_level_comments: dict[int, list[tuple[SeededUser, ForumComment]]] = defaultdict(list)
     for author, post in all_posts:
         n_comments = rng.choices([0, 1, 2, 3, 4, 5, 6], weights=[15, 20, 20, 15, 12, 10, 8])[0]
         for _ in range(n_comments):
@@ -872,6 +873,7 @@ def _seed_forum(
             )
             db.add(comment)
             all_comments.append((commenter, comment))
+            post_top_level_comments[post.id].append((commenter, comment))
 
             actor_label = "Someone" if is_anon_comment else commenter.user.username
             _finalize_notification(
@@ -883,7 +885,60 @@ def _seed_forum(
                 comment_at, now, counters,
             )
 
-    db.flush()  # assigns .id to every comment at once
+    db.flush()  # assigns .id to every top-level comment at once (replies need parent.id)
+
+    # Single-level nested replies (routers/forum.py's create_comment rejects
+    # replying to a reply, so this mirrors that same one-level-deep rule)
+    # -- a separate pass since a reply needs its parent's now-flushed id.
+    all_replies: list[tuple[SeededUser, ForumComment]] = []
+    for author, post in all_posts:
+        for commenter, parent in post_top_level_comments.get(post.id, []):
+            if rng.random() >= 0.35:
+                continue
+            n_replies = rng.choices([1, 2], weights=[75, 25])[0]
+            for _ in range(n_replies):
+                replier = rng.choice(seeded)
+                if replier.user.id == commenter.user.id or replier.joined_at > now:
+                    continue
+                floor = max(parent.created_at, replier.joined_at)
+                if floor > now:
+                    continue
+                reply_at = _random_activity_time(rng, floor, now)
+                reply = ForumComment(
+                    post_id=post.id, author_id=replier.user.id,
+                    parent_comment_id=parent.id,
+                    body=rng.choice(content.COMMENT_REPLY_BODIES),
+                    is_anonymous=False, created_at=reply_at,
+                )
+                db.add(reply)
+                all_replies.append((replier, reply))
+
+                # Same two-notification split as the real endpoint: the post
+                # author always hears about new activity on their post, and
+                # the parent comment's author additionally hears about the
+                # reply itself -- forum_service.notify already self-suppresses
+                # a match against the replier, so no explicit check needed
+                # for "replying to your own top-level comment."
+                _finalize_notification(
+                    rng,
+                    forum_service.notify(
+                        db, post.author_id, replier.user.id, "comment",
+                        f"{replier.user.username} commented on your post.", "post", post.id,
+                    ),
+                    reply_at, now, counters,
+                )
+                if commenter.user.id != post.author_id:
+                    _finalize_notification(
+                        rng,
+                        forum_service.notify(
+                            db, commenter.user.id, replier.user.id, "comment_reply",
+                            f"{replier.user.username} replied to your comment.", "comment", parent.id,
+                        ),
+                        reply_at, now, counters,
+                    )
+
+    all_comments.extend(all_replies)
+    db.flush()  # assigns .id to every reply at once
 
     for commenter, comment in all_comments:
         comment_voters = rng.sample(seeded, k=min(len(seeded), rng.randint(0, 5)))
@@ -1080,6 +1135,7 @@ def run_cold_seed(db: Session, *, version: str, random_seed: int) -> dict:
         "listening_events": listening_event_count,
         "forum_posts": len(all_posts),
         "forum_comments": len(all_comments),
+        "forum_comment_replies": sum(1 for _, comment in all_comments if comment.parent_comment_id is not None),
         "attachments": attachment_count,
         "direct_messages": message_count,
         "notifications": counters.notifications,

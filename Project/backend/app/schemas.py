@@ -214,6 +214,7 @@ class CommentCreate(NonBlankModel):
     body: str = Field(min_length=1, max_length=2000)
     is_anonymous: bool = False
     attachment_ids: list[int] = Field(default_factory=list, max_length=4)
+    parent_comment_id: int | None = None
 
 
 class VoteRequest(BaseModel):
@@ -231,6 +232,7 @@ class CommentRead(BaseModel):
     my_vote: int
     attachments: list[AttachmentRead]
     created_at: datetime
+    parent_comment_id: int | None = None
 
 
 class SharedMixRead(BaseModel):

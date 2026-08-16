@@ -74,7 +74,8 @@ export function normalizeComment(value) {
 		score: Number(raw.score || 0),
 		myVote: Number(raw.my_vote || 0),
 		attachments: Array.isArray(raw.attachments) ? raw.attachments.map(normalizeAttachment) : [],
-		createdAt: String(raw.created_at || '')
+		createdAt: String(raw.created_at || ''),
+		parentCommentId: raw.parent_comment_id == null ? null : Number(raw.parent_comment_id)
 	};
 }
 
@@ -128,7 +129,7 @@ export async function getComments(postId, { signal } = {}) {
 	return response.map(normalizeComment);
 }
 
-/** @param {number} postId @param {{ body: string, isAnonymous: boolean, attachmentIds?: number[] }} input */
+/** @param {number} postId @param {{ body: string, isAnonymous: boolean, attachmentIds?: number[], parentCommentId?: number|null }} input */
 export async function createComment(postId, input) {
 	return normalizeComment(
 		await apiRequest(`/posts/${postId}/comments`, {
@@ -136,7 +137,8 @@ export async function createComment(postId, input) {
 			body: JSON.stringify({
 				body: input.body,
 				is_anonymous: input.isAnonymous,
-				attachment_ids: input.attachmentIds || []
+				attachment_ids: input.attachmentIds || [],
+				parent_comment_id: input.parentCommentId ?? null
 			})
 		})
 	);

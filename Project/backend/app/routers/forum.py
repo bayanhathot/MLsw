@@ -180,18 +180,39 @@ async def create_comment(
     post = _visible_or_404(db, post_id, current_user.id)
     if post.kind != "discussion" and request.is_anonymous:
         raise HTTPException(status_code=422, detail="Anonymous comments are available only in Discussions.")
-    comment = ForumComment(post_id=post.id, author_id=current_user.id, body=request.body, is_anonymous=request.is_anonymous)
+    parent = None
+    if request.parent_comment_id is not None:
+        parent = forum_service.comment_or_404(db, request.parent_comment_id)
+        if parent.post_id != post.id:
+            raise HTTPException(status_code=422, detail="Reply must target a comment on the same post.")
+        if parent.parent_comment_id is not None:
+            raise HTTPException(status_code=422, detail="Replies can only be one level deep.")
+    comment = ForumComment(
+        post_id=post.id,
+        author_id=current_user.id,
+        body=request.body,
+        is_anonymous=request.is_anonymous,
+        parent_comment_id=parent.id if parent else None,
+    )
     db.add(comment)
     db.flush()
     forum_service.attach_owned(db, request.attachment_ids, current_user.id, "comment", comment.id)
     actor_label = "Someone" if request.is_anonymous else current_user.username
     notification = forum_service.notify(db, post.author_id, current_user.id, "comment", f"{actor_label} commented on your post.", "post", post.id)
+    reply_notification = None
+    if parent is not None and parent.author_id != post.author_id:
+        reply_notification = forum_service.notify(
+            db, parent.author_id, current_user.id, "comment_reply", f"{actor_label} replied to your comment.", "comment", parent.id
+        )
     db.commit()
     db.refresh(comment)
     result = forum_service.build_comment(db, comment, current_user.id)
     if notification:
         notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
         await channel_hub.publish(f"user:{post.author_id}", "notification", notification_payload)
+    if reply_notification:
+        reply_payload = NotificationRead.model_validate(reply_notification).model_dump(mode="json")
+        await channel_hub.publish(f"user:{parent.author_id}", "notification", reply_payload)
     await channel_hub.publish(f"post:{post.id}", "comment_created", result.model_dump(mode="json"))
     return result
 
@@ -203,11 +224,20 @@ async def delete_comment(post_id: int, comment_id: int, _: None = Depends(write_
         raise HTTPException(status_code=404, detail="Comment not found.")
     if comment.author_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the author can delete this comment.")
+    # Replies cascade-delete at the DB level (ondelete="CASCADE"), but their
+    # attachment files and realtime removal events don't happen for free --
+    # same reasoning as delete_post's own comment sweep just above.
+    replies = db.query(ForumComment).filter_by(parent_comment_id=comment.id).all()
     media_paths = forum_service.attachment_paths(db, "comment", comment.id)
+    for reply in replies:
+        media_paths.extend(forum_service.attachment_paths(db, "comment", reply.id))
+    reply_ids = [reply.id for reply in replies]
     db.delete(comment)
     db.commit()
     forum_service.delete_files(media_paths)
     await channel_hub.publish(f"post:{post_id}", "comment_deleted", {"comment_id": comment_id})
+    for reply_id in reply_ids:
+        await channel_hub.publish(f"post:{post_id}", "comment_deleted", {"comment_id": reply_id})
 
 
 def _visible_comment_or_404(db: Session, comment_id: int, viewer_id: int) -> ForumComment:

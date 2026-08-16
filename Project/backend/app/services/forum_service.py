@@ -148,6 +148,7 @@ def build_comment(db: Session, comment: ForumComment, viewer_id: int | None) -> 
         my_vote=my_vote,
         attachments=_attachments(db, "comment", comment.id),
         created_at=comment.created_at,
+        parent_comment_id=comment.parent_comment_id,
     )
 
 

@@ -225,6 +225,24 @@ COMMENT_BODIES = [
     "Been looking for something like this all week.",
 ]
 
+COMMENT_REPLY_BODIES = [
+    "Right?? Same, I've had it on loop since I saw this.",
+    "Wait yes, this is exactly the take I needed to see.",
+    "Same here, honestly didn't expect to agree this hard.",
+    "Ha, glad it's not just me then.",
+    "Which one though, the intro or the outro?",
+    "Following this thread, curious what else people add.",
+    "This exactly. Been saying it for weeks.",
+    "Ok you've convinced me, adding it to the queue.",
+    "Fair point, though I'd still lean the other way a little.",
+    "Not gonna lie, this made my day.",
+    "Sending this reply energy to everyone I know.",
+    "That's the part that got me too.",
+    "Respectfully disagree, but I get where you're coming from.",
+    "This is why I keep coming back to this thread.",
+    "Underrated reply honestly.",
+]
+
 DM_OPENERS = [
     "hey, have you heard the new stuff from {artist}?",
     "ok this is random but you'd love this {genre} mix I found",
