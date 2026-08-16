@@ -32,6 +32,9 @@ frontend dev server proxies `/api` to `127.0.0.1:5000` by default.
   (`audius_retriever.py`, `catalog_retriever.py`, `query_planner.py`,
   `segment_selector.py`, `transition_planner.py`, `audio_renderer.py`,
   `orchestrator.py`, `ollama_health.py`).
+- `app/coldseed/` — the cold-seed dataset generator (`build.py` +
+  `content.py` + `config.py`) invoked by `app/seed.py`; see "Operational
+  scripts" below.
 - `app/database/models/` — SQLAlchemy models, one module per domain
   (`user`, `profile`, `session`, `mix`, `mix_social`, `catalog`, `forum`,
   `social`, `messaging`, `music_identity`, `attachment`).
@@ -131,11 +134,16 @@ python -m alembic check
 
 ## Operational scripts
 
-- `python -m app.seed` — idempotent demo-data seed, on by default
-  (`ALLOW_DEMO_SEED=true`); runs automatically as part of the `migrate`
-  service on every deploy (see docker-compose.yml), so the app launches
-  pre-seeded. Set `ALLOW_DEMO_SEED=false` to opt out. Creates `.invalid`-domain
-  demo accounts.
+- `python -m app.seed` — idempotent cold seed (`app/coldseed/`): ~50
+  realistic accounts, profiles, a social graph, forum activity, DMs, mixes,
+  DJ sessions, and listening history, on by default (`ENABLE_COLD_SEED=true`);
+  runs automatically as part of the `migrate` service on every deploy (see
+  docker-compose.yml), so the app launches looking already-used. Set
+  `ENABLE_COLD_SEED=false` to opt out; `COLD_SEED_VERSION`/
+  `COLD_SEED_RANDOM_SEED` control the dataset version and its reproducible
+  RNG seed. Creates `.example`-domain demo accounts only (RFC 2606-reserved,
+  never real mail; `.invalid` would be more conventional but pydantic's
+  EmailStr rejects it as a special-use domain on /auth/login).
 - `python -m app.cleanup_uploads` — dry-run by default; reports orphaned
   attachment files. Add `--delete --confirm-backend-stopped` to actually
   remove them, with the backend stopped.

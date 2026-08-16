@@ -34,15 +34,21 @@ prompt classification; `docker-compose.yml`'s local default for
 `VIBE_LLM_PROVIDER` is `none`, while `docker-compose.prod.yml` and the app's
 own fallback both default to `ollama`.
 
-Compose seeds clearly labelled demo users/posts/comments (`app/seed.py`)
-automatically as part of the one-shot `migrate` service, right after Alembic
-runs, so the app always launches pre-seeded. It's idempotent -- re-running it
-on every `docker compose up` / redeploy never creates duplicates -- so it's
-safe to leave on; set `ALLOW_DEMO_SEED=false` to opt out. To re-run it
-manually against a running deployment (e.g. after opting out at deploy time):
+Compose seeds a realistic ~50-listener dataset -- accounts, profiles, a
+social graph, forum posts/comments/votes, direct messages, mixes, DJ
+sessions, and listening history (`app/coldseed/build.py`) -- automatically
+as part of the one-shot `migrate` service, right after Alembic runs, so the
+app always launches looking like it's had real users for months, not empty.
+It's idempotent -- re-running it on every `docker compose up` / redeploy
+never creates duplicates (a `ColdSeedRun` version marker short-circuits any
+run whose `COLD_SEED_VERSION` has already been generated) -- so it's safe to
+leave on; set `ENABLE_COLD_SEED=false` to opt out. `COLD_SEED_RANDOM_SEED`
+fixes the dataset's RNG, so the same version always reproduces the exact
+same data. To re-run it manually against a running deployment (e.g. after
+opting out at deploy time, or after bumping `COLD_SEED_VERSION`):
 
 ```powershell
-docker compose exec -e ALLOW_DEMO_SEED=true backend python -m app.seed
+docker compose exec -e ENABLE_COLD_SEED=true backend python -m app.seed
 ```
 
 ## What's implemented

@@ -8,7 +8,14 @@ from app.database.models.music_identity import ListeningEvent, UserMusicProfile
 from app.database.models.mix import Mix, MixSegment
 from app.database.models.mix_social import MixLike, SavedMix
 from app.database.models.profile import Profile
-from app.database.models.session import DJSession, SessionFeedback, UserPreference
+from app.database.models.seed_state import ColdSeedRun
+from app.database.models.session import (
+    DJSession,
+    KnownBrokenTrack,
+    PromptShortcut,
+    SessionFeedback,
+    UserPreference,
+)
 from app.database.models.social import FriendRequest, Friendship, SocialReport, UserBlock
 from app.database.models.user import User
 
@@ -18,6 +25,9 @@ __all__ = [
     "DJSession",
     "SessionFeedback",
     "UserPreference",
+    "KnownBrokenTrack",
+    "PromptShortcut",
+    "ColdSeedRun",
     "Mix",
     "MixSegment",
     "MixLike",

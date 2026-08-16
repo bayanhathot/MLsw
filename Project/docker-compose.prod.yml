@@ -46,10 +46,12 @@ x-backend-environment: &backend-environment
   # Not yet used by any app code -- purely additive infrastructure, see
   # app/core/redis_client.py.
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-  # Cold-seeds clearly labelled demo users/posts/comments on every deploy
-  # (see app/seed.py) -- idempotent, so safe to leave on. Set to false to
-  # opt out.
-  ALLOW_DEMO_SEED: ${ALLOW_DEMO_SEED:-true}
+  # Cold-seeds a realistic ~50-user dataset on every deploy (see
+  # app/coldseed/build.py) -- idempotent, so safe to leave on. Set to false
+  # to opt out.
+  ENABLE_COLD_SEED: ${ENABLE_COLD_SEED:-true}
+  COLD_SEED_VERSION: ${COLD_SEED_VERSION:-v1}
+  COLD_SEED_RANDOM_SEED: ${COLD_SEED_RANDOM_SEED:-2026}
 
 services:
   postgres:
@@ -73,9 +75,18 @@ services:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
     environment: *backend-environment
     command: ["/bin/sh", "-c", "python -m alembic upgrade head && python -m app.seed"]
+    # The cold seed (app/seed.py) writes real files under UPLOAD_DIR (staged
+    # catalog audio, placeholder attachment images) -- it needs the same
+    # persistent volume backend serves them from, not this container's own
+    # throwaway filesystem, and needs to run after uploads-init has created
+    # and chowned that directory (same ordering backend itself waits on).
+    volumes:
+      - uploads_data:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
+      uploads-init:
+        condition: service_completed_successfully
     restart: "no"
     security_opt:
       - no-new-privileges:true
