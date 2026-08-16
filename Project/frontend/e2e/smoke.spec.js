@@ -62,8 +62,15 @@ async function mockApi(
 		if (path === '/api/auth/me') {
 			status = authenticated ? 200 : 401;
 			payload = authenticated ? authenticatedUser : { detail: 'Not authenticated.' };
-		} else if (path === '/api/mixes/feed' || path === '/api/posts/feed') {
+		} else if (path === '/api/mixes/feed') {
 			payload = [];
+		} else if (path === '/api/posts/feed') {
+			// Community requires a real session on every read (routers/forum.py),
+			// unlike /api/mixes/feed -- mirror that here so a regression in the
+			// frontend's own guest guard would surface as an unfixtured 401
+			// instead of silently rendering an "empty feed" state.
+			status = authenticated ? 200 : 401;
+			payload = authenticated ? [] : { detail: 'Not authenticated.' };
 		} else if (path === '/api/mixes/library') {
 			payload = { owned: [], saved: [] };
 		} else if (path === '/api/users/me/profile') {
@@ -127,20 +134,23 @@ async function mockApi(
 	return unexpectedRequests;
 }
 
-test('public DJ, Discover, and Community routes render through navigation', async ({ page }) => {
+test('public DJ and Discover routes render through navigation, with no Community link for a guest', async ({
+	page
+}) => {
 	const unexpectedRequests = await mockApi(page);
 
 	await page.goto('/');
 	await expect(page.getByRole('heading', { name: /Your AI DJ/ })).toBeVisible();
+	// Community is members-only end to end now (routers/forum.py and
+	// routers/social.py require a real session on every read and write), so
+	// the nav link is hidden entirely for a guest rather than present and
+	// then failing/redirecting on click.
+	await expect(page.getByRole('link', { name: 'Community' })).toHaveCount(0);
 
 	await page.getByRole('link', { name: 'Discover' }).click();
 	await expect(page).toHaveURL(/\/feed$/);
 	await expect(page.getByRole('heading', { name: 'Discover mixes' })).toBeVisible();
-
-	await page.getByRole('link', { name: 'Community' }).click();
-	await expect(page).toHaveURL(/\/community/);
-	await expect(page.getByRole('heading', { name: 'Community' })).toBeVisible();
-	await expect(page.getByText('No posts here yet. Start the conversation.')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Community' })).toHaveCount(0);
 	expect(unexpectedRequests).toEqual([]);
 });
 
@@ -148,6 +158,14 @@ test('guest users are redirected away from protected routes', async ({ page }) =
 	const unexpectedRequests = await mockApi(page);
 
 	await page.goto('/library');
+	await expect(page).toHaveURL(/\/login$/);
+	await expect(page.getByRole('heading', { name: 'Sign in.' })).toBeVisible();
+
+	// Community requires a real session on every read/write (see
+	// routers/forum.py) -- a guest hitting it directly by URL, not just via
+	// the (already-hidden) nav link, must also bounce to /login rather than
+	// render an empty/broken feed.
+	await page.goto('/community');
 	await expect(page).toHaveURL(/\/login$/);
 	await expect(page.getByRole('heading', { name: 'Sign in.' })).toBeVisible();
 	expect(unexpectedRequests).toEqual([]);
