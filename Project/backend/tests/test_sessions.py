@@ -4,7 +4,9 @@ from pathlib import Path
 from conftest import register_and_login
 
 from app.database.models.session import DJSession, UserPreference
-from app.services import session_manager
+from app.schemas import PromptIntent
+from app.services import session_candidate_pool, session_manager, upload_queue
+from app.services.pipeline import audio_renderer
 from app.services.pipeline.audius_retriever import MultiQueryAudiusRetriever
 
 _DEMO_WAV_BYTES = (
@@ -999,6 +1001,184 @@ def test_prepare_next_discards_its_result_if_intent_changes_while_it_is_in_fligh
     db_session.refresh(row)
     assert row.intent_json["energy"] == mutated_energy["value"]  # the concurrent mutation stuck
     assert row.prepared_next_json is None
+
+
+def test_advance_rejects_a_prepared_item_already_played_by_a_concurrent_advance(
+    client, monkeypatch, db_session
+):
+    # The race the containment check exists for: prepare_next()'s render
+    # alone can take 25s+ (AUDIO_RENDER_TIME_BUDGET_SECONDS), well past the
+    # ~10s of track remaining that triggers it client-side, so the current
+    # track can genuinely end and get advanced past *before* prepare_next()
+    # writes its own result -- and because selection is fully deterministic
+    # (same intent, same exclude set), that result is often the very same
+    # track advance_session already committed. Simulated here via a
+    # genuinely separate DB session (db_session) that commits the "advance
+    # already played this track" state right after prepare_next's own
+    # resolution finishes, but before it re-checks and writes.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+
+    original_resolve = session_manager._resolve_and_render
+
+    def resolve_then_advance_concurrently(*args, **kwargs):
+        result = original_resolve(*args, **kwargs)
+        track = result[0]
+        concurrent_row = db_session.query(DJSession).filter_by(id=session_id).one()
+        concurrent_row.played_track_keys_json = (
+            concurrent_row.played_track_keys_json or []
+        ) + [session_manager._track_key(track)]
+        db_session.commit()
+        return result
+
+    monkeypatch.setattr(session_manager, "_resolve_and_render", resolve_then_advance_concurrently)
+
+    prep = client.post(f"/sessions/{session_id}/prepare-next")
+    assert prep.status_code == 200
+    # Status/fingerprint are unchanged by the race, so the write itself is
+    # not discarded -- it's a *valid*, but now already-played, prepared item.
+    assert prep.json()["prepared"] is True
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    db_session.refresh(row)
+    prepared_track_key = row.prepared_next_json["track_key"]
+    prepared_audio_url = row.prepared_next_json["now_playing"]["audio_url"]
+    prepared_title = row.prepared_next_json["now_playing"]["title"]
+    assert prepared_track_key in row.played_track_keys_json  # confirms the race landed
+
+    monkeypatch.setattr(session_manager, "_resolve_and_render", original_resolve)
+    calls = _count_retrieve_calls(monkeypatch)
+    response = client.post(f"/sessions/{session_id}/advance")
+    assert response.status_code == 200
+    body = response.json()
+    # Not the stale prepared item -- a real re-resolution served something
+    # else instead of replaying the track that just played.
+    assert body["audioUrl"] != prepared_audio_url
+    assert body["nowPlaying"]["title"] != prepared_title
+    # And it was a genuine resolution, not a same-track fast path that
+    # happened to look different -- the fast path makes zero retrieve() calls.
+    assert calls["count"] == 1
+
+
+def test_smoother_feedback_invalidates_an_already_prepared_item(client, monkeypatch, db_session):
+    # "smoother" leaves intent.energy/vocals (and so the retrieval
+    # fingerprint) unchanged while still replacing now_playing -- unlike
+    # "more energy"/"less vocals", advance_session's fingerprint check alone
+    # would NOT catch a stale prepared item here; only apply_feedback's
+    # now-unconditional prepared_next_json clear does.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+
+    prep = client.post(f"/sessions/{session_id}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    db_session.refresh(row)
+    prepared_audio_url = row.prepared_next_json["now_playing"]["audio_url"]
+
+    feedback = client.post(
+        f"/sessions/{session_id}/feedback", json={"feedback": "Smoother transitions please"}
+    )
+    assert feedback.status_code == 200
+
+    db_session.refresh(row)
+    assert row.prepared_next_json is None  # invalidated despite the unchanged fingerprint
+
+    response = client.post(f"/sessions/{session_id}/advance")
+    assert response.status_code == 200
+    # A real resolution ran instead of replaying the now-stale prepared item
+    # (planned against a previous_segment that isn't playing anymore).
+    assert response.json()["audioUrl"] != prepared_audio_url
+
+
+def test_advance_never_serves_a_prepared_item_whose_track_key_was_already_played(
+    client, monkeypatch, db_session
+):
+    # A direct, non-concurrency reproduction of the containment rule itself:
+    # a prepared item with an otherwise-valid (matching fingerprint,
+    # unexpired) record is still rejected once its track_key is already in
+    # played_track_keys_json, regardless of how it got there.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    assert calls["count"] == 1
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    already_played = row.played_track_keys_json[0]
+    played_before = list(row.played_track_keys_json)
+    intent = PromptIntent.model_validate(row.intent_json)
+    fingerprint = session_candidate_pool.fingerprint_for(intent)
+    row.prepared_next_json = {
+        "track_key": already_played,
+        "artist": "George Wassouf",
+        "now_playing": {"audio_url": "https://stale.example/should-not-be-served.wav"},
+        "reasoning": {},
+        "pipeline_trace": {},
+        "fingerprint": session_manager._fingerprint_as_json(fingerprint),
+        "prepared_at": time.monotonic(),
+    }
+    db_session.commit()
+
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
+    assert response.json()["audioUrl"] != "https://stale.example/should-not-be-served.wav"
+    assert calls["count"] == 2  # a real resolution ran, not the fast path
+
+    db_session.refresh(row)
+    # Exactly one new entry was appended by the real resolution -- the
+    # already-played track_key from the rejected prepared item was not
+    # appended a second time.
+    assert row.played_track_keys_json.count(already_played) == 1
+    assert len(row.played_track_keys_json) == len(played_before) + 1
+
+
+def test_prepare_next_deletes_the_rendered_file_when_its_result_is_discarded(
+    client, monkeypatch, db_session
+):
+    # Same race as
+    # test_prepare_next_discards_its_result_if_the_session_is_stopped_while_it_is_in_flight,
+    # but asserting the on-disk render AudioRenderer already wrote is deleted
+    # too, not left as a permanent orphan once the DB write is (correctly)
+    # skipped.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+
+    original_resolve = session_manager._resolve_and_render
+    rendered_audio_url = {"value": None}
+
+    def resolve_then_stop_concurrently(*args, **kwargs):
+        result = original_resolve(*args, **kwargs)
+        rendered_audio_url["value"] = result[2]["audio_url"]  # now_playing
+        concurrent_row = db_session.query(DJSession).filter_by(id=session_id).one()
+        concurrent_row.status = "stopped"
+        concurrent_row.prepared_next_json = None
+        db_session.commit()
+        return result
+
+    monkeypatch.setattr(session_manager, "_resolve_and_render", resolve_then_stop_concurrently)
+
+    response = client.post(f"/sessions/{session_id}/prepare-next")
+    assert response.status_code == 200
+    assert response.json()["prepared"] is False  # discarded, not resurrected
+
+    # Sanity precondition: this really was a rendered file, not a
+    # pass-through with nothing on disk to begin with.
+    assert f"/{audio_renderer.RENDER_SUBDIR}/" in rendered_audio_url["value"]
+    filename = rendered_audio_url["value"].rsplit("/", 1)[-1]
+    rendered_path = upload_queue.UPLOAD_DIR / audio_renderer.RENDER_SUBDIR / filename
+    assert not rendered_path.exists()
 
 
 def test_advance_rejects_a_stopped_session(client):

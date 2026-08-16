@@ -27,6 +27,13 @@ from app.schemas import (
     SessionRead,
     Track,
 )
+from app.services import (
+    known_broken_tracks,
+    prompt_shortcuts,
+    session_candidate_pool,
+    upload_queue,
+)
+from app.services.pipeline import audio_renderer
 from app.services.pipeline.dependencies import get_vibe_understander
 from app.services.pipeline.interfaces import (
     AudioRenderer,
@@ -41,7 +48,6 @@ from app.services.pipeline.orchestrator import (
     retrieve_candidates_with_fallback,
 )
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
-from app.services import known_broken_tracks, prompt_shortcuts, session_candidate_pool
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +248,35 @@ def _prepare_lock_for(session_id: str) -> Lock:
 
 def _track_key(track: Track) -> str:
     return f"{track.source}:{track.source_track_id}"
+
+
+def _delete_rendered_file(audio_url: str) -> None:
+    """Deletes the on-disk render behind a now_playing-shaped `audio_url`,
+    resolved the same way routers/media.py's /renders/{filename} route does
+    (UPLOAD_DIR/renders/<filename>). Used by prepare_next()'s discard path
+    (session_manager.py's own re-check found the session stopped or
+    re-resolved while the render was still in flight): that path already
+    never writes the DB record, but without this the file AudioRenderer
+    already wrote to disk before the check would sit there as a permanent
+    orphan -- _sweep_stale_renders' TTL sweep is a secondary safety net, not
+    a substitute for cleaning up a render this process knows is unused right
+    now. A pass-through `audio_url` (pointing straight at an external track
+    URL because rendering failed) has no local file, so this is a no-op for
+    those. Best-effort: a missing/already-swept file, or any other
+    filesystem error, is not worth failing this request over."""
+
+    marker = f"/{audio_renderer.RENDER_SUBDIR}/"
+    if marker not in audio_url:
+        return
+    filename = audio_url.rsplit("/", 1)[-1]
+    root = (upload_queue.UPLOAD_DIR / audio_renderer.RENDER_SUBDIR).resolve()
+    path = (root / filename).resolve()
+    if path.parent != root:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not delete discarded rendered file %s", path)
 
 
 def _selected_moment_text(segment: SelectedSegment) -> str:
@@ -757,16 +792,16 @@ def apply_feedback(
                 "original_intent": _effective_original_intent(session),
             }
             session.intent_json = mutated.model_dump(mode="json")
-            if mutated is not current_intent:
-                # PHASE_C_PREFETCH_DESIGN.md section 3.4: any prepared next
-                # item was resolved against the intent this just replaced --
-                # advance_session's own fingerprint check (section 3.3) would
-                # already refuse to serve it, but clearing it here too means
-                # it doesn't linger unused in the row. Gated on the intent
-                # actually changing (not just prefers_smoother alone, which
-                # leaves the fingerprint unchanged), matching the spec's own
-                # "MORE ENERGY -> discard the prepared next item" example.
-                session.prepared_next_json = None
+            # PHASE_C_PREFETCH_DESIGN.md section 3.4: any prepared next item
+            # was resolved against the now_playing/segment context this just
+            # replaced, so it's stale regardless of *why* this resolution
+            # ran. Unconditional on purpose: gating this on "mutated is not
+            # current_intent" alone used to miss the "smoother" branch, which
+            # leaves the intent (and so advance_session's fingerprint check)
+            # unchanged while still replacing now_playing -- that check would
+            # NOT have caught a stale prepared item in that case, only
+            # explicit clearing here does.
+            session.prepared_next_json = None
             session.now_playing_json = now_playing
             session.reasoning_json = reasoning
             session.pipeline_trace_json = pipeline_trace
@@ -845,12 +880,28 @@ def advance_session(
     instead -- no retrieve/select/plan/render at all. The prepared item is
     re-validated against the session's *current* intent fingerprint right
     here, not trusted just because it exists, since feedback may have
-    mutated the intent after it was prepared but before this call landed."""
+    mutated the intent after it was prepared but before this call landed.
+
+    Fingerprint + TTL alone aren't enough, though: prepare_next() can still
+    be resolving (its render alone can take 25s+, well past the ~10s of
+    track remaining that triggers it) when this session's current track
+    ends and this call runs its own resolution first, independently landing
+    on the same track (selection is fully deterministic, and both runs share
+    the same intent/exclude set) -- prepare_next() then finishes and writes
+    that same track as "prepared," which this fast path would otherwise
+    replay immediately on the *next* advance. So the prepared item is also
+    rejected outright if its track_key is already in played_track_keys_json,
+    falling through to a normal re-resolution (which already excludes played
+    tracks) instead of serving a guaranteed repeat."""
 
     intent = PromptIntent.model_validate(session.intent_json)
     fingerprint = session_candidate_pool.fingerprint_for(intent)
     prepared = session.prepared_next_json
-    if _prepared_is_valid(prepared, fingerprint):
+    played_track_keys = session.played_track_keys_json or []
+    if (
+        _prepared_is_valid(prepared, fingerprint)
+        and prepared["track_key"] not in played_track_keys
+    ):
         pipeline_trace = prepared["pipeline_trace"]
         pipeline_trace["vibe_understander"] = {
             "implementation": type(get_vibe_understander()).__name__,
@@ -957,7 +1008,9 @@ def prepare_next(
     just stopped, or whose intent just changed -- so right before writing,
     the session's current state is re-fetched and re-validated against the
     fingerprint this resolution actually ran against, and the result is
-    discarded (not written) if either no longer matches. This is a normal,
+    discarded if either no longer matches: not written to the DB, and the
+    audio file already rendered for it is deleted too (_delete_rendered_file)
+    rather than left as a permanent orphan on disk. This is a normal,
     expected outcome of the race, not an error."""
 
     if session.status != "playing":
@@ -1008,6 +1061,12 @@ def prepare_next(
         current_intent = PromptIntent.model_validate(session.intent_json)
         current_fingerprint = session_candidate_pool.fingerprint_for(current_intent)
         if session.status != "playing" or current_fingerprint != fingerprint:
+            # The DB record is correctly never written on this path, but the
+            # audio file _resolve_and_render already rendered to disk above
+            # is now unused and would otherwise sit there as a permanent
+            # orphan (see _delete_rendered_file) until the next _export()
+            # call's TTL sweep happens to catch it.
+            _delete_rendered_file(now_playing["audio_url"])
             return
 
         session.prepared_next_json = {
