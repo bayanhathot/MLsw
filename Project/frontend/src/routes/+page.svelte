@@ -31,7 +31,6 @@
 
 	import HeroSection from '$lib/components/HeroSection.svelte';
 	import PromptComposer from '$lib/components/PromptComposer.svelte';
-	import DJPlayerCard from '$lib/components/DJPlayerCard.svelte';
 	import PipelineDebugPanel from '$lib/components/PipelineDebugPanel.svelte';
 
 	/* Local UI-only state:
@@ -133,33 +132,6 @@
 		</section>
 	{/if}
 </div>
-
-<DJPlayerCard
-	status={$sessionStore.status}
-	currentStep={$sessionStore.currentStep}
-	progress={$sessionStore.progress}
-	session={$sessionStore.session}
-	isPlaying={$sessionStore.isPlaying}
-	playbackRequested={$sessionStore.playbackRequested}
-	isPlaybackBuffering={$sessionStore.isPlaybackBuffering}
-	hasEnded={$sessionStore.hasEnded}
-	isStopping={$sessionStore.isStopping}
-	isFeedbackPending={$sessionStore.isFeedbackPending}
-	pendingFeedback={$sessionStore.pendingFeedback}
-	isChangingVibe={$sessionStore.isChangingVibe}
-	selectedFeedback={$sessionStore.selectedFeedback}
-	playbackError={$sessionStore.playbackError}
-	onTogglePlay={sessionStore.togglePlay}
-	onStop={sessionStore.stop}
-	onFeedback={sessionStore.sendFeedback}
-	onMediaPlaying={sessionStore.mediaPlaying}
-	onMediaPaused={sessionStore.mediaPaused}
-	onMediaWaiting={sessionStore.mediaWaiting}
-	onMediaReady={sessionStore.mediaReady}
-	onMediaEnded={sessionStore.mediaEnded}
-	onMediaError={sessionStore.mediaError}
-	onPrepareNext={sessionStore.prepareNext}
-/>
 
 <PipelineDebugPanel />
 

@@ -40,11 +40,11 @@ const emptyIdentity = {
 /**
  * Mock the API boundary while exercising the production Svelte UI.
  * @param {import('@playwright/test').Page} page
- * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void }} options
+ * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void, sessionStartResponse?: Record<string, any> }} options
  */
 async function mockApi(
 	page,
-	{ authenticated = false, promptShortcuts = [], onRealtimeSocket } = {}
+	{ authenticated = false, promptShortcuts = [], onRealtimeSocket, sessionStartResponse } = {}
 ) {
 	const unexpectedRequests = [];
 
@@ -59,7 +59,9 @@ async function mockApi(
 		let status = 200;
 		let payload;
 
-		if (path === '/api/auth/me') {
+		if (path === '/api/sessions/start' && request.method() === 'POST' && sessionStartResponse) {
+			payload = sessionStartResponse;
+		} else if (path === '/api/auth/me') {
 			status = authenticated ? 200 : 401;
 			payload = authenticated ? authenticatedUser : { detail: 'Not authenticated.' };
 		} else if (path === '/api/mixes/feed') {
@@ -273,6 +275,37 @@ test('Community feed applies live post_created and post_deleted WS events with n
 		JSON.stringify({ channel: 'feed:status', type: 'post_deleted', data: { post_id: 501 } })
 	);
 	await expect(page.getByText('This arrived over the wire, no reload needed')).toHaveCount(0);
+
+	expect(unexpectedRequests).toEqual([]);
+});
+
+test('the AI DJ player survives navigating away from the home route', async ({ page }) => {
+	const unexpectedRequests = await mockApi(page, {
+		sessionStartResponse: {
+			id: 'session-e2e-persist',
+			prompt: 'chill focus beats',
+			now_playing: { title: 'Persistent Track', artist: 'Persistent Artist' },
+			audio_url: '/media/e2e-fixture-track.mp3',
+			segments: [],
+			reasoning: {}
+		}
+	});
+
+	await page.goto('/');
+	await page.getByPlaceholder(/emotional Arabic vocals/).fill('chill focus beats');
+	await page.getByRole('button', { name: /Start AI DJ/ }).click();
+
+	await expect(page.getByRole('heading', { name: 'Persistent Track' })).toBeVisible();
+	const audioSrcOnHome = await page.locator('audio.hidden-audio').getAttribute('src');
+	expect(audioSrcOnHome).toContain('e2e-fixture-track.mp3');
+
+	// DJPlayerCard renders from routes/+layout.svelte now, not
+	// routes/+page.svelte -- navigating to a route that never renders it
+	// itself must NOT unmount (and so silence) the player.
+	await page.getByRole('link', { name: 'Discover' }).click();
+	await expect(page).toHaveURL(/\/feed$/);
+	await expect(page.getByRole('heading', { name: 'Persistent Track' })).toBeVisible();
+	await expect(page.locator('audio.hidden-audio')).toHaveAttribute('src', audioSrcOnHome ?? '');
 
 	expect(unexpectedRequests).toEqual([]);
 });

@@ -3,6 +3,7 @@
 	import { APP_STATES } from '$lib/constants/appStates.js';
 	import { authStore } from '$lib/stores/authStore.js';
 	import { recordListeningEvent } from '$lib/services/listeningApi.js';
+	import { playerStore } from '$lib/stores/playerStore.js';
 
 	const COACH_OPTIONS = ['Good vibe', 'More energy', 'Less vocals', 'Smoother'];
 
@@ -102,6 +103,12 @@
 			: session?.nowPlaying
 	);
 	let audioUrl = $derived(activeSegment?.audioUrl || session?.audioUrl || '');
+	// Both this bar and MiniMixPlayer.svelte are independently
+	// position:fixed/bottom-docked -- now that this card is mounted globally
+	// (routes/+layout.svelte) instead of only on the home route, a saved mix
+	// played from another page while a DJ session is also active would
+	// otherwise overlap it directly. Stack above it instead.
+	let mixPlayerActive = $derived(Boolean($playerStore.mix));
 	let canControl = $derived(status === APP_STATES.PLAYING && Boolean(audioUrl));
 	let isStarting = $derived(status === APP_STATES.STARTING);
 	let hasPrevious = $derived(segmentIndex > 0);
@@ -395,7 +402,7 @@
 	}
 </script>
 
-<section class="player-deck" aria-label="Cuemix AI DJ player">
+<section class="player-deck" class:stacked={mixPlayerActive} aria-label="Cuemix AI DJ player">
 	<div class="track-block">
 		{#if nowPlaying}
 			{#if nowPlaying.coverUrl}
@@ -579,6 +586,13 @@
 			0 22px 90px rgba(0, 0, 0, 0.62),
 			0 0 70px rgba(59, 130, 246, 0.12);
 		backdrop-filter: blur(18px);
+		transition: bottom 0.15s ease-out;
+	}
+
+	/* MiniMixPlayer.svelte sits at bottom: 16px with roughly an 80px tall
+	   bar -- clear it with a gap instead of overlapping directly. */
+	.player-deck.stacked {
+		bottom: 108px;
 	}
 
 	.track-block,
