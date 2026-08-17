@@ -390,6 +390,7 @@ def _resolve_and_render(
     prefers_smoother: bool,
     exclude_track_keys: frozenset[str] = frozenset(),
     recent_artists: frozenset[str] = frozenset(),
+    viewer_id: int | None = None,
 ) -> tuple[Track, SelectedSegment, dict, dict, dict, CandidateRetriever]:
     """Runs CandidateRetriever -> SegmentSelector -> TransitionPlanner ->
     AudioRenderer for one session-sized (single track) resolution and
@@ -462,7 +463,8 @@ def _resolve_and_render(
 
     if not candidate_pool_reused:
         candidates, served_by = retrieve_candidates_with_fallback(
-            db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
+            db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
+            viewer_id=viewer_id,
         )
         session_candidate_pool.put(session_id, fingerprint, candidates)
     fresh_candidates = [
@@ -506,7 +508,8 @@ def _resolve_and_render(
     ):
         try:
             rescue_candidates = retrieve_candidates(
-                db, intent, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists
+                db, intent, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
+                viewer_id=viewer_id,
             )
         except NoMatchingCandidate:
             rescue_candidates = []
@@ -688,6 +691,7 @@ def create_session(
     track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
         db, intent, retriever, fallback_retriever, selector, planner, renderer,
         session_id=session_id, previous_segment=None, prefers_smoother=False,
+        viewer_id=user_id,
     )
     pipeline_trace["vibe_understander"] = {
         "implementation": type(vibe).__name__,
@@ -778,6 +782,7 @@ def apply_feedback(
                 db, mutated, retriever, fallback_retriever, selector, planner, renderer,
                 session_id=session.id, previous_segment=previous_segment,
                 prefers_smoother=prefers_smoother, recent_artists=recent_artists,
+                viewer_id=session.user_id,
             )
             # Feedback mutates the stored intent with fixed keyword rules
             # (_mutate_intent) rather than calling the LLM again -- invoked
@@ -936,6 +941,7 @@ def advance_session(
             db, intent, retriever, fallback_retriever, selector, planner, renderer,
             session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
             exclude_track_keys=exclude, recent_artists=recent_artists,
+            viewer_id=session.user_id,
         )
     except NoMatchingCandidate:
         # Nothing to advance to (e.g. Audius briefly unreachable); leave the
@@ -1036,6 +1042,7 @@ def prepare_next(
                 db, intent, retriever, fallback_retriever, selector, planner, renderer,
                 session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
                 exclude_track_keys=exclude, recent_artists=recent_artists,
+                viewer_id=session.user_id,
             )
         except NoMatchingCandidate:
             # Nothing to prepare ahead of time; advance_session falls back to

@@ -1,25 +1,50 @@
 <script>
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
-	import { enqueueCatalogTrack, getCatalogBatchStatus } from '$lib/services/catalogApi.js';
+	import {
+		cancelCatalogJob,
+		enqueueCatalogTrack,
+		getCatalogBatchStatus,
+		normalizeCatalogJob,
+		retryCatalogJob
+	} from '$lib/services/catalogApi.js';
+	import { ApiError } from '$lib/services/api.js';
+	import { onUserEvent } from '$lib/services/realtimeSocket.js';
 	import { authStore } from '$lib/stores/authStore.js';
 
 	const ACCEPTED_TYPES = 'audio/mpeg,audio/wav,audio/ogg,audio/flac';
+	const ACCEPTED_COVER_TYPES = 'image/jpeg,image/png,image/webp';
+	// Reconnect-and-restore (requirement 6): the *only* client-side state that
+	// survives a refresh/navigation is this id -- everything else (per-file
+	// progress, which files are done) lives durably server-side in Redis and
+	// is re-fetched from there on mount, never reconstructed from memory.
+	const BATCH_STORAGE_KEY = 'cuemix:upload:activeBatchId';
+	// Realtime (WebSocket) status pushes are primary; this is only a slow
+	// safety net in case an event is ever missed (e.g. a push landing in the
+	// brief window before this page's subscription is established).
+	const FALLBACK_POLL_MS = 5000;
+
+	const ACTIVE_STATUSES = new Set(['queued', 'validating', 'storing', 'analyzing']);
+	const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 	/** @typedef {{
 	 * key: number,
 	 * file: File | null,
+	 * cover: File | null,
+	 * filename: string,
 	 * title: string,
 	 * artist: string,
 	 * album: string,
 	 * genre: string,
 	 * lyrics: string,
 	 * visibility: 'private' | 'public',
-	 * status: 'idle' | 'queued' | 'processing' | 'completed' | 'failed',
+	 * status: 'idle' | 'queued' | 'validating' | 'storing' | 'analyzing' | 'completed' | 'failed' | 'cancelled',
 	 * error: string,
-	 * jobId: string | null
+	 * jobId: string | null,
+	 * locked: boolean,
+	 * track: ReturnType<typeof import('$lib/services/catalogApi.js').normalizeCatalogTrack> | null
 	 * }} SongCard */
 
 	let nextKey = 1;
@@ -28,35 +53,42 @@
 		return {
 			key: nextKey++,
 			file: null,
+			cover: null,
+			filename: '',
 			title: '',
 			artist: '',
 			album: '',
 			genre: '',
 			lyrics: '',
-			visibility: 'private',
+			visibility: 'public',
 			status: 'idle',
 			error: '',
-			jobId: null
+			jobId: null,
+			locked: false,
+			track: null
 		};
 	}
 
 	/** @type {SongCard[]} */
 	let cards = $state([blankCard()]);
 	let uploading = $state(false);
+	let restoring = $state(false);
 	/** @type {string | null} */
 	let batchId = $state(null);
 	let formError = $state('');
-	let pollHandle = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+	/** @type {ReturnType<typeof setTimeout> | null} */
+	let fallbackPollHandle = null;
+	/** @type {(() => void) | null} */
+	let unsubscribeLive = null;
 
 	let batchDone = $derived(
-		batchId !== null &&
-			cards.every((card) => card.status === 'completed' || card.status === 'failed')
+		batchId !== null && cards.every((card) => TERMINAL_STATUSES.has(card.status))
 	);
 	let completedCount = $derived(cards.filter((card) => card.status === 'completed').length);
 	let failedCount = $derived(cards.filter((card) => card.status === 'failed').length);
-	let overallPercent = $derived(
-		cards.length ? Math.round(((completedCount + failedCount) / cards.length) * 100) : 0
-	);
+	let cancelledCount = $derived(cards.filter((card) => card.status === 'cancelled').length);
+	let settledCount = $derived(completedCount + failedCount + cancelledCount);
+	let overallPercent = $derived(cards.length ? Math.round((settledCount / cards.length) * 100) : 0);
 
 	$effect(() => {
 		if ($authStore.status === 'guest') {
@@ -64,9 +96,126 @@
 		}
 	});
 
-	onDestroy(() => {
-		if (pollHandle) clearTimeout(pollHandle);
+	onMount(() => {
+		const savedBatchId =
+			typeof localStorage !== 'undefined' ? localStorage.getItem(BATCH_STORAGE_KEY) : null;
+		if (savedBatchId) void restoreBatch(savedBatchId);
 	});
+
+	onDestroy(() => {
+		stopFallbackPolling();
+		unsubscribeLive?.();
+	});
+
+	/** @param {string} id */
+	function persistBatchId(id) {
+		batchId = id;
+		if (typeof localStorage !== 'undefined') localStorage.setItem(BATCH_STORAGE_KEY, id);
+	}
+
+	function clearPersistedBatch() {
+		batchId = null;
+		if (typeof localStorage !== 'undefined') localStorage.removeItem(BATCH_STORAGE_KEY);
+	}
+
+	function stopFallbackPolling() {
+		if (fallbackPollHandle) {
+			clearTimeout(fallbackPollHandle);
+			fallbackPollHandle = null;
+		}
+	}
+
+	/** @param {ReturnType<typeof normalizeCatalogJob>} job */
+	function applyJobUpdate(job) {
+		cards = cards.map((card) =>
+			card.jobId === job.jobId
+				? {
+						...card,
+						status: /** @type {SongCard['status']} */ (job.status),
+						error: job.error || '',
+						track: job.track || card.track,
+						title: job.track?.title || card.title,
+						artist: job.track?.artist || card.artist,
+						album: job.track?.album || card.album
+					}
+				: card
+		);
+	}
+
+	/** @param {string} activeBatchId */
+	async function refreshBatch(activeBatchId) {
+		try {
+			const status = await getCatalogBatchStatus(activeBatchId);
+			for (const job of status.jobs) applyJobUpdate(job);
+		} catch {
+			// Best-effort resync; the live subscription and the next fallback
+			// tick will both retry.
+		}
+	}
+
+	/** @param {string} activeBatchId */
+	function subscribeLive(activeBatchId) {
+		unsubscribeLive?.();
+		unsubscribeLive = onUserEvent(
+			(type, data) => {
+				if (type !== 'catalog_job_updated') return;
+				const job = normalizeCatalogJob(data);
+				if (job.batchId !== activeBatchId) return;
+				applyJobUpdate(job);
+			},
+			{ onResync: () => void refreshBatch(activeBatchId) }
+		);
+	}
+
+	/** @param {string} activeBatchId */
+	function scheduleFallbackPoll(activeBatchId) {
+		stopFallbackPolling();
+		if (batchId !== activeBatchId) return;
+		if (cards.every((card) => TERMINAL_STATUSES.has(card.status))) {
+			uploading = false;
+			return;
+		}
+		fallbackPollHandle = setTimeout(async () => {
+			await refreshBatch(activeBatchId);
+			scheduleFallbackPoll(activeBatchId);
+		}, FALLBACK_POLL_MS);
+	}
+
+	/** @param {string} savedBatchId */
+	async function restoreBatch(savedBatchId) {
+		restoring = true;
+		try {
+			const status = await getCatalogBatchStatus(savedBatchId);
+			if (!status.jobs.length) {
+				clearPersistedBatch();
+				return;
+			}
+			persistBatchId(savedBatchId);
+			cards = status.jobs.map((job) => ({
+				...blankCard(),
+				filename: job.filename,
+				title: job.track?.title || '',
+				artist: job.track?.artist || '',
+				album: job.track?.album || '',
+				status: /** @type {SongCard['status']} */ (job.status),
+				error: job.error || '',
+				jobId: job.jobId,
+				locked: true,
+				track: job.track
+			}));
+			subscribeLive(savedBatchId);
+			if (cards.some((card) => ACTIVE_STATUSES.has(card.status))) {
+				uploading = true;
+				scheduleFallbackPoll(savedBatchId);
+			}
+		} catch (restoreError) {
+			if (restoreError instanceof ApiError && restoreError.status === 404) {
+				clearPersistedBatch();
+			}
+		} finally {
+			restoring = false;
+		}
+	}
 
 	function addCard() {
 		cards = [...cards, blankCard()];
@@ -85,9 +234,17 @@
 		cards = cards.map((card) => (card.key === key ? { ...card, file, error: '' } : card));
 	}
 
+	/** @param {number} key @param {Event} event */
+	function selectCover(key, event) {
+		const input = /** @type {HTMLInputElement} */ (event.currentTarget);
+		const cover = input.files?.[0] || null;
+		cards = cards.map((card) => (card.key === key ? { ...card, cover } : card));
+	}
+
 	/** @param {SongCard} card */
 	function cardValidationError(card) {
 		if (!card.file) return 'Choose an audio file.';
+		if (!card.title.trim()) return 'Title is required.';
 		if (!card.artist.trim()) return 'Artist is required.';
 		if (!card.album.trim()) return 'Album is required.';
 		return '';
@@ -102,20 +259,23 @@
 			const job = await enqueueCatalogTrack({
 				batchId: activeBatchId,
 				file: /** @type {File} */ (card.file),
-				title: card.title.trim() || undefined,
+				title: card.title.trim(),
 				artist: card.artist.trim(),
 				album: card.album.trim(),
 				genre: card.genre.trim() || undefined,
 				lyrics: card.lyrics.trim() || undefined,
-				visibility: card.visibility
+				visibility: card.visibility,
+				cover: card.cover
 			});
 			cards = cards.map((item) =>
 				item.key === card.key
 					? {
 							...item,
-							status: job.status === 'failed' ? 'failed' : 'queued',
+							status: /** @type {SongCard['status']} */ (job.status),
 							jobId: job.jobId,
-							error: job.error || ''
+							filename: job.filename,
+							error: job.error || '',
+							locked: true
 						}
 					: item
 			);
@@ -133,31 +293,6 @@
 		}
 	}
 
-	/** @param {string} activeBatchId */
-	async function pollBatch(activeBatchId) {
-		try {
-			const status = await getCatalogBatchStatus(activeBatchId);
-			const byJobId = new Map(status.jobs.map((job) => [job.jobId, job]));
-			cards = cards.map((card) => {
-				const job = card.jobId ? byJobId.get(card.jobId) : null;
-				if (!job) return card;
-				return {
-					...card,
-					status: /** @type {SongCard['status']} */ (job.status),
-					error: job.error || ''
-				};
-			});
-		} catch {
-			// Best-effort polling -- a transient failure just retries on the
-			// next tick instead of surfacing as a page-level error.
-		}
-		if (cards.some((card) => card.status === 'queued' || card.status === 'processing')) {
-			pollHandle = setTimeout(() => void pollBatch(activeBatchId), 1200);
-		} else {
-			uploading = false;
-		}
-	}
-
 	async function uploadAll() {
 		if (uploading) return;
 		const errors = cards.map(cardValidationError);
@@ -172,25 +307,87 @@
 			typeof crypto !== 'undefined' && crypto.randomUUID
 				? crypto.randomUUID()
 				: `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-		batchId = activeBatchId;
+		persistBatchId(activeBatchId);
+		subscribeLive(activeBatchId);
 		await Promise.all(cards.map((card) => submitCard(card, activeBatchId)));
-		void pollBatch(activeBatchId);
+		// One immediate catch-up fetch, in case processing (or even full
+		// completion, for a small/fast file) raced ahead of both the
+		// response above and the live subscription -- the periodic fallback
+		// below is only for whatever happens *after* this point.
+		await refreshBatch(activeBatchId);
+		scheduleFallbackPoll(activeBatchId);
 	}
 
 	function startNewBatch() {
-		if (pollHandle) clearTimeout(pollHandle);
-		batchId = null;
+		stopFallbackPolling();
+		unsubscribeLive?.();
+		unsubscribeLive = null;
+		clearPersistedBatch();
 		uploading = false;
 		formError = '';
 		cards = [blankCard()];
 	}
 
 	/** @param {SongCard} card */
-	function retryCard(card) {
-		if (!batchId || uploading) return;
-		uploading = true;
-		const activeBatchId = batchId;
-		void submitCard(card, activeBatchId).then(() => void pollBatch(activeBatchId));
+	async function retryCard(card) {
+		if (!card.jobId) return;
+		try {
+			const job = await retryCatalogJob(card.jobId);
+			applyJobUpdate(job);
+			uploading = true;
+			if (batchId) scheduleFallbackPoll(batchId);
+		} catch (requestError) {
+			cards = cards.map((item) =>
+				item.key === card.key
+					? {
+							...item,
+							error:
+								requestError instanceof Error ? requestError.message : 'Could not retry this song.'
+						}
+					: item
+			);
+		}
+	}
+
+	/** @param {SongCard} card */
+	async function cancelCard(card) {
+		if (!card.jobId) return;
+		try {
+			const job = await cancelCatalogJob(card.jobId);
+			applyJobUpdate(job);
+		} catch (requestError) {
+			cards = cards.map((item) =>
+				item.key === card.key
+					? {
+							...item,
+							error:
+								requestError instanceof Error ? requestError.message : 'Could not cancel this song.'
+						}
+					: item
+			);
+		}
+	}
+
+	/** @param {SongCard['status']} status */
+	function statusLabel(status) {
+		switch (status) {
+			case 'idle':
+				return 'Not uploaded';
+			case 'queued':
+				return 'Queued';
+			case 'validating':
+				return 'Validating';
+			case 'storing':
+				return 'Uploading';
+			case 'analyzing':
+				return 'Analyzing';
+			case 'completed':
+				return 'Uploaded';
+			case 'cancelled':
+				return 'Cancelled';
+			default:
+				return 'Failed';
+		}
 	}
 </script>
 
@@ -209,17 +406,19 @@
 			<h1>Upload music</h1>
 			<p>
 				Add tracks to the AI-DJ catalog. Add as many songs as you like, then upload them all at
-				once.
+				once. You can leave this page or refresh it -- uploads keep going in the background and pick
+				back up right here when you return.
 			</p>
 		</header>
 
+		{#if restoring}<p class="restore-notice">Reconnecting to your upload in progress…</p>{/if}
 		{#if formError}<div class="message error" role="alert">{formError}</div>{/if}
 
 		{#if batchId}
 			<section class="batch-progress card" aria-live="polite">
 				<div class="batch-progress-head">
 					<strong>{batchDone ? 'Batch finished' : 'Uploading…'}</strong>
-					<span>{completedCount + failedCount} of {cards.length} done</span>
+					<span>{settledCount} of {cards.length} done</span>
 				</div>
 				<div
 					class="progress-track"
@@ -230,7 +429,12 @@
 				>
 					<div class="progress-fill" style={`width: ${overallPercent}%`}></div>
 				</div>
-				{#if failedCount}<p class="batch-note">{failedCount} of {cards.length} failed.</p>{/if}
+				{#if failedCount || cancelledCount}
+					<p class="batch-note">
+						{#if failedCount}{failedCount} failed.{/if}
+						{#if cancelledCount}{cancelledCount} cancelled.{/if}
+					</p>
+				{/if}
 				{#if batchDone}
 					<button type="button" class="secondary-button" onclick={startNewBatch}
 						>Upload more songs</button
@@ -247,13 +451,10 @@
 							class="status-pill"
 							class:completed={card.status === 'completed'}
 							class:failed={card.status === 'failed'}
-							class:busy={card.status === 'queued' || card.status === 'processing'}
+							class:cancelled={card.status === 'cancelled'}
+							class:busy={ACTIVE_STATUSES.has(card.status)}
 						>
-							{#if card.status === 'idle'}Not uploaded
-							{:else if card.status === 'queued'}Queued
-							{:else if card.status === 'processing'}Processing
-							{:else if card.status === 'completed'}Uploaded
-							{:else}Failed{/if}
+							{statusLabel(card.status)}
 						</span>
 						{#if cards.length > 1 && card.status === 'idle'}
 							<button
@@ -265,37 +466,55 @@
 						{/if}
 					</div>
 
+					{#if card.track?.coverUrl}
+						<img class="cover-thumb" src={card.track.coverUrl} alt="" />
+					{/if}
+
 					<label class="field">
 						<span>Audio file</span>
 						<input
 							type="file"
 							accept={ACCEPTED_TYPES}
-							disabled={uploading && card.status !== 'idle'}
+							disabled={card.locked}
 							onchange={(event) => selectFile(card.key, event)}
 						/>
-						{#if card.file}<small class="file-name">{card.file.name}</small>{/if}
+						<small class="format-hint">Supported audio: MP3, WAV, OGG, FLAC</small>
+						{#if card.file}<small class="file-name">{card.file.name}</small>
+						{:else if card.filename}<small class="file-name">{card.filename}</small>{/if}
+					</label>
+
+					<label class="field">
+						<span>Cover art (optional)</span>
+						<input
+							type="file"
+							accept={ACCEPTED_COVER_TYPES}
+							disabled={card.locked}
+							onchange={(event) => selectCover(card.key, event)}
+						/>
+						<small class="format-hint">JPG, PNG, or WebP</small>
+						{#if card.cover}<small class="file-name">{card.cover.name}</small>{/if}
 					</label>
 
 					<div class="field-grid">
 						<label class="field">
-							<span>Title (optional)</span>
-							<input bind:value={card.title} maxlength="255" disabled={uploading} />
+							<span>Title</span>
+							<input bind:value={card.title} maxlength="255" required disabled={card.locked} />
 						</label>
 						<label class="field">
 							<span>Artist</span>
-							<input bind:value={card.artist} maxlength="255" required disabled={uploading} />
+							<input bind:value={card.artist} maxlength="255" required disabled={card.locked} />
 						</label>
 						<label class="field">
 							<span>Album</span>
-							<input bind:value={card.album} maxlength="255" required disabled={uploading} />
+							<input bind:value={card.album} maxlength="255" required disabled={card.locked} />
 						</label>
 						<label class="field">
 							<span>Genre (optional)</span>
-							<input bind:value={card.genre} maxlength="100" disabled={uploading} />
+							<input bind:value={card.genre} maxlength="100" disabled={card.locked} />
 						</label>
 						<label class="field visibility">
 							<span>Visibility</span>
-							<select bind:value={card.visibility} disabled={uploading}>
+							<select bind:value={card.visibility} disabled={card.locked}>
 								<option value="private">Private (only you)</option>
 								<option value="public">Public</option>
 							</select>
@@ -304,15 +523,22 @@
 
 					<label class="field">
 						<span>Lyrics (optional)</span>
-						<textarea bind:value={card.lyrics} maxlength="20000" disabled={uploading}></textarea>
+						<textarea bind:value={card.lyrics} maxlength="20000" disabled={card.locked}></textarea>
 					</label>
 
 					{#if card.error}<p class="card-error" role="alert">{card.error}</p>{/if}
-					{#if card.status === 'failed' && batchId && !uploading}
-						<button type="button" class="secondary-button" onclick={() => retryCard(card)}
-							>Retry this song</button
-						>
-					{/if}
+					<div class="card-actions">
+						{#if card.status === 'failed'}
+							<button type="button" class="secondary-button" onclick={() => retryCard(card)}
+								>Retry this song</button
+							>
+						{/if}
+						{#if card.status === 'queued'}
+							<button type="button" class="secondary-button" onclick={() => cancelCard(card)}
+								>Cancel</button
+							>
+						{/if}
+					</div>
 				</article>
 			{/each}
 		</div>
@@ -344,6 +570,10 @@
 		min-height: 40vh;
 		place-content: center;
 		color: var(--text-muted);
+	}
+	.restore-notice {
+		color: var(--text-muted);
+		font-size: 13px;
 	}
 	.eyebrow {
 		margin: 0;
@@ -419,6 +649,13 @@
 		align-items: center;
 		justify-content: space-between;
 	}
+	.cover-thumb {
+		width: 72px;
+		height: 72px;
+		border-radius: 12px;
+		object-fit: cover;
+		border: 1px solid var(--border-soft);
+	}
 	.status-pill {
 		border-radius: 999px;
 		padding: 4px 10px;
@@ -439,6 +676,10 @@
 		background: rgba(255, 107, 134, 0.16);
 		color: var(--danger);
 	}
+	.status-pill.cancelled {
+		background: rgba(255, 255, 255, 0.08);
+		color: var(--text-muted);
+	}
 	.remove-button {
 		border: 0;
 		background: none;
@@ -452,6 +693,10 @@
 		font-weight: 800;
 		color: var(--text-soft);
 		font-size: 13px;
+	}
+	.format-hint {
+		color: var(--text-muted);
+		font-weight: 500;
 	}
 	.field-grid {
 		display: grid;
@@ -488,6 +733,10 @@
 		margin: 0;
 		color: var(--danger);
 		font-size: 13px;
+	}
+	.card-actions {
+		display: flex;
+		gap: 10px;
 	}
 	.page-actions {
 		display: flex;

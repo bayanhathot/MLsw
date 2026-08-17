@@ -1,17 +1,46 @@
-"""Parallel priority queue for bounded media validation and storage."""
+"""Parallel priority queue for bounded media validation and storage.
+
+Durability (Job Queue milestone hardening): the raw bytes of every upload
+are written to a durable "pending" location on disk *before* the job is
+considered queued, and each job's record (status/priority/batch_id/
+metadata/result/error/timestamps) is mirrored into Redis (REDIS_URL) on
+every state change. Together, that means a job that's still queued or
+mid-flight survives a process crash/restart: UploadQueue.__init__ re-hydrates
+every job from Redis, and any job that was still active gets re-enqueued,
+reading its bytes back from the pending file rather than from memory (which
+the crash/restart lost).
+
+Fails open when Redis is unconfigured/unreachable: falls back to the
+original in-memory-only behavior (job state lost on restart), the same
+posture the rest of this codebase already applies to Redis (see
+redis_client.py/channel_hub.py) -- durability is additive, not a hard
+dependency for uploads to work at all.
+
+Domain-agnostic by design: this module knows nothing about CatalogTrack or
+Attachment rows. A caller that needs a DB row created once a job's bytes are
+safely stored registers a named callback (register_callback) and passes its
+name to submit(); the worker invokes it by name, not by direct reference, so
+a job recovered after a restart can still find the right handler once the
+owning module re-registers the same name at import time (a Python callable
+itself can't survive a restart, but its name always resolves the same way).
+"""
 
 import hashlib
+import io
+import json
 import logging
 import os
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Callable
 from itertools import count
 from pathlib import Path
 from queue import Full, PriorityQueue
 from threading import Event, Lock, Thread
-from time import monotonic
+from time import monotonic, time
 from uuid import uuid4
 
 from fastapi import HTTPException
+
+from app.core.redis_client import get_sync_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +64,8 @@ async def read_limited_stream(chunks: AsyncIterable[bytes], maximum_bytes: int) 
 # Sentinel job_id prefix for analysis-only tasks pushed onto the same
 # worker pool (requirement 5: reuse this queue, don't build a second async
 # system). These never occupy self._jobs -- there's nothing for a client to
-# poll, the caller already has the catalog_track_id it queued.
+# poll directly; an associated upload job_id (see submit_analysis) is what
+# lets _run_analysis mark that job "completed" once analysis finishes.
 _ANALYZE_PREFIX = "analyze:"
 
 ALLOWED_TYPES = {
@@ -56,6 +86,10 @@ ALLOWED_TYPES = {
     "audio/flac": ("audio", ".flac", 10 * 1024 * 1024),
 }
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / "uploads"))
+# Where submit() durably parks raw bytes before a worker has even looked at
+# them -- inside UPLOAD_DIR so it shares that volume's persistence, but its
+# own subdirectory so pending files are never mistaken for finished ones.
+_PENDING_SUBDIR = "_pending"
 
 # Compressed formats (mp3/ogg) vs. lossless (wav/flac) genuinely need
 # different ceilings for the same song length -- a 3-minute uncompressed WAV
@@ -78,6 +112,64 @@ CATALOG_AUDIO_MAX_BYTES = {
     "audio/wav": _CATALOG_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024,
     "audio/flac": _CATALOG_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024,
 }
+
+# Every job status a job can ever be in. The first four are transient
+# (a job in one of these was mid-flight if a restart is recovering it);
+# the last three are terminal.
+_ACTIVE_STATUSES = {"queued", "validating", "storing", "analyzing"}
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+# Named on_stored_callback hooks a domain module registers at import time --
+# see register_callback()'s docstring for why this is name-based rather than
+# a direct callable reference.
+_CALLBACKS: dict[str, Callable[[str], None]] = {}
+# Optional hook invoked once a job's associated analyze_catalog_track run
+# finishes (success or failure) -- see submit_analysis's upload_job_id.
+_ANALYSIS_COMPLETE_CALLBACKS: dict[str, Callable[[str, int], None]] = {}
+
+
+def register_callback(name: str, fn: Callable[[str], None]) -> None:
+    """Registers a named hook the worker invokes (by name, with just a
+    job_id) right after a job's bytes finish storing -- e.g.
+    routers/catalog.py registers one to create the CatalogTrack row and
+    dispatch analysis. Re-registering the same name simply replaces it
+    (idempotent for a module that registers once at import time, which is
+    the only way this is ever called)."""
+
+    _CALLBACKS[name] = fn
+
+
+def register_analysis_complete_callback(name: str, fn: Callable[[str, int], None]) -> None:
+    """Registers a named hook invoked with (upload_job_id, catalog_track_id)
+    once that track's analyze_catalog_track run finishes, regardless of
+    whether analysis itself succeeded -- upload success and analysis
+    success are different questions (see routers/catalog.py)."""
+
+    _ANALYSIS_COMPLETE_CALLBACKS[name] = fn
+
+
+# Fires on *every* status transition (queued/validating/storing/analyzing/
+# completed/failed/cancelled), unlike the two callbacks above, which each
+# fire once at one specific point. Plain functions in a list, not a name
+# registry -- unlike _CALLBACKS/_ANALYSIS_COMPLETE_CALLBACKS, nothing needs
+# to look one of these back up by name after a restart (they're for live
+# observability -- e.g. routers/catalog.py pushing a WebSocket update and
+# firing a notification on a terminal state -- not for resuming work), so a
+# plain re-append on import is fine. Called with the job's dict snapshot;
+# exceptions are caught and logged, never allowed to break the worker.
+_STATUS_LISTENERS: list[Callable[[dict], None]] = []
+
+
+def add_status_listener(fn: Callable[[dict], None]) -> None:
+    _STATUS_LISTENERS.append(fn)
+
+
+def _notify_status_listeners(job: dict) -> None:
+    for fn in _STATUS_LISTENERS:
+        try:
+            fn(job)
+        except Exception:
+            logger.exception("upload_queue status listener failed for job %s", job.get("job_id"))
 
 
 def _matches_signature(content_type: str, data: bytes) -> bool:
@@ -107,6 +199,11 @@ def _matches_signature(content_type: str, data: bytes) -> bool:
 def validate_upload(
     filename: str, content_type: str, data: bytes, max_size_override: int | None = None
 ) -> tuple[str, str, int]:
+    """Cheap, synchronous checks only: signature + size + filename. Deep
+    audio validation (actually decodable, not silent/too short) is a
+    separate, more expensive step -- see _validate_decodable_audio, run only
+    by the worker, never inline in a request."""
+
     content_type = content_type.split(";", 1)[0].strip().lower()
     if content_type not in ALLOWED_TYPES:
         raise ValueError("Unsupported media type.")
@@ -124,8 +221,47 @@ def validate_upload(
     return kind, extension, max_size
 
 
+def _validate_decodable_audio(data: bytes, extension: str) -> dict:
+    """Actually decodes the audio (not just its byte signature), catching a
+    truncated/corrupt file a valid-looking header can still pass, plus
+    silence and unusably short clips. Raises ValueError with a plain,
+    user-facing reason; a merely unusual-but-fine track (mono, low sample
+    rate) never raises -- only something genuinely unplayable does."""
+
+    from pydub import AudioSegment
+
+    try:
+        segment = AudioSegment.from_file(io.BytesIO(data), format=extension.lstrip("."))
+    except Exception as exc:
+        raise ValueError("Could not decode this file as playable audio.") from exc
+    if len(segment) < 1000:
+        raise ValueError("Audio is too short to be a usable track (minimum 1 second).")
+    if segment.rms == 0:
+        raise ValueError("Audio appears to be silent.")
+    if segment.frame_rate <= 0 or segment.channels <= 0:
+        raise ValueError("Audio has an invalid sample rate or channel count.")
+    return {
+        "duration_ms": len(segment),
+        "channels": segment.channels,
+        "frame_rate": segment.frame_rate,
+    }
+
+
+def _redis_job_key(job_id: str) -> str:
+    return f"cuemix:upload:job:{job_id}"
+
+
+def _redis_batch_key(batch_id: str) -> str:
+    return f"cuemix:upload:batch:{batch_id}"
+
+
+_REDIS_ALL_JOBS_KEY = "cuemix:upload:jobs"
+
+
 class UploadQueue:
-    """In-memory queue; completed files are durable, job metadata is not."""
+    """Bounded in-process priority dispatch (unchanged scheduling logic),
+    backed by a durable Redis-mirrored job store when REDIS_URL is
+    configured and reachable; falls back to in-memory-only otherwise."""
 
     def __init__(self, workers: int = 4, capacity: int = 32, max_history: int = 1000) -> None:
         self._queue: PriorityQueue = PriorityQueue(maxsize=capacity)
@@ -134,7 +270,8 @@ class UploadQueue:
         # Caller-supplied batch_id -> the job_ids submitted under it (see
         # submit()'s batch_id param and jobs_for_batch() below). Membership
         # is pruned in lockstep with _jobs itself -- a batch view is just an
-        # aggregation over still-tracked jobs, not a separately durable thing.
+        # aggregation over still-tracked jobs, not a separately durable thing
+        # beyond what Redis already mirrors.
         self._batches: dict[str, set[str]] = {}
         self._lock = Lock()
         self._submission_lock = Lock()
@@ -142,10 +279,112 @@ class UploadQueue:
         self._max_history = max_history
         self._unclaimed_ttl = max(60, int(os.getenv("UPLOAD_JOB_TTL_SECONDS", "3600")))
         self._cleanup_wakeup = Event()
+        (UPLOAD_DIR / _PENDING_SUBDIR).mkdir(parents=True, exist_ok=True)
+        self._recover()
         for index in range(workers):
             Thread(target=self._worker, name=f"cuemix-upload-{index}", daemon=True).start()
         if workers > 0:
             Thread(target=self._cleanup_worker, name="cuemix-upload-cleanup", daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Redis-backed durability
+    # ------------------------------------------------------------------
+
+    def _persist(self, job: dict) -> None:
+        """Best-effort mirror of one job's full record into Redis. Never
+        raises -- an unreachable Redis degrades durability, not uploads
+        themselves (same fail-open posture as channel_hub.py)."""
+
+        client = get_sync_redis_client()
+        if client is None:
+            return
+        try:
+            client.set(_redis_job_key(job["job_id"]), json.dumps(job))
+            client.sadd(_REDIS_ALL_JOBS_KEY, job["job_id"])
+            if job.get("batch_id"):
+                client.sadd(_redis_batch_key(job["batch_id"]), job["job_id"])
+        except Exception:
+            logger.warning("upload_queue: failed to persist job %s to redis", job["job_id"], exc_info=True)
+
+    def _forget_redis(self, job: dict) -> None:
+        client = get_sync_redis_client()
+        if client is None:
+            return
+        try:
+            client.delete(_redis_job_key(job["job_id"]))
+            client.srem(_REDIS_ALL_JOBS_KEY, job["job_id"])
+            if job.get("batch_id"):
+                client.srem(_redis_batch_key(job["batch_id"]), job["job_id"])
+        except Exception:
+            logger.warning("upload_queue: failed to remove job %s from redis", job["job_id"], exc_info=True)
+
+    def _recover(self) -> None:
+        """Runs once at construction. Re-hydrates every job Redis still
+        knows about into memory (so polling/history work immediately after a
+        restart, not only once new jobs arrive), and re-enqueues anything
+        that was still active when the previous process stopped -- reading
+        its bytes back from the pending file, since in-memory state (and the
+        original PriorityQueue tuple) didn't survive the restart."""
+
+        client = get_sync_redis_client()
+        if client is None:
+            return
+        try:
+            job_ids = client.smembers(_REDIS_ALL_JOBS_KEY)
+        except Exception:
+            logger.warning("upload_queue: could not reach redis for crash recovery", exc_info=True)
+            return
+
+        recovered = 0
+        for job_id in job_ids:
+            try:
+                raw = client.get(_redis_job_key(job_id))
+            except Exception:
+                continue
+            if raw is None:
+                continue
+            try:
+                job = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+
+            if job.get("status") not in _ACTIVE_STATUSES:
+                self._jobs[job_id] = job
+                if job.get("batch_id"):
+                    self._batches.setdefault(job["batch_id"], set()).add(job_id)
+                continue
+
+            pending_path = job.get("pending_path")
+            if not pending_path or not Path(pending_path).is_file():
+                # Was mid-flight when the process died and its raw bytes
+                # didn't survive either -- nothing safe to redo, report it
+                # plainly rather than silently dropping it or fabricating a
+                # result.
+                job["status"] = "failed"
+                job["error"] = "Upload was interrupted by a restart and could not be recovered."
+                self._jobs[job_id] = job
+                if job.get("batch_id"):
+                    self._batches.setdefault(job["batch_id"], set()).add(job_id)
+                self._persist(job)
+                continue
+
+            job["status"] = "queued"
+            job["error"] = None
+            self._jobs[job_id] = job
+            if job.get("batch_id"):
+                self._batches.setdefault(job["batch_id"], set()).add(job_id)
+            self._persist(job)
+            self._queue.put_nowait((-job["priority"], next(self._sequence), job_id))
+            recovered += 1
+
+        if recovered:
+            logger.warning(
+                "upload_queue: recovered %d job(s) that were queued/in-flight before a restart", recovered
+            )
+
+    # ------------------------------------------------------------------
+    # Job creation
+    # ------------------------------------------------------------------
 
     def _new_job(
         self,
@@ -157,6 +396,8 @@ class UploadQueue:
         batch_id: str | None = None,
         metadata: dict | None = None,
         max_size_override: int | None = None,
+        on_stored_callback: str | None = None,
+        deep_audio_validation: bool = False,
     ) -> dict:
         job_id = f"upload_{uuid4().hex}"
         return {
@@ -173,6 +414,7 @@ class UploadQueue:
             "result": None,
             "attachment_id": None,
             "created_at_monotonic": monotonic(),
+            "created_at_epoch": time(),
             "completed_at_monotonic": None,
             # Caller-scoped grouping (e.g. one bulk catalog upload) and
             # arbitrary caller metadata to carry through to materialization
@@ -185,6 +427,18 @@ class UploadQueue:
             # the worker (see validate_upload) -- e.g. catalog uploads use a
             # higher, format-tiered cap than generic attachments.
             "max_size_override": max_size_override,
+            # Durability: where this job's raw bytes are parked until
+            # they're either moved to final storage or a retry consumes
+            # them again. See submit()/_worker().
+            "pending_path": None,
+            "sha256": None,
+            "on_stored_callback": on_stored_callback,
+            # Opt-in, not automatic for every "audio" kind: this queue is
+            # shared with generic forum/message/DM attachments
+            # (routers/uploads.py), which never asked for (and would break
+            # under) requirement 5's "actually decodable" bar -- only
+            # routers/catalog.py's two upload paths set this.
+            "deep_audio_validation": deep_audio_validation,
         }
 
     @staticmethod
@@ -200,6 +454,8 @@ class UploadQueue:
 
     def _prune(self) -> None:
         expired_files: list[str] = []
+        pending_paths: list[str] = []
+        forgettable: list[dict] = []
         with self._lock:
             now = monotonic()
             expired_unclaimed = [
@@ -217,14 +473,18 @@ class UploadQueue:
                 removable.extend(
                     key
                     for key, job in self._jobs.items()
-                    if key not in expired_unclaimed
-                    and (job["status"] == "failed" or (job["status"] == "completed" and self._is_claimed(job)))
+                    if key not in expired_unclaimed and job["status"] in _TERMINAL_STATUSES
                 )
             for key in removable[: len(expired_unclaimed) + history_slots_needed]:
                 job = self._jobs.pop(key, None)
                 self._materialization_locks.pop(key, None)
                 if job and job["status"] == "completed" and not self._is_claimed(job):
                     expired_files.append(job["result"]["storage_name"])
+                # A job leaving tracking entirely can never be retried again,
+                # so its pending copy (if the terminal state kept one, e.g.
+                # a failed job retry never claimed) is worthless to keep.
+                if job and job.get("pending_path"):
+                    pending_paths.append(job["pending_path"])
                 batch_id = job.get("batch_id") if job else None
                 if batch_id:
                     members = self._batches.get(batch_id)
@@ -232,6 +492,8 @@ class UploadQueue:
                         members.discard(key)
                         if not members:
                             self._batches.pop(batch_id, None)
+                if job:
+                    forgettable.append(job)
         for storage_name in expired_files:
             try:
                 (UPLOAD_DIR / storage_name).unlink(missing_ok=True)
@@ -239,6 +501,13 @@ class UploadQueue:
                 # Capacity remains bounded even if an operator must later
                 # remove an unreadable file manually.
                 pass
+        for pending_path in pending_paths:
+            try:
+                Path(pending_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        for job in forgettable:
+            self._forget_redis(job)
 
     def _cleanup_worker(self) -> None:
         """Expire unclaimed files even when no later submission arrives."""
@@ -246,6 +515,17 @@ class UploadQueue:
         interval = max(60, min(300, self._unclaimed_ttl // 2))
         while not self._cleanup_wakeup.wait(interval):
             self._prune()
+
+    def _write_pending(self, job_id: str, data: bytes) -> str:
+        # mkdir here too, not just in __init__: tests (and any caller that
+        # repoints UPLOAD_DIR after construction) swap it out from under an
+        # already-constructed singleton, so the pending subdir under the new
+        # path may never have been created otherwise.
+        directory = UPLOAD_DIR / _PENDING_SUBDIR
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{job_id}.bin"
+        path.write_bytes(data)
+        return str(path)
 
     def submit(
         self,
@@ -258,6 +538,8 @@ class UploadQueue:
         batch_id: str | None = None,
         metadata: dict | None = None,
         max_size_override: int | None = None,
+        on_stored_callback: str | None = None,
+        deep_audio_validation: bool = False,
     ) -> dict:
         with self._submission_lock:
             self._prune()
@@ -275,25 +557,42 @@ class UploadQueue:
                 batch_id,
                 metadata,
                 max_size_override,
+                on_stored_callback,
+                deep_audio_validation,
             )
             job_id = job["job_id"]
+            # Durable *before* this job is considered queued: bytes on disk
+            # now, not only in the in-process queue tuple, is what lets a
+            # crash between here and dispatch still be recoverable.
+            job["pending_path"] = self._write_pending(job_id, data)
+            job["sha256"] = hashlib.sha256(data).hexdigest()
             with self._lock:
                 self._jobs[job_id] = job
                 if batch_id:
                     self._batches.setdefault(batch_id, set()).add(job_id)
-            self._queue.put_nowait((-priority, next(self._sequence), job_id, data))
+            self._persist(job)
+            self._queue.put_nowait((-priority, next(self._sequence), job_id))
+        _notify_status_listeners(job)
         return self.public(job_id)
 
-    def submit_analysis(self, catalog_track_id: int, priority: int = 5) -> None:
+    def submit_analysis(
+        self, catalog_track_id: int, priority: int = 5, upload_job_id: str | None = None
+    ) -> None:
         """Queue a post-store analysis task on the same worker pool.
 
-        Fire-and-forget: there is no job status to poll here, the caller
-        already holds the catalog_track_id it queued and can read the
-        CatalogTrack row's analysis_status directly once it wants to know.
+        Fire-and-forget as far as the analysis result itself goes -- the
+        caller already holds the catalog_track_id it queued and can read the
+        CatalogTrack row's analysis_status directly. `upload_job_id`, if
+        given, is how the *upload* job (still sitting in "analyzing") learns
+        analysis finished -- see _run_analysis.
         """
 
         self._queue.put_nowait(
-            (-priority, next(self._sequence), f"{_ANALYZE_PREFIX}{catalog_track_id}", None)
+            (
+                -priority,
+                next(self._sequence),
+                f"{_ANALYZE_PREFIX}{catalog_track_id}::{upload_job_id or ''}",
+            )
         )
 
     def submit_many(self, items: list[tuple[int, str, str, bytes, int]]) -> list[dict]:
@@ -306,12 +605,18 @@ class UploadQueue:
                     raise Full
             if self._queue.maxsize and self._queue.qsize() + len(items) > self._queue.maxsize:
                 raise Full
-            jobs = [self._new_job(owner_id, filename, content_type, priority) for owner_id, filename, content_type, _, priority in items]
+            jobs = [
+                self._new_job(owner_id, filename, content_type, priority)
+                for owner_id, filename, content_type, _, priority in items
+            ]
+            for job, (_, _, _, data, _priority) in zip(jobs, items):
+                job["pending_path"] = self._write_pending(job["job_id"], data)
+                job["sha256"] = hashlib.sha256(data).hexdigest()
             with self._lock:
                 self._jobs.update({job["job_id"]: job for job in jobs})
             try:
-                for job, (_, _, _, data, priority) in zip(jobs, items):
-                    self._queue.put_nowait((-priority, next(self._sequence), job["job_id"], data))
+                for job, (_, _, _, _data, priority) in zip(jobs, items):
+                    self._queue.put_nowait((-priority, next(self._sequence), job["job_id"]))
             except Full:
                 # This is only defensive: other producers are serialized and
                 # consumers can only free capacity after the check.
@@ -319,6 +624,8 @@ class UploadQueue:
                     for job in jobs:
                         self._jobs.pop(job["job_id"], None)
                 raise
+            for job in jobs:
+                self._persist(job)
         return [self.public(job["job_id"]) for job in jobs]
 
     def public(self, job_id: str) -> dict | None:
@@ -330,8 +637,8 @@ class UploadQueue:
         """Every still-tracked job submitted under this batch_id, in
         submission order. Jobs that already aged out of history (see
         _prune's UPLOAD_JOB_TTL_SECONDS/max_history bounds) are simply
-        absent -- there is no separate durable batch record, the batch view
-        is always just a live aggregation over _jobs."""
+        absent -- there is no separate durable batch record beyond what
+        Redis already mirrors of each job."""
 
         with self._lock:
             job_ids = self._batches.get(batch_id, set())
@@ -352,12 +659,83 @@ class UploadQueue:
             job = self._jobs.get(job_id)
             if job is not None:
                 job["attachment_id"] = attachment_id
+                snapshot = dict(job)
+            else:
+                snapshot = None
+        if snapshot:
+            self._persist(snapshot)
 
     def set_catalog_track(self, job_id: str, catalog_track_id: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is not None:
                 job["catalog_track_id"] = catalog_track_id
+                snapshot = dict(job)
+            else:
+                snapshot = None
+        if snapshot:
+            self._persist(snapshot)
+
+    def _set_status(self, job_id: str, status: str, *, error: str | None = None, completed: bool = False) -> dict | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            job["status"] = status
+            job["error"] = error
+            if completed:
+                job["completed_at_monotonic"] = monotonic()
+            snapshot = dict(job)
+        self._persist(snapshot)
+        _notify_status_listeners(snapshot)
+        return snapshot
+
+    def retry_job(self, job_id: str, owner_id: int) -> dict | None:
+        """Re-queues a job that finished "failed", reusing the same bytes
+        (still on disk in its pending location) and the same priority.
+        Returns None if the job doesn't exist, isn't owned by this caller,
+        isn't currently failed, or its pending bytes are gone (already
+        cleaned up -- nothing safe to retry)."""
+
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job["owner_id"] != owner_id or job["status"] != "failed":
+                return None
+            pending_path = job.get("pending_path")
+            if not pending_path or not Path(pending_path).is_file():
+                return None
+            job["status"] = "queued"
+            job["error"] = None
+            priority = job["priority"]
+            snapshot = dict(job)
+        self._persist(snapshot)
+        self._queue.put_nowait((-priority, next(self._sequence), job_id))
+        _notify_status_listeners(snapshot)
+        return self.public(job_id)
+
+    def cancel_job(self, job_id: str, owner_id: int) -> bool:
+        """Cancels a job that's still "queued" (lazy deletion: a plain
+        PriorityQueue can't remove an arbitrary entry, so the worker itself
+        checks for "cancelled" immediately after dequeuing and skips it).
+        Returns False if the job doesn't exist, isn't owned by this caller,
+        or has already left "queued" (a job already being validated/stored/
+        analyzed has gone too far to cleanly cancel)."""
+
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job["owner_id"] != owner_id or job["status"] != "queued":
+                return False
+            job["status"] = "cancelled"
+            pending_path = job.get("pending_path")
+            snapshot = dict(job)
+        self._persist(snapshot)
+        if pending_path:
+            try:
+                Path(pending_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        _notify_status_listeners(snapshot)
+        return True
 
     def materialization_lock(self, job_id: str) -> Lock:
         """Serialize Attachment/CatalogTrack row creation for concurrent
@@ -368,42 +746,89 @@ class UploadQueue:
 
     def _worker(self) -> None:
         while True:
-            _, _, job_id, data = self._queue.get()
+            _, _, job_id = self._queue.get()
             if job_id.startswith(_ANALYZE_PREFIX):
-                self._run_analysis(job_id[len(_ANALYZE_PREFIX):])
+                payload = job_id[len(_ANALYZE_PREFIX):]
+                track_id_text, _, upload_job_id = payload.partition("::")
+                self._run_analysis(track_id_text, upload_job_id or None)
                 self._queue.task_done()
                 continue
+
             with self._lock:
-                job = self._jobs[job_id]
-                job["status"] = "processing"
+                job = self._jobs.get(job_id)
+            if job is None or job["status"] == "cancelled":
+                self._queue.task_done()
+                continue
+
+            self._set_status(job_id, "validating")
+            pending_path = Path(job["pending_path"])
+            try:
+                data = pending_path.read_bytes()
+            except OSError as exc:
+                self._set_status(job_id, "failed", error=f"Upload data is missing: {exc}")
+                self._queue.task_done()
+                continue
+
             try:
                 kind, extension, _ = validate_upload(
                     job["filename"], job["content_type"], data, job.get("max_size_override")
                 )
-                storage_name = f"{uuid4().hex}{extension}"
-                target_dir = UPLOAD_DIR / job["storage_subdir"] if job["storage_subdir"] else UPLOAD_DIR
+                if kind == "audio" and job.get("deep_audio_validation"):
+                    _validate_decodable_audio(data, extension)
+            except ValueError as exc:
+                self._set_status(job_id, "failed", error=str(exc))
+                self._queue.task_done()
+                continue
+
+            self._set_status(job_id, "storing")
+            storage_name = f"{uuid4().hex}{extension}"
+            target_dir = UPLOAD_DIR / job["storage_subdir"] if job["storage_subdir"] else UPLOAD_DIR
+            try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 path = target_dir / storage_name
                 path.write_bytes(data)
-                result = {
-                    "kind": kind,
-                    "storage_name": storage_name,
-                    "size_bytes": len(data),
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                }
-                with self._lock:
-                    job["result"] = result
-                    job["status"] = "completed"
-                    job["completed_at_monotonic"] = monotonic()
-            except (OSError, ValueError) as exc:
-                with self._lock:
-                    job["status"] = "failed"
-                    job["error"] = str(exc)
-            finally:
+                pending_path.unlink(missing_ok=True)
+            except OSError as exc:
+                self._set_status(job_id, "failed", error=str(exc))
                 self._queue.task_done()
+                continue
 
-    @staticmethod
-    def _run_analysis(catalog_track_id_text: str) -> None:
+            result = {
+                "kind": kind,
+                "storage_name": storage_name,
+                "size_bytes": len(data),
+                "sha256": job.get("sha256") or hashlib.sha256(data).hexdigest(),
+            }
+            with self._lock:
+                current = self._jobs.get(job_id)
+                if current is not None:
+                    current["result"] = result
+                    snapshot = dict(current)
+                else:
+                    snapshot = None
+            if snapshot:
+                self._persist(snapshot)
+
+            callback_name = job.get("on_stored_callback")
+            if callback_name:
+                fn = _CALLBACKS.get(callback_name)
+                if fn is None:
+                    self._set_status(job_id, "failed", error=f"No handler registered for '{callback_name}'.")
+                else:
+                    self._set_status(job_id, "analyzing")
+                    try:
+                        fn(job_id)
+                    except Exception:
+                        logger.exception(
+                            "on_stored callback '%s' failed for job %s", callback_name, job_id
+                        )
+                        self._set_status(job_id, "failed", error="Could not finish cataloging this upload.")
+            else:
+                self._set_status(job_id, "completed", completed=True)
+            self._queue.task_done()
+
+    def _run_analysis(self, catalog_track_id_text: str, upload_job_id: str | None) -> None:
+        catalog_track_id: int | None = None
         try:
             catalog_track_id = int(catalog_track_id_text)
             # Imported lazily so importing this module never pulls in
@@ -414,6 +839,16 @@ class UploadQueue:
             analyze_catalog_track(catalog_track_id)
         except Exception:
             logger.exception("Catalog track analysis job failed for id=%s", catalog_track_id_text)
+        finally:
+            if upload_job_id:
+                self._set_status(upload_job_id, "completed", completed=True)
+                for fn in _ANALYSIS_COMPLETE_CALLBACKS.values():
+                    try:
+                        fn(upload_job_id, catalog_track_id)
+                    except Exception:
+                        logger.exception(
+                            "analysis-complete callback failed for job %s", upload_job_id
+                        )
 
 
 upload_queue = UploadQueue(

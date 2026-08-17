@@ -55,10 +55,13 @@ class CatalogTrack(Base):
     )
     # "private" (owner-only) vs "public" (anyone) -- "friends" deliberately
     # deferred until something concretely needs the friendship-graph join
-    # (see ai-dj-segment-metadata-architecture.md §12.2). Not yet enforced at
-    # retrieval time; this column only governs what a fresh upload defaults
-    # to today.
-    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="private", index=True)
+    # (see ai-dj-segment-metadata-architecture.md §12.2). Enforced at
+    # retrieval/streaming time (see catalog_retriever._visibility_filter and
+    # routers/catalog.py's audio/cover endpoints); a fresh upload defaults to
+    # "public" so the catalog grows the AI-DJ's shared pool by default --
+    # uploaders who want a track kept to themselves choose "private" per
+    # upload.
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="public", index=True)
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     artist: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -78,6 +81,11 @@ class CatalogTrack(Base):
     storage_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Optional cover art (jpg/png/webp), stored under UPLOAD_DIR/catalog_covers
+    # the same way storage_name lives under UPLOAD_DIR/catalog -- null falls
+    # back to the app's existing initials-placeholder UI, never a fabricated
+    # image or an external fetch.
+    cover_storage_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # Computed by upload_queue.py's worker for every upload already; this
     # column just stops it from being discarded. Indexed for a future fast
     # duplicate-file lookup -- no dedup *policy* (reuse vs. reject vs. allow)

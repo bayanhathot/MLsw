@@ -148,11 +148,15 @@ class AudiusCandidateRetriever(CandidateRetriever):
         *,
         limit: int = 5,
         recent_artists: frozenset[str] = frozenset(),
+        viewer_id: int | None = None,
     ) -> list[Track]:
         # No ranking stage here (Audius' own order is returned as-is) to
         # feed a diversity signal into -- accepted for interface
         # compatibility with CandidateRetriever, unused.
         del recent_artists
+        # Audius has no ownership/visibility concept -- accepted for
+        # interface compatibility, same as recent_artists above.
+        del viewer_id
         # Audius already does full-text search across its own catalog, so a
         # named artist is just forwarded as the query rather than fuzzy
         # matched client-side.
@@ -380,7 +384,11 @@ class MultiQueryAudiusRetriever(CandidateRetriever):
         *,
         limit: int = 5,
         recent_artists: frozenset[str] = frozenset(),
+        viewer_id: int | None = None,
     ) -> list[Track]:
+        # Audius has no ownership/visibility concept -- accepted for
+        # interface compatibility with CandidateRetriever, unused.
+        del viewer_id
         self.last_candidate_scores = {}
         self.last_cache_hit = False
         queries = build_queries(intent, max_queries=MAX_QUERIES)

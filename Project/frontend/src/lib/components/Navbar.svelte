@@ -93,6 +93,8 @@
 			return '/community?tab=people';
 		if (item.entity_type === 'post') return '/community';
 		if (item.entity_type === 'user') return '/community?tab=people';
+		if (item.kind === 'catalog_upload_completed' || item.kind === 'catalog_upload_failed')
+			return '/upload';
 		return '/community';
 	}
 

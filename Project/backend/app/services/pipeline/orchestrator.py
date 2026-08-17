@@ -26,8 +26,11 @@ def retrieve_candidates(
     *,
     limit: int = 5,
     recent_artists: frozenset[str] = frozenset(),
+    viewer_id: int | None = None,
 ) -> list[Track]:
-    candidates = retriever.retrieve(db, intent, limit=limit, recent_artists=recent_artists)
+    candidates = retriever.retrieve(
+        db, intent, limit=limit, recent_artists=recent_artists, viewer_id=viewer_id
+    )
     if not candidates:
         raise NoMatchingCandidate(
             f"No {retriever.name} candidate matched this request closely enough."
@@ -43,6 +46,7 @@ def retrieve_candidates_with_fallback(
     *,
     limit: int = 5,
     recent_artists: frozenset[str] = frozenset(),
+    viewer_id: int | None = None,
 ) -> tuple[list[Track], CandidateRetriever]:
     """Tries `primary` first; only falls through to `fallback` when primary
     plainly found nothing (an empty list is never silently replaced with an
@@ -54,11 +58,21 @@ def retrieve_candidates_with_fallback(
     NoMatchingCandidate only when both retrievers come back empty."""
 
     try:
-        return retrieve_candidates(db, intent, primary, limit=limit, recent_artists=recent_artists), primary
+        return (
+            retrieve_candidates(
+                db, intent, primary, limit=limit, recent_artists=recent_artists, viewer_id=viewer_id
+            ),
+            primary,
+        )
     except NoMatchingCandidate:
         pass
     try:
-        return retrieve_candidates(db, intent, fallback, limit=limit, recent_artists=recent_artists), fallback
+        return (
+            retrieve_candidates(
+                db, intent, fallback, limit=limit, recent_artists=recent_artists, viewer_id=viewer_id
+            ),
+            fallback,
+        )
     except NoMatchingCandidate:
         raise NoMatchingCandidate(
             f"No {primary.name} or {fallback.name} candidate matched this request closely enough."

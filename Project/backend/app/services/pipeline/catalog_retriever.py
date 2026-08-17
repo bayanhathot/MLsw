@@ -18,7 +18,7 @@ import os
 import shutil
 from pathlib import Path
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import public_api_url
@@ -46,10 +46,10 @@ _SEED_AUDIO_SOURCE = Path(__file__).resolve().parents[2] / "static" / "audio" / 
 # the test suite's SQLite engine does) so the catalog retriever always has
 # something to match against.
 _SEED_TRACKS = [
-    {"title": "Momentum Loop", "artist": "Cuemix AI DJ", "album": "Workout Demo Catalog", "mood_bucket": "energy", "vibe_label": "Gym energy"},
-    {"title": "Midnight Whispers", "artist": "Cuemix AI DJ", "album": "Vocal Demo Catalog", "mood_bucket": "vocals", "vibe_label": "Emotional vocals"},
-    {"title": "Focus Loop 01", "artist": "Cuemix AI DJ", "album": "Focus Demo Catalog", "mood_bucket": "focus", "vibe_label": "Deep work focus"},
-    {"title": "Smooth Flow Demo", "artist": "Cuemix AI DJ", "album": "General Demo Catalog", "mood_bucket": "smooth", "vibe_label": "Smooth flow"},
+    {"title": "Momentum Loop", "artist": "Cuemix AI DJ", "album": "Workout Demo Catalog", "mood_bucket": "energy", "vibe_label": "Gym energy", "visibility": "public"},
+    {"title": "Midnight Whispers", "artist": "Cuemix AI DJ", "album": "Vocal Demo Catalog", "mood_bucket": "vocals", "vibe_label": "Emotional vocals", "visibility": "public"},
+    {"title": "Focus Loop 01", "artist": "Cuemix AI DJ", "album": "Focus Demo Catalog", "mood_bucket": "focus", "vibe_label": "Deep work focus", "visibility": "public"},
+    {"title": "Smooth Flow Demo", "artist": "Cuemix AI DJ", "album": "General Demo Catalog", "mood_bucket": "smooth", "vibe_label": "Smooth flow", "visibility": "public"},
 ]
 
 
@@ -108,12 +108,14 @@ def _trigram_similarity(a: str, b: str) -> float:
     return len(trigrams_a & trigrams_b) / len(trigrams_a | trigrams_b)
 
 
-def _fuzzy_artist_matches(db: Session, artist: str, limit: int) -> list[CatalogTrack]:
+def _fuzzy_artist_matches(
+    db: Session, artist: str, limit: int, viewer_id: int | None
+) -> list[CatalogTrack]:
     dialect = db.get_bind().dialect.name
     if dialect == "postgresql":
         similarity = func.similarity(CatalogTrack.artist, artist)
         return (
-            db.query(CatalogTrack)
+            _visibility_filter(db.query(CatalogTrack), viewer_id)
             .filter(similarity >= ARTIST_MATCH_THRESHOLD)
             .order_by(similarity.desc(), CatalogTrack.id.asc())
             .limit(limit)
@@ -123,7 +125,8 @@ def _fuzzy_artist_matches(db: Session, artist: str, limit: int) -> list[CatalogT
     # No pg_trgm outside Postgres: an equivalent deterministic Python-side
     # similarity over the catalog. Fine at this table's scale; not a ranking
     # model (it's a single, unlearned string-similarity function).
-    scored = [(row, _trigram_similarity(row.artist, artist)) for row in db.query(CatalogTrack).all()]
+    candidates = _visibility_filter(db.query(CatalogTrack), viewer_id).all()
+    scored = [(row, _trigram_similarity(row.artist, artist)) for row in candidates]
     scored = [item for item in scored if item[1] >= ARTIST_MATCH_THRESHOLD]
     scored.sort(key=lambda item: (-item[1], item[0].id))
     return [row for row, _ in scored[:limit]]
@@ -159,13 +162,27 @@ def _to_track(row: CatalogTrack) -> Track:
         artist=row.artist,
         album=row.album,
         audio_url=public_api_url(f"/catalog/tracks/{row.id}/audio"),
-        cover_url=None,
+        cover_url=public_api_url(f"/catalog/tracks/{row.id}/cover") if row.cover_storage_name else None,
         duration_seconds=row.duration_seconds,
         genre=row.genre,
         vibe=row.mood_bucket,
         vibe_label=row.vibe_label,
         catalog_track_id=row.id,
         local_path=str(_track_local_path(row)),
+    )
+
+
+def _visibility_filter(query, viewer_id: int | None):
+    """A session can only ever be served a catalog track that's public, or
+    owned by the session's own viewer -- see
+    ai-dj-segment-metadata-architecture.md §12.2. A guest session
+    (viewer_id is None) only ever sees public tracks; there's no owner to
+    match against."""
+
+    if viewer_id is None:
+        return query.filter(CatalogTrack.visibility == "public")
+    return query.filter(
+        or_(CatalogTrack.visibility == "public", CatalogTrack.owner_id == viewer_id)
     )
 
 
@@ -179,13 +196,14 @@ class CatalogTrackRetriever(CandidateRetriever):
         *,
         limit: int = 5,
         recent_artists: frozenset[str] = frozenset(),
+        viewer_id: int | None = None,
     ) -> list[Track]:
         # No ranking stage here to feed a diversity signal into -- accepted
         # for interface compatibility with CandidateRetriever, unused.
         del recent_artists
         _ensure_seed_catalog(db)
         if intent.artist:
-            rows = _fuzzy_artist_matches(db, intent.artist, limit)
+            rows = _fuzzy_artist_matches(db, intent.artist, limit, viewer_id)
             # A named artist with no good match is reported plainly (empty
             # list) by the caller, never silently replaced by a mood-bucket
             # guess -- the user asked for something specific.
@@ -193,7 +211,7 @@ class CatalogTrackRetriever(CandidateRetriever):
 
         bucket = _mood_bucket_for(intent)
         rows = (
-            db.query(CatalogTrack)
+            _visibility_filter(db.query(CatalogTrack), viewer_id)
             .filter(CatalogTrack.mood_bucket == bucket)
             .order_by(CatalogTrack.id.asc())
             .limit(limit)
@@ -201,6 +219,13 @@ class CatalogTrackRetriever(CandidateRetriever):
         )
         if not rows:
             # Safe fallback mirroring the old single local-demo-track
-            # fallback: any catalog row, deterministically the oldest.
-            rows = db.query(CatalogTrack).order_by(CatalogTrack.id.asc()).limit(limit).all()
+            # fallback: any catalog row, deterministically the oldest --
+            # still visibility-filtered, a private track is never a valid
+            # fallback for anyone but its owner.
+            rows = (
+                _visibility_filter(db.query(CatalogTrack), viewer_id)
+                .order_by(CatalogTrack.id.asc())
+                .limit(limit)
+                .all()
+            )
         return [_to_track(row) for row in rows]

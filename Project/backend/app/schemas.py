@@ -515,9 +515,18 @@ class UploadBatchRequest(BaseModel):
     files: list[UploadBatchItem] = Field(min_length=1, max_length=20)
 
 
+# Every status a job in the shared upload_queue.UploadQueue can be in --
+# generic attachments (routers/uploads.py) and catalog tracks
+# (routers/catalog.py) are jobs on the *same* queue/state machine, so they
+# share this one status type rather than each declaring their own subset.
+UploadJobStatus = Literal[
+    "queued", "validating", "storing", "analyzing", "completed", "failed", "cancelled"
+]
+
+
 class UploadJobRead(BaseModel):
     job_id: str
-    status: Literal["queued", "processing", "completed", "failed"]
+    status: UploadJobStatus
     priority: int
     attachment: AttachmentRead | None = None
     error: str | None = None
@@ -646,6 +655,7 @@ class CatalogTrackRead(BaseModel):
     duration_seconds: int
     analysis_status: Literal["pending", "completed", "failed", "not_applicable"]
     audio_url: str
+    cover_url: str | None = None
     created_at: datetime
 
 
@@ -656,7 +666,7 @@ class CatalogUploadJobRead(BaseModel):
     job_id: str
     batch_id: str
     filename: str
-    status: Literal["queued", "processing", "completed", "failed"]
+    status: UploadJobStatus
     priority: int
     track: CatalogTrackRead | None = None
     error: str | None = None
@@ -666,7 +676,10 @@ class CatalogBatchStatusRead(BaseModel):
     batch_id: str
     total: int
     queued: int
-    processing: int
+    validating: int
+    storing: int
+    analyzing: int
     completed: int
     failed: int
+    cancelled: int
     jobs: list[CatalogUploadJobRead]

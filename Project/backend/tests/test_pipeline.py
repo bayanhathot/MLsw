@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from app.core.security import hash_password
 from app.database.models.catalog import CatalogTrack
+from app.database.models.user import User
 from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
 from app.services.pipeline import audio_renderer, audius_retriever
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
@@ -64,6 +66,81 @@ def test_catalog_retriever_finds_close_but_imperfect_artist_spelling(db_session)
     tracks = retriever.retrieve(db_session, _intent(artist="Cuemix AI D"), limit=5)
     assert tracks
     assert tracks[0].artist == "Cuemix AI DJ"
+
+
+def _make_user(db_session, username):
+    user = User(username=username, email=f"{username}@example.com", hashed_password=hash_password("s3cret!!"))
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+def test_catalog_retriever_excludes_a_private_track_from_a_guest_session(db_session):
+    owner = _make_user(db_session, "owner_private")
+    db_session.add(
+        CatalogTrack(
+            owner_id=owner.id, title="Owner Only", artist="Zzq Unique Private Artist",
+            visibility="private", storage_name="x.wav", content_type="audio/wav",
+        )
+    )
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(artist="Zzq Unique Private Artist"), limit=5, viewer_id=None
+    )
+    assert tracks == []
+
+
+def test_catalog_retriever_excludes_a_private_track_from_another_users_session(db_session):
+    owner = _make_user(db_session, "owner_private2")
+    other = _make_user(db_session, "other_viewer")
+    db_session.add(
+        CatalogTrack(
+            owner_id=owner.id, title="Owner Only", artist="Zzq Second Private Artist",
+            visibility="private", storage_name="x.wav", content_type="audio/wav",
+        )
+    )
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(artist="Zzq Second Private Artist"), limit=5, viewer_id=other.id
+    )
+    assert tracks == []
+
+
+def test_catalog_retriever_includes_a_private_track_for_its_own_owner(db_session):
+    owner = _make_user(db_session, "owner_private3")
+    db_session.add(
+        CatalogTrack(
+            owner_id=owner.id, title="Owner Only", artist="Zzq Third Private Artist",
+            visibility="private", storage_name="x.wav", content_type="audio/wav",
+        )
+    )
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(artist="Zzq Third Private Artist"), limit=5, viewer_id=owner.id
+    )
+    assert len(tracks) == 1
+    assert tracks[0].title == "Owner Only"
+
+
+def test_catalog_retriever_includes_a_public_track_for_a_guest_session(db_session):
+    owner = _make_user(db_session, "owner_public")
+    db_session.add(
+        CatalogTrack(
+            owner_id=owner.id, title="Shared Track", artist="Zzq Public Artist",
+            visibility="public", storage_name="x.wav", content_type="audio/wav",
+        )
+    )
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(artist="Zzq Public Artist"), limit=5, viewer_id=None
+    )
+    assert len(tracks) == 1
+    assert tracks[0].title == "Shared Track"
 
 
 def test_deterministic_artist_extraction_handles_common_phrasings():

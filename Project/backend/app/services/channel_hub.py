@@ -20,17 +20,44 @@ import logging
 
 from fastapi import WebSocket
 
-from app.core.redis_client import get_redis_client
+from app.core.redis_client import get_redis_client, get_sync_redis_client
 
 logger = logging.getLogger("cuemix.channel_hub")
 
 _REDIS_CHANNEL = "cuemix:channel_hub"
 
 
+def sync_publish(channel: str, event_type: str, data: dict) -> None:
+    """The synchronous counterpart to ChannelHub.publish(), for callers that
+    aren't running inside an asyncio event loop -- upload_queue.py's worker
+    threads pushing live batch/job status and upload notifications,
+    specifically. Publishes onto the exact same Redis channel, so this
+    process's own async _listen() loop (and every other process's) delivers
+    it to matching local WebSocket subscribers exactly as if `await
+    channel_hub.publish(...)` had been called -- Redis pub/sub is what
+    actually decouples this from needing the event loop at all. Fails open,
+    same posture as publish()."""
+
+    client = get_sync_redis_client()
+    if client is None:
+        return
+    envelope = {"channel": channel, "type": event_type, "data": data}
+    try:
+        client.publish(_REDIS_CHANNEL, json.dumps(envelope))
+    except Exception:
+        logger.warning("channel_hub sync_publish failed", exc_info=True)
+
+
 class ChannelHub:
     def __init__(self) -> None:
         self._subscriptions: dict[WebSocket, set[str]] = {}
-        self._listener_task: asyncio.Task | None = None
+        # Keyed by event loop rather than a single task: production only ever
+        # runs one loop per process (BACKEND_WORKERS=1), but the test suite
+        # instantiates multiple TestClient(app)s against this same singleton,
+        # each driving the ASGI lifespan on its own independent loop. A single
+        # shared task attribute would have one loop's stop_listener() awaiting
+        # (or cancelling) a task that belongs to a different, unrelated loop.
+        self._listener_tasks: dict[asyncio.AbstractEventLoop, asyncio.Task] = {}
 
     async def connect(self, websocket: WebSocket, user_id: int) -> None:
         await websocket.accept()
@@ -77,18 +104,19 @@ class ChannelHub:
             self.disconnect(websocket)
 
     async def start_listener(self) -> None:
-        """Idempotent: safe to call on every app startup. No-ops when Redis
-        isn't configured, same fail-open posture as publish()."""
+        """Idempotent per event loop: safe to call on every app startup. No-ops
+        when Redis isn't configured, same fail-open posture as publish()."""
 
-        if self._listener_task is not None:
+        loop = asyncio.get_running_loop()
+        if loop in self._listener_tasks:
             return
         client = get_redis_client()
         if client is None:
             return
-        self._listener_task = asyncio.create_task(self._listen(client))
+        self._listener_tasks[loop] = asyncio.create_task(self._listen(client))
 
     async def stop_listener(self) -> None:
-        task, self._listener_task = self._listener_task, None
+        task = self._listener_tasks.pop(asyncio.get_running_loop(), None)
         if task is None:
             return
         task.cancel()

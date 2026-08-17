@@ -350,9 +350,12 @@ test('uploading a song through the bulk upload page shows it as completed', asyn
 			batch_id: 'batch-e2e',
 			total: 1,
 			queued: 0,
-			processing: 0,
+			validating: 0,
+			storing: 0,
+			analyzing: 0,
 			completed: 1,
 			failed: 0,
+			cancelled: 0,
 			jobs: [
 				{
 					job_id: 'job-e2e-1',
@@ -371,6 +374,7 @@ test('uploading a song through the bulk upload page shows it as completed', asyn
 						duration_seconds: 180,
 						analysis_status: 'pending',
 						audio_url: '/api/catalog/tracks/1/audio',
+						cover_url: null,
 						created_at: '2026-08-17T00:00:00Z'
 					},
 					error: null
@@ -390,6 +394,7 @@ test('uploading a song through the bulk upload page shows it as completed', asyn
 			mimeType: 'audio/mpeg',
 			buffer: Buffer.from('ID3 fake mp3 bytes for e2e')
 		});
+	await page.getByLabel('Title').fill('E2E Song');
 	await page.getByLabel('Artist').fill('E2E Artist');
 	await page.getByLabel('Album').fill('E2E Album');
 	await page.getByRole('button', { name: 'Upload All' }).click();

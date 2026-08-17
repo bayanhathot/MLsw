@@ -1,9 +1,19 @@
+import io
 import time
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 
 from conftest import register_and_login
 
 from app.database.models.catalog import CatalogTrack
+from app.main import app
+
+
+def anonymous():
+    """A fresh, never-logged-in TestClient against the same app instance."""
+
+    return TestClient(app)
 
 _DEMO_WAV_BYTES = (
     Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "cuemix-demo.wav"
@@ -11,7 +21,7 @@ _DEMO_WAV_BYTES = (
 
 
 def _upload(client, **overrides):
-    fields = {"album": "Test Album", "artist": "The Testers", "lyrics": "la la la"}
+    fields = {"title": "Test Track", "album": "Test Album", "artist": "The Testers", "lyrics": "la la la"}
     fields.update(overrides)
     return client.post(
         "/catalog/tracks",
@@ -34,11 +44,14 @@ def _wait_for_analysis(db_session, track_id, timeout=60.0):
     return row
 
 
-def test_upload_requires_album_and_artist_but_not_lyrics(client):
+def test_upload_requires_title_album_and_artist_but_not_lyrics(client):
     # Lyrics are optional by design (instrumental tracks are first-class,
-    # see ai-dj-segment-metadata-architecture.md §3) -- album/artist stay
-    # required for display/fuzzy-search/dedup.
+    # see ai-dj-segment-metadata-architecture.md §3) -- title/album/artist
+    # stay required for display/fuzzy-search/dedup. The old filename-stem
+    # title fallback is gone: an upload with no title is rejected, not
+    # silently titled after its filename.
     register_and_login(client)
+    assert _upload(client, title="").status_code == 422
     assert _upload(client, album="").status_code == 422
     assert _upload(client, artist="   ").status_code == 422
     response = _upload(client, lyrics="")
@@ -50,7 +63,7 @@ def test_upload_rejects_signature_mismatch(client):
     register_and_login(client)
     response = client.post(
         "/catalog/tracks",
-        data={"album": "A", "artist": "B", "lyrics": "C"},
+        data={"title": "Fake", "album": "A", "artist": "B", "lyrics": "C"},
         files={"file": ("fake.wav", b"not really a wav file", "audio/wav")},
     )
     assert response.status_code == 422
@@ -82,21 +95,44 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     assert row.segment_end_second > row.segment_start_second
 
 
-def test_upload_defaults_to_private_visibility_and_persists_the_checksum(client, db_session):
+def test_single_upload_survives_the_unclaimed_file_ttl_prune(client):
+    # The single-file endpoint's underlying upload_queue job must be marked
+    # "claimed" (set_catalog_track) the moment the CatalogTrack row exists --
+    # otherwise UploadQueue._prune()'s unclaimed-file TTL cleanup (built for
+    # a generic attachment nobody ever attached to a post) would eventually
+    # delete this track's audio file right out from under its still-live
+    # CatalogTrack row.
+    import app.services.upload_queue as uq
+
+    register_and_login(client)
+    body = _upload(client, title="Survives Prune").json()
+
+    original_ttl = uq.upload_queue._unclaimed_ttl
+    uq.upload_queue._unclaimed_ttl = 0
+    try:
+        uq.upload_queue._prune()
+    finally:
+        uq.upload_queue._unclaimed_ttl = original_ttl
+
+    served = client.get(body["audio_url"].removeprefix("/api"))
+    assert served.status_code == 200
+
+
+def test_upload_defaults_to_public_visibility_and_persists_the_checksum(client, db_session):
     register_and_login(client)
     body = _upload(client, title="Quiet Track").json()
-    assert body["visibility"] == "private"
+    assert body["visibility"] == "public"
 
     row = db_session.query(CatalogTrack).filter_by(id=body["id"]).first()
-    assert row.visibility == "private"
+    assert row.visibility == "public"
     assert row.checksum_sha256 is not None
     assert len(row.checksum_sha256) == 64  # hex-encoded SHA-256
 
 
-def test_upload_can_be_marked_public(client):
+def test_upload_can_be_marked_private(client):
     register_and_login(client)
-    body = _upload(client, title="Loud Track", visibility="public").json()
-    assert body["visibility"] == "public"
+    body = _upload(client, title="Quiet Track", visibility="private").json()
+    assert body["visibility"] == "private"
 
 
 def test_upload_rejects_an_invalid_visibility_value(client):
@@ -109,17 +145,25 @@ def test_lossless_audio_gets_a_much_higher_size_cap_than_the_old_flat_10mib(clie
     # A perfectly ordinary few-minute WAV routinely exceeds 10 MiB -- this
     # file is comfortably over that old flat cap but under the new
     # format-specific lossless one (CATALOG_AUDIO_MAX_MB_LOSSLESS, 100 MiB
-    # default). Not real decodable audio -- only the RIFF/WAVE signature
-    # matters for validate_upload; duration probing fails open to 0.
+    # default). Looping the real demo clip (rather than a zero-filled
+    # RIFF/WAVE header) keeps it genuinely decodable and non-silent, since
+    # requirement 5's deep validation now rejects anything that isn't.
+    from pydub import AudioSegment
+
     register_and_login(client)
-    big_wav = b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * (11 * 1024 * 1024)
+    demo = AudioSegment.from_file(io.BytesIO(_DEMO_WAV_BYTES), format="wav")
+    buf = io.BytesIO()
+    (demo * 5).export(buf, format="wav")  # ~13 MiB, well over the old 10 MiB cap
+    big_wav = buf.getvalue()
+    assert len(big_wav) > 11 * 1024 * 1024
+
     response = client.post(
         "/catalog/tracks",
-        data={"album": "Test Album", "artist": "The Testers"},
+        data={"title": "Big Track", "album": "Test Album", "artist": "The Testers"},
         files={"file": ("big.wav", big_wav, "audio/wav")},
     )
     assert response.status_code == 201, response.text
-    assert response.json()["duration_seconds"] == 0
+    assert response.json()["duration_seconds"] >= 290
 
 
 def test_compressed_audio_keeps_a_lower_size_cap_than_lossless(client):
@@ -127,10 +171,141 @@ def test_compressed_audio_keeps_a_lower_size_cap_than_lossless(client):
     too_big_mp3 = b"ID3" + b"\x00" * (31 * 1024 * 1024)
     response = client.post(
         "/catalog/tracks",
-        data={"album": "Test Album", "artist": "The Testers"},
+        data={"title": "Too Big", "album": "Test Album", "artist": "The Testers"},
         files={"file": ("big.mp3", too_big_mp3, "audio/mpeg")},
     )
     assert response.status_code == 413
+
+
+def test_upload_rejects_corrupt_undecodable_audio(client):
+    # Signature-valid (RIFF/WAVE header) but not actually decodable --
+    # requirement 5's deep validation, not just the cheap byte-signature
+    # check, is what has to reject this.
+    register_and_login(client)
+    corrupt_wav = b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 200
+    response = client.post(
+        "/catalog/tracks",
+        data={"title": "Corrupt", "album": "Test Album", "artist": "The Testers"},
+        files={"file": ("corrupt.wav", corrupt_wav, "audio/wav")},
+    )
+    assert response.status_code == 422, response.text
+    assert "decode" in response.json()["detail"].lower()
+
+
+def test_upload_rejects_silent_audio(client):
+    from pydub import AudioSegment
+
+    register_and_login(client)
+    buf = io.BytesIO()
+    AudioSegment.silent(duration=2000, frame_rate=22050).export(buf, format="wav")
+    response = client.post(
+        "/catalog/tracks",
+        data={"title": "Silence", "album": "Test Album", "artist": "The Testers"},
+        files={"file": ("silence.wav", buf.getvalue(), "audio/wav")},
+    )
+    assert response.status_code == 422, response.text
+    assert "silent" in response.json()["detail"].lower()
+
+
+def test_upload_rejects_an_unsupported_audio_format(client):
+    register_and_login(client)
+    response = client.post(
+        "/catalog/tracks",
+        data={"title": "Unsupported", "album": "Test Album", "artist": "The Testers"},
+        files={"file": ("clip.aac", b"whatever bytes", "audio/aac")},
+    )
+    assert response.status_code == 415
+
+
+def test_owner_can_stream_their_own_private_track(client):
+    register_and_login(client, "alice", "alice@example.com")
+    body = _upload(client, title="Alice's Track", visibility="private").json()
+    assert body["visibility"] == "private"
+    served = client.get(f"/catalog/tracks/{body['id']}/audio")
+    assert served.status_code == 200
+
+
+def test_another_user_cannot_stream_a_private_track(client, second_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    body = _upload(client, title="Alice's Track", visibility="private").json()
+    served = second_client.get(f"/catalog/tracks/{body['id']}/audio")
+    assert served.status_code == 404
+
+
+def test_anonymous_cannot_stream_any_catalog_audio(client):
+    register_and_login(client, "alice", "alice@example.com")
+    body = _upload(client, title="Alice's Track", visibility="public").json()
+    anon = anonymous()
+    served = anon.get(f"/catalog/tracks/{body['id']}/audio")
+    assert served.status_code == 401
+
+
+def test_another_user_can_stream_a_public_track(client, second_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    body = _upload(client, title="Alice's Track", visibility="public").json()
+    served = second_client.get(f"/catalog/tracks/{body['id']}/audio")
+    assert served.status_code == 200
+
+
+_COVER_JPG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 64  # minimal, real JPEG signature
+
+
+def test_upload_without_a_cover_has_no_cover_url(client):
+    register_and_login(client)
+    body = _upload(client, title="No Cover").json()
+    assert body["cover_url"] is None
+
+
+def test_upload_with_a_cover_stores_and_serves_it(client):
+    register_and_login(client)
+    response = client.post(
+        "/catalog/tracks",
+        data={"title": "With Cover", "album": "Test Album", "artist": "The Testers"},
+        files={
+            "file": ("track.wav", _DEMO_WAV_BYTES, "audio/wav"),
+            "cover": ("cover.jpg", _COVER_JPG_BYTES, "image/jpeg"),
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["cover_url"] is not None
+    assert body["cover_url"].endswith(f"/catalog/tracks/{body['id']}/cover")
+
+    served = client.get(body["cover_url"].removeprefix("/api"))
+    assert served.status_code == 200
+    assert served.content == _COVER_JPG_BYTES
+
+
+def test_cover_art_rejects_an_invalid_image(client):
+    register_and_login(client)
+    response = client.post(
+        "/catalog/tracks",
+        data={"title": "Bad Cover", "album": "Test Album", "artist": "The Testers"},
+        files={
+            "file": ("track.wav", _DEMO_WAV_BYTES, "audio/wav"),
+            "cover": ("cover.jpg", b"not really a jpeg", "image/jpeg"),
+        },
+    )
+    assert response.status_code == 422
+    assert "cover art" in response.json()["detail"].lower()
+
+
+def test_cover_art_is_hidden_from_a_private_tracks_non_owner(client, second_client):
+    register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    body = client.post(
+        "/catalog/tracks",
+        data={"title": "Alice's Cover", "album": "A", "artist": "B", "visibility": "private"},
+        files={
+            "file": ("track.wav", _DEMO_WAV_BYTES, "audio/wav"),
+            "cover": ("cover.jpg", _COVER_JPG_BYTES, "image/jpeg"),
+        },
+    ).json()
+    cover_path = body["cover_url"].removeprefix("/api")
+    assert client.get(cover_path).status_code == 200
+    assert second_client.get(cover_path).status_code == 404
 
 
 def test_uploaded_artist_resolves_via_fuzzy_catalog_search(client, db_session):

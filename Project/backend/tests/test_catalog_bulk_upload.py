@@ -1,6 +1,10 @@
 """Bulk catalog upload: POST /catalog/tracks/batch-jobs (enqueue, per-file,
-never blocks) + GET .../batch-jobs/{id} and .../batches/{id} (poll, lazy
-CatalogTrack materialization -- see routers/catalog.py's module docstring)."""
+never blocks) + GET .../batch-jobs/{id} and .../batches/{id} (poll). Each
+job's CatalogTrack row is created *eagerly*, by upload_queue.py's worker
+invoking routers/catalog.py's on_stored_callback the moment the file's
+bytes finish storing -- not lazily on poll -- so a job's own status
+progresses queued -> validating -> storing -> analyzing -> completed/
+failed/cancelled (see routers/catalog.py's module docstring)."""
 
 import time
 import uuid
@@ -15,13 +19,15 @@ _DEMO_WAV_BYTES = (
     Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "cuemix-demo.wav"
 ).read_bytes()
 
+_ACTIVE_STATUSES = ("queued", "validating", "storing", "analyzing")
+
 
 def _batch_id():
     return f"test-batch-{uuid.uuid4().hex}"
 
 
 def _enqueue(client, batch_id, filename="track.wav", content_type="audio/wav", data=None, **overrides):
-    fields = {"batch_id": batch_id, "album": "Test Album", "artist": "The Testers"}
+    fields = {"batch_id": batch_id, "title": "Test Track", "album": "Test Album", "artist": "The Testers"}
     fields.update(overrides)
     return client.post(
         "/catalog/tracks/batch-jobs",
@@ -37,19 +43,21 @@ def _poll_batch_until_settled(client, batch_id, timeout=30.0):
         response = client.get(f"/catalog/tracks/batches/{batch_id}")
         assert response.status_code == 200, response.text
         body = response.json()
-        if body["queued"] == 0 and body["processing"] == 0:
+        if all(body[status] == 0 for status in _ACTIVE_STATUSES):
             return body
         time.sleep(0.02)
     return body
 
 
-def test_enqueue_returns_immediately_without_a_track(client):
+def test_enqueue_returns_immediately_without_blocking_the_request(client):
     register_and_login(client)
     response = _enqueue(client, _batch_id())
     assert response.status_code == 202, response.text
     body = response.json()
-    assert body["status"] in ("queued", "processing")
-    assert body["track"] is None
+    # Materialization races the response on a worker thread -- what matters
+    # here is that the request itself never blocks on storage/analysis, not
+    # which exact status won the race.
+    assert body["status"] != "failed"
     assert body["job_id"]
 
 
@@ -64,6 +72,7 @@ def test_batch_completes_and_materializes_tracks_via_polling(client, db_session)
     assert body["total"] == 2
     assert body["completed"] == 2
     assert body["failed"] == 0
+    assert body["cancelled"] == 0
     titles = {item["track"]["title"] for item in body["jobs"]}
     assert titles == {"Song One", "Song Two"}
 
@@ -71,7 +80,7 @@ def test_batch_completes_and_materializes_tracks_via_polling(client, db_session)
         row = db_session.query(CatalogTrack).filter_by(id=item["track"]["id"]).first()
         assert row is not None
         assert row.checksum_sha256 is not None
-        assert row.visibility == "private"
+        assert row.visibility == "public"
 
 
 def test_a_bad_file_in_a_batch_is_rejected_without_affecting_the_rest(client):
@@ -134,7 +143,8 @@ def test_unknown_batch_and_job_id_are_404(client):
     assert client.get("/catalog/tracks/batch-jobs/does-not-exist").status_code == 404
 
 
-def test_batch_upload_requires_album_and_artist(client):
+def test_batch_upload_requires_title_album_and_artist(client):
     register_and_login(client)
-    response = _enqueue(client, _batch_id(), album="")
-    assert response.status_code == 422
+    assert _enqueue(client, _batch_id(), title="").status_code == 422
+    assert _enqueue(client, _batch_id(), album="").status_code == 422
+    assert _enqueue(client, _batch_id(), artist="").status_code == 422

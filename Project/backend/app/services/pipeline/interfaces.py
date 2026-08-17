@@ -37,12 +37,19 @@ class CandidateRetriever(ABC):
         *,
         limit: int = 5,
         recent_artists: frozenset[str] = frozenset(),
+        viewer_id: int | None = None,
     ) -> list[Track]:
         """`recent_artists` is an optional hint for session-aware diversity --
         artists that recently played in this session, so a ranking-capable
         implementation can penalize repeating one. Defaults to empty, and an
         implementation that has no ranking stage (e.g. the local catalog) is
-        free to just accept and ignore it."""
+        free to just accept and ignore it.
+
+        `viewer_id` is the session's owning user (None for a guest session)
+        -- a retrieval-source-owned catalog (e.g. CatalogTrackRetriever)
+        must only ever return tracks that are `visibility="public"` or owned
+        by this viewer; a source with no ownership concept (e.g. Audius) is
+        free to accept and ignore it, same as recent_artists."""
 
         raise NotImplementedError
 

@@ -18,6 +18,7 @@ os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 os.environ.setdefault("VIBE_LLM_PROVIDER", "none")
 
 from app.core.rate_limit import auth_rate_limit, write_rate_limit
+from app.core.redis_client import get_sync_redis_client
 from app.database.base import Base
 from app.database.database import get_db
 from app.main import app
@@ -86,6 +87,16 @@ def clean_database(tmp_path, monkeypatch):
     session_candidate_pool._pools.clear()
     auth_rate_limit.reset()
     write_rate_limit.reset()
+    # upload_queue.UploadQueue._recover() re-hydrates every job Redis still
+    # knows about the moment *any* UploadQueue is constructed (the module
+    # singleton included) -- without this, a test that builds its own queue
+    # (e.g. test_uploads_rate_limit_health.py's capacity/pruning tests) would
+    # recover every job every other test in this run has ever persisted to
+    # the same real Redis instance, not start from an empty queue.
+    redis_client = get_sync_redis_client()
+    if redis_client is not None:
+        for key in redis_client.scan_iter("cuemix:upload:*"):
+            redis_client.delete(key)
     with TestingSessionLocal() as db:
         for table in reversed(Base.metadata.sorted_tables):
             db.execute(table.delete())

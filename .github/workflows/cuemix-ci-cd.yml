@@ -69,10 +69,25 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # Backs upload_queue.py's durable job store (crash-recovery, retry,
+      # cancel) -- without this, those tests would either silently no-op
+      # (fail-open, same posture as an unconfigured Redis in production) or
+      # be skipped outright, so durability regressions would never be
+      # caught in CI.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       APP_ENV: test
       DATABASE_URL: postgresql+psycopg2://cuemix_ci:cuemix_ci_password@localhost:5432/cuemix_test
       DATABASE_URL_LOCAL: postgresql+psycopg2://cuemix_ci:cuemix_ci_password@localhost:5432/cuemix_test
+      REDIS_URL: redis://localhost:6379/0
       SECRET_KEY: ci-only-secret-with-at-least-thirty-two-characters
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
