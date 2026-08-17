@@ -6,8 +6,13 @@
 	# handle_path strips /api before forwarding. Caddy manages WebSocket
 	# upgrades and replaces spoofable client-forwarding headers by default.
 	handle_path /api/* {
+		# 125829120 = 120 MiB: comfortably above the largest single-file
+		# catalog-audio cap (CATALOG_AUDIO_MAX_MB_LOSSLESS, 100 MiB default)
+		# plus multipart overhead. Bulk uploads send one file per request
+		# (see routers/catalog.py's /catalog/tracks/batch-jobs), so a single
+		# request never needs to hold more than one file's worth of body.
 		request_body {
-			max_size 10485760
+			max_size 125829120
 		}
 		reverse_proxy backend:5000
 	}

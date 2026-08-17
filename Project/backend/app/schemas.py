@@ -641,7 +641,32 @@ class CatalogTrackRead(BaseModel):
     artist: str
     album: str | None = None
     genre: str | None = None
+    lyrics: str | None = None
+    visibility: Literal["private", "public"]
     duration_seconds: int
     analysis_status: Literal["pending", "completed", "failed", "not_applicable"]
     audio_url: str
     created_at: datetime
+
+
+class CatalogUploadJobRead(BaseModel):
+    """One file within a bulk catalog upload -- see routers/catalog.py's
+    /catalog/tracks/batch-jobs and /catalog/tracks/batches/{batch_id}."""
+
+    job_id: str
+    batch_id: str
+    filename: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    priority: int
+    track: CatalogTrackRead | None = None
+    error: str | None = None
+
+
+class CatalogBatchStatusRead(BaseModel):
+    batch_id: str
+    total: int
+    queued: int
+    processing: int
+    completed: int
+    failed: int
+    jobs: list[CatalogUploadJobRead]

@@ -56,6 +56,40 @@ invalidates it. This exists purely to avoid a visible stall between segments
 — it's not a correctness requirement, and every path that consumes a
 prepared result re-validates the fingerprint first.
 
+## Bulk catalog upload
+
+`POST /catalog/tracks` is the original single-file path: it waits briefly
+for the file to finish storing, then returns the created row directly.
+`POST /catalog/tracks/batch-jobs` is the bulk path (satisfies the "Job
+Queue" requirement — parallel processing + smart priority for large
+playlist uploads): one file per request, tagged with a caller-generated
+`batch_id` shared across the whole "Upload All" batch, returning
+immediately (202) with a `job_id` — never waits for storage, analysis, or
+row creation. Poll `GET /catalog/tracks/batches/{batch_id}` for the whole
+batch's aggregate status, or `GET /catalog/tracks/batch-jobs/{job_id}` for
+one file; a `CatalogTrack` row is created lazily the first time a completed
+job is polled (same lazy-materialization pattern `routers/uploads.py`
+already uses for attachments), never inline at request time. A bad file
+422s its own request without affecting any other file already queued
+under the same `batch_id`.
+
+Both upload paths share `upload_queue.py`'s existing bounded worker pool —
+no second job system. Fair scheduling: every `CATALOG_BATCH_PRIORITY_DECAY_EVERY`
+files deeper into the *same* batch, that batch's queue priority drops by
+one (floor 0), so a small batch (or the first few files of a large one)
+queues at the same priority a normal upload gets, and only a batch large
+enough to matter sinks below fresh uploads queued alongside it.
+
+Catalog audio gets its own, higher, format-tiered size cap
+(`CATALOG_AUDIO_MAX_MB_COMPRESSED` for mp3/ogg, `CATALOG_AUDIO_MAX_MB_LOSSLESS`
+for wav/flac — a 3-minute uncompressed WAV is already ~31 MB) — deliberately
+*not* shared with `upload_queue.ALLOWED_TYPES`' generic 10 MiB
+attachment cap, which forum/message audio clips still use.
+`deploy/Caddyfile` and `frontend/nginx.conf` cap request bodies at 120 MiB
+to match. New tracks default to `visibility="private"` (owner-only); the
+column isn't enforced at retrieval time yet — see
+`ai-dj-segment-metadata-architecture.md` §12.2.
+
 ## Evaluations
 
 Two evaluations verify the "Local LLM Integration" requirement's

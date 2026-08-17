@@ -43,15 +43,41 @@ ALLOWED_TYPES = {
     "image/png": ("image", ".png", 8 * 1024 * 1024),
     "image/webp": ("image", ".webp", 8 * 1024 * 1024),
     "image/gif": ("image", ".gif", 8 * 1024 * 1024),
-    # Kept at 10 MiB to match the reverse-proxy request body limit.
+    # Kept at 10 MiB to match the reverse-proxy request body limit. Also the
+    # generic-attachment cap for audio (forum/message clips) -- deliberately
+    # NOT raised here; see CATALOG_AUDIO_MAX_BYTES below for full-length
+    # catalog track uploads, which are a different use case with a
+    # different reasonable ceiling.
     "video/mp4": ("video", ".mp4", 10 * 1024 * 1024),
     "video/webm": ("video", ".webm", 10 * 1024 * 1024),
     "audio/mpeg": ("audio", ".mp3", 10 * 1024 * 1024),
-    "audio/wav": ("audio", ".wav", 10 * 1024 * 1024),
     "audio/ogg": ("audio", ".ogg", 10 * 1024 * 1024),
+    "audio/wav": ("audio", ".wav", 10 * 1024 * 1024),
     "audio/flac": ("audio", ".flac", 10 * 1024 * 1024),
 }
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / "uploads"))
+
+# Compressed formats (mp3/ogg) vs. lossless (wav/flac) genuinely need
+# different ceilings for the same song length -- a 3-minute uncompressed WAV
+# is already ~31 MB, so ALLOWED_TYPES' flat 10 MiB cap rejects perfectly
+# ordinary catalog uploads (see ai-dj-segment-metadata-architecture.md §3).
+# Scoped to catalog uploads only (routers/catalog.py) via validate_upload's
+# max_size_override, not applied to ALLOWED_TYPES itself, which the generic
+# attachment pipeline (forum/message clips) also reads and should keep its
+# own smaller ceiling for. Both env-configurable, matching
+# UPLOAD_WORKERS/UPLOAD_QUEUE_CAPACITY.
+_CATALOG_AUDIO_MAX_MB_COMPRESSED = max(
+    1, min(500, int(os.getenv("CATALOG_AUDIO_MAX_MB_COMPRESSED", "30")))
+)
+_CATALOG_AUDIO_MAX_MB_LOSSLESS = max(
+    1, min(500, int(os.getenv("CATALOG_AUDIO_MAX_MB_LOSSLESS", "100")))
+)
+CATALOG_AUDIO_MAX_BYTES = {
+    "audio/mpeg": _CATALOG_AUDIO_MAX_MB_COMPRESSED * 1024 * 1024,
+    "audio/ogg": _CATALOG_AUDIO_MAX_MB_COMPRESSED * 1024 * 1024,
+    "audio/wav": _CATALOG_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024,
+    "audio/flac": _CATALOG_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024,
+}
 
 
 def _matches_signature(content_type: str, data: bytes) -> bool:
@@ -78,11 +104,15 @@ def _matches_signature(content_type: str, data: bytes) -> bool:
     return False
 
 
-def validate_upload(filename: str, content_type: str, data: bytes) -> tuple[str, str, int]:
+def validate_upload(
+    filename: str, content_type: str, data: bytes, max_size_override: int | None = None
+) -> tuple[str, str, int]:
     content_type = content_type.split(";", 1)[0].strip().lower()
     if content_type not in ALLOWED_TYPES:
         raise ValueError("Unsupported media type.")
     kind, extension, max_size = ALLOWED_TYPES[content_type]
+    if max_size_override is not None:
+        max_size = max_size_override
     if not data:
         raise ValueError("File is empty.")
     if len(data) > max_size:
@@ -101,6 +131,11 @@ class UploadQueue:
         self._queue: PriorityQueue = PriorityQueue(maxsize=capacity)
         self._jobs: dict[str, dict] = {}
         self._materialization_locks: dict[str, Lock] = {}
+        # Caller-supplied batch_id -> the job_ids submitted under it (see
+        # submit()'s batch_id param and jobs_for_batch() below). Membership
+        # is pruned in lockstep with _jobs itself -- a batch view is just an
+        # aggregation over still-tracked jobs, not a separately durable thing.
+        self._batches: dict[str, set[str]] = {}
         self._lock = Lock()
         self._submission_lock = Lock()
         self._sequence = count()
@@ -119,6 +154,9 @@ class UploadQueue:
         content_type: str,
         priority: int,
         storage_subdir: str = "",
+        batch_id: str | None = None,
+        metadata: dict | None = None,
+        max_size_override: int | None = None,
     ) -> dict:
         job_id = f"upload_{uuid4().hex}"
         return {
@@ -136,7 +174,29 @@ class UploadQueue:
             "attachment_id": None,
             "created_at_monotonic": monotonic(),
             "completed_at_monotonic": None,
+            # Caller-scoped grouping (e.g. one bulk catalog upload) and
+            # arbitrary caller metadata to carry through to materialization
+            # time (e.g. track title/artist/visibility) -- both optional and
+            # unused by the generic attachment path.
+            "batch_id": batch_id,
+            "metadata": dict(metadata) if metadata else None,
+            "catalog_track_id": None,
+            # Overrides ALLOWED_TYPES' cap for this job's re-validation in
+            # the worker (see validate_upload) -- e.g. catalog uploads use a
+            # higher, format-tiered cap than generic attachments.
+            "max_size_override": max_size_override,
         }
+
+    @staticmethod
+    def _is_claimed(job: dict) -> bool:
+        """A completed job is "claimed" once it's been materialized into a
+        domain row -- an Attachment (generic uploads) or a CatalogTrack
+        (catalog batch uploads). Only one of the two is ever set for a given
+        job, depending on which router materialized it. .get() rather than
+        direct indexing: hand-built job dicts (test fixtures predating
+        catalog_track_id) shouldn't KeyError here."""
+
+        return job.get("attachment_id") is not None or job.get("catalog_track_id") is not None
 
     def _prune(self) -> None:
         expired_files: list[str] = []
@@ -146,7 +206,7 @@ class UploadQueue:
                 key
                 for key, job in self._jobs.items()
                 if job["status"] == "completed"
-                and job["attachment_id"] is None
+                and not self._is_claimed(job)
                 and job["completed_at_monotonic"] is not None
                 and now - job["completed_at_monotonic"] >= self._unclaimed_ttl
             ]
@@ -158,16 +218,20 @@ class UploadQueue:
                     key
                     for key, job in self._jobs.items()
                     if key not in expired_unclaimed
-                    and (
-                        job["status"] == "failed"
-                        or (job["status"] == "completed" and job["attachment_id"] is not None)
-                    )
+                    and (job["status"] == "failed" or (job["status"] == "completed" and self._is_claimed(job)))
                 )
             for key in removable[: len(expired_unclaimed) + history_slots_needed]:
                 job = self._jobs.pop(key, None)
                 self._materialization_locks.pop(key, None)
-                if job and job["status"] == "completed" and job["attachment_id"] is None:
+                if job and job["status"] == "completed" and not self._is_claimed(job):
                     expired_files.append(job["result"]["storage_name"])
+                batch_id = job.get("batch_id") if job else None
+                if batch_id:
+                    members = self._batches.get(batch_id)
+                    if members is not None:
+                        members.discard(key)
+                        if not members:
+                            self._batches.pop(batch_id, None)
         for storage_name in expired_files:
             try:
                 (UPLOAD_DIR / storage_name).unlink(missing_ok=True)
@@ -191,6 +255,9 @@ class UploadQueue:
         data: bytes,
         priority: int,
         storage_subdir: str = "",
+        batch_id: str | None = None,
+        metadata: dict | None = None,
+        max_size_override: int | None = None,
     ) -> dict:
         with self._submission_lock:
             self._prune()
@@ -199,10 +266,21 @@ class UploadQueue:
                     raise Full
             if self._queue.full():
                 raise Full
-            job = self._new_job(owner_id, filename, content_type, priority, storage_subdir)
+            job = self._new_job(
+                owner_id,
+                filename,
+                content_type,
+                priority,
+                storage_subdir,
+                batch_id,
+                metadata,
+                max_size_override,
+            )
             job_id = job["job_id"]
             with self._lock:
                 self._jobs[job_id] = job
+                if batch_id:
+                    self._batches.setdefault(batch_id, set()).add(job_id)
             self._queue.put_nowait((-priority, next(self._sequence), job_id, data))
         return self.public(job_id)
 
@@ -248,14 +326,42 @@ class UploadQueue:
             job = self._jobs.get(job_id)
             return dict(job) if job else None
 
+    def jobs_for_batch(self, batch_id: str) -> list[dict]:
+        """Every still-tracked job submitted under this batch_id, in
+        submission order. Jobs that already aged out of history (see
+        _prune's UPLOAD_JOB_TTL_SECONDS/max_history bounds) are simply
+        absent -- there is no separate durable batch record, the batch view
+        is always just a live aggregation over _jobs."""
+
+        with self._lock:
+            job_ids = self._batches.get(batch_id, set())
+            jobs = [self._jobs[job_id] for job_id in job_ids if job_id in self._jobs]
+        jobs.sort(key=lambda job: job["created_at_monotonic"])
+        return [dict(job) for job in jobs]
+
+    def batch_size_so_far(self, batch_id: str) -> int:
+        """How many jobs already exist under this batch_id -- used to derive
+        a new submission's fair-share priority (see routers/catalog.py)
+        before that submission itself is added."""
+
+        with self._lock:
+            return len(self._batches.get(batch_id, ()))
+
     def set_attachment(self, job_id: str, attachment_id: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is not None:
                 job["attachment_id"] = attachment_id
 
+    def set_catalog_track(self, job_id: str, catalog_track_id: int) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job["catalog_track_id"] = catalog_track_id
+
     def materialization_lock(self, job_id: str) -> Lock:
-        """Serialize Attachment row creation for concurrent status polls."""
+        """Serialize Attachment/CatalogTrack row creation for concurrent
+        status polls."""
 
         with self._lock:
             return self._materialization_locks.setdefault(job_id, Lock())
@@ -271,7 +377,9 @@ class UploadQueue:
                 job = self._jobs[job_id]
                 job["status"] = "processing"
             try:
-                kind, extension, _ = validate_upload(job["filename"], job["content_type"], data)
+                kind, extension, _ = validate_upload(
+                    job["filename"], job["content_type"], data, job.get("max_size_override")
+                )
                 storage_name = f"{uuid4().hex}{extension}"
                 target_dir = UPLOAD_DIR / job["storage_subdir"] if job["storage_subdir"] else UPLOAD_DIR
                 target_dir.mkdir(parents=True, exist_ok=True)

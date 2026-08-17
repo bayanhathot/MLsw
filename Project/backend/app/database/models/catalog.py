@@ -36,6 +36,10 @@ class CatalogTrack(Base):
             "segment_method IS NULL OR segment_method IN ('chorus_detection', 'whole_clip')",
             name="ck_catalog_track_segment_method",
         ),
+        CheckConstraint(
+            "visibility IN ('private', 'public')",
+            name="ck_catalog_track_visibility",
+        ),
         Index(
             "ix_catalog_tracks_artist_trgm",
             "artist",
@@ -49,6 +53,12 @@ class CatalogTrack(Base):
     owner_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # "private" (owner-only) vs "public" (anyone) -- "friends" deliberately
+    # deferred until something concretely needs the friendship-graph join
+    # (see ai-dj-segment-metadata-architecture.md §12.2). Not yet enforced at
+    # retrieval time; this column only governs what a fresh upload defaults
+    # to today.
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="private", index=True)
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     artist: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -68,6 +78,12 @@ class CatalogTrack(Base):
     storage_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Computed by upload_queue.py's worker for every upload already; this
+    # column just stops it from being discarded. Indexed for a future fast
+    # duplicate-file lookup -- no dedup *policy* (reuse vs. reject vs. allow)
+    # is implemented yet, that's a separate decision (see the architecture
+    # doc §4.1) this milestone doesn't need to make.
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     # Filled in by the one-time BPM/key/best-segment analysis job.
     analysis_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")

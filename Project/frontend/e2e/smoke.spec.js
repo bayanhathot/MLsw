@@ -40,11 +40,18 @@ const emptyIdentity = {
 /**
  * Mock the API boundary while exercising the production Svelte UI.
  * @param {import('@playwright/test').Page} page
- * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void, sessionStartResponse?: Record<string, any> }} options
+ * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void, sessionStartResponse?: Record<string, any>, catalogBatchJobResponse?: Record<string, any>, catalogBatchStatusResponse?: Record<string, any> }} options
  */
 async function mockApi(
 	page,
-	{ authenticated = false, promptShortcuts = [], onRealtimeSocket, sessionStartResponse } = {}
+	{
+		authenticated = false,
+		promptShortcuts = [],
+		onRealtimeSocket,
+		sessionStartResponse,
+		catalogBatchJobResponse,
+		catalogBatchStatusResponse
+	} = {}
 ) {
 	const unexpectedRequests = [];
 
@@ -61,6 +68,19 @@ async function mockApi(
 
 		if (path === '/api/sessions/start' && request.method() === 'POST' && sessionStartResponse) {
 			payload = sessionStartResponse;
+		} else if (
+			path === '/api/catalog/tracks/batch-jobs' &&
+			request.method() === 'POST' &&
+			catalogBatchJobResponse
+		) {
+			status = 202;
+			payload = catalogBatchJobResponse;
+		} else if (
+			path.startsWith('/api/catalog/tracks/batches/') &&
+			request.method() === 'GET' &&
+			catalogBatchStatusResponse
+		) {
+			payload = catalogBatchStatusResponse;
 		} else if (path === '/api/auth/me') {
 			status = authenticated ? 200 : 401;
 			payload = authenticated ? authenticatedUser : { detail: 'Not authenticated.' };
@@ -168,6 +188,10 @@ test('guest users are redirected away from protected routes', async ({ page }) =
 	// the (already-hidden) nav link, must also bounce to /login rather than
 	// render an empty/broken feed.
 	await page.goto('/community');
+	await expect(page).toHaveURL(/\/login$/);
+	await expect(page.getByRole('heading', { name: 'Sign in.' })).toBeVisible();
+
+	await page.goto('/upload');
 	await expect(page).toHaveURL(/\/login$/);
 	await expect(page.getByRole('heading', { name: 'Sign in.' })).toBeVisible();
 	expect(unexpectedRequests).toEqual([]);
@@ -306,6 +330,73 @@ test('the AI DJ player survives navigating away from the home route', async ({ p
 	await expect(page).toHaveURL(/\/feed$/);
 	await expect(page.getByRole('heading', { name: 'Persistent Track' })).toBeVisible();
 	await expect(page.locator('audio.hidden-audio')).toHaveAttribute('src', audioSrcOnHome ?? '');
+
+	expect(unexpectedRequests).toEqual([]);
+});
+
+test('uploading a song through the bulk upload page shows it as completed', async ({ page }) => {
+	const unexpectedRequests = await mockApi(page, {
+		authenticated: true,
+		catalogBatchJobResponse: {
+			job_id: 'job-e2e-1',
+			batch_id: 'batch-e2e',
+			filename: 'song.mp3',
+			status: 'queued',
+			priority: 5,
+			track: null,
+			error: null
+		},
+		catalogBatchStatusResponse: {
+			batch_id: 'batch-e2e',
+			total: 1,
+			queued: 0,
+			processing: 0,
+			completed: 1,
+			failed: 0,
+			jobs: [
+				{
+					job_id: 'job-e2e-1',
+					batch_id: 'batch-e2e',
+					filename: 'song.mp3',
+					status: 'completed',
+					priority: 5,
+					track: {
+						id: 1,
+						title: 'E2E Song',
+						artist: 'E2E Artist',
+						album: 'E2E Album',
+						genre: null,
+						lyrics: null,
+						visibility: 'private',
+						duration_seconds: 180,
+						analysis_status: 'pending',
+						audio_url: '/api/catalog/tracks/1/audio',
+						created_at: '2026-08-17T00:00:00Z'
+					},
+					error: null
+				}
+			]
+		}
+	});
+
+	await page.goto('/upload');
+	await expect(page.getByRole('heading', { name: 'Upload music' })).toBeVisible();
+
+	await page
+		.locator('input[type="file"]')
+		.first()
+		.setInputFiles({
+			name: 'song.mp3',
+			mimeType: 'audio/mpeg',
+			buffer: Buffer.from('ID3 fake mp3 bytes for e2e')
+		});
+	await page.getByLabel('Artist').fill('E2E Artist');
+	await page.getByLabel('Album').fill('E2E Album');
+	await page.getByRole('button', { name: 'Upload All' }).click();
+
+	await expect(page.getByText('Uploaded')).toBeVisible();
+	await expect(page.getByText('Batch finished')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Upload more songs' })).toBeVisible();
 
 	expect(unexpectedRequests).toEqual([]);
 });

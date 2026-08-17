@@ -164,6 +164,12 @@
 					class="nav-link"
 					href={resolve('/library')}
 					onclick={() => (menuOpen = false)}>Library</a
+				>
+				<a
+					class:active={isCurrent('/upload')}
+					class="nav-link"
+					href={resolve('/upload')}
+					onclick={() => (menuOpen = false)}>Upload</a
 				>{/if}
 		</div>
 
