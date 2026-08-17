@@ -6,3 +6,21 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 Dockerfile text eol=lf
+
+# Normalize ordinary source/text files to LF regardless of the checking-out
+# machine's core.autocrlf -- without this, a Windows checkout (autocrlf=true)
+# and a Linux/CI checkout of the exact same commit disagree on line endings,
+# which then shows up as a wall of CRLF-only "changes" in git status/diff on
+# whichever side re-checks-out the repo, even though nothing was actually
+# edited (this has recurred across multiple review passes). The blobs
+# themselves are already LF; this just stops every checkout from having to
+# renegotiate that from scratch.
+*.py text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.svelte text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.css text eol=lf
+*.html text eol=lf
