@@ -841,7 +841,14 @@ class UploadQueue:
             logger.exception("Catalog track analysis job failed for id=%s", catalog_track_id_text)
         finally:
             if upload_job_id:
-                self._set_status(upload_job_id, "completed", completed=True)
+                # Callbacks run *before* the status flips to "completed", not
+                # after: "completed" is the signal callers (and tests
+                # draining the queue between runs) treat as "every write this
+                # job will ever make has already happened" -- if a
+                # callback's own DB write (e.g. the "ready in your catalog"
+                # notification) landed after that flip, a caller that
+                # stopped waiting the moment it saw "completed" could still
+                # race against it.
                 for fn in _ANALYSIS_COMPLETE_CALLBACKS.values():
                     try:
                         fn(upload_job_id, catalog_track_id)
@@ -849,6 +856,7 @@ class UploadQueue:
                         logger.exception(
                             "analysis-complete callback failed for job %s", upload_job_id
                         )
+                self._set_status(upload_job_id, "completed", completed=True)
 
 
 upload_queue = UploadQueue(

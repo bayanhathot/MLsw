@@ -1,4 +1,5 @@
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from app.database.base import Base
 from app.database.database import get_db
 from app.main import app
 from app.services import audius_service, session_candidate_pool
+from app.services.upload_queue import upload_queue as _upload_queue
 
 test_engine = create_engine(
     "sqlite+pysqlite://",
@@ -46,6 +48,43 @@ def override_get_db():
 
 
 app.dependency_overrides[get_db] = override_get_db
+
+_ACTIVE_UPLOAD_STATUSES = {"queued", "validating", "storing", "analyzing"}
+
+
+def _drain_upload_queue(timeout=15.0):
+    """Wait for every job the singleton UploadQueue currently knows about to
+    reach a terminal status.
+
+    upload_queue.upload_queue's worker threads run continuously across the
+    *whole* test session, independent of any single test's own lifetime --
+    a test that submits a bulk-upload job and doesn't itself wait for it to
+    settle (e.g. one specifically asserting that the request returns before
+    completion) leaves that job's worker thread still writing to the shared
+    SQLite connection *after* the test function returns. Without this, that
+    write can land during the *next* test's own clean_database wipe or
+    setup, corrupting it in a way that has nothing to do with what that next
+    test is actually checking (observed in CI: a stray job's on_stored
+    callback racing a table wipe raised a FOREIGN KEY error, and a
+    completely different run saw a "duplicate registration" from a race that
+    predates the fix in upload_queue.py's _run_analysis ordering). Bounded
+    and non-fatal on timeout (logs to stderr rather than raising) so a
+    genuinely stuck job degrades to the pre-existing flaky behavior instead
+    of turning into a second hang.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _upload_queue._lock:
+            active = [
+                job_id
+                for job_id, job in _upload_queue._jobs.items()
+                if job["status"] in _ACTIVE_UPLOAD_STATUSES
+            ]
+        if not active:
+            return
+        time.sleep(0.02)
+    print(f"conftest: _drain_upload_queue timed out after {timeout}s with jobs still active")
 
 
 @pytest.fixture(autouse=True)
@@ -102,6 +141,18 @@ def clean_database(tmp_path, monkeypatch):
             db.execute(table.delete())
         db.commit()
     yield
+    # Drain *here*, at this test's own teardown -- not at the next test's
+    # setup. monkeypatch's own finalizer (which reverts UPLOAD_DIR and
+    # SessionLocal back to production values) runs *after* this fixture's
+    # teardown completes, since clean_database depends on monkeypatch. Any
+    # job this test submitted but never itself waited for (e.g. a test
+    # specifically asserting the request returns before completion) must
+    # finish here, while this test's own patches are still the ones a
+    # worker thread would see, or the straggler's write would otherwise
+    # land against production config after the revert -- or, more subtly,
+    # race the next test's own DB wipe/setup with whichever config happened
+    # to still be in effect when the write actually landed.
+    _drain_upload_queue()
 
 
 @pytest.fixture
