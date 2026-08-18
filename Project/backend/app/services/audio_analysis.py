@@ -20,12 +20,21 @@ import logging
 
 import numpy as np
 
+from app.core.time import utc_now
 from app.database import database as db_module
 from app.database.models.catalog import CatalogTrack
 from app.services import upload_queue
 from app.services.pipeline.catalog_retriever import CATALOG_AUDIO_SUBDIR
 
 logger = logging.getLogger(__name__)
+
+# Bump this whenever the analysis approach below changes (a different
+# chroma/beat-tracking method, a different segment-selection heuristic,
+# etc.) so existing rows can be targeted for reprocessing by version later
+# -- see CatalogTrack.analysis_version's own docstring for the query shape
+# this is meant to support. "v1" is the chroma+beat_track+self-similarity
+# approach implemented in this file today.
+ANALYSIS_VERSION = "v1"
 
 _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 # Bounds CPU/memory for a pathologically long upload; analysis only needs
@@ -110,4 +119,6 @@ def analyze_catalog_track(catalog_track_id: int) -> None:
         row.segment_end_second = end_second
         row.segment_method = method
         row.analysis_status = "completed"
+        row.analysis_version = ANALYSIS_VERSION
+        row.analyzed_at = utc_now()
         db.commit()

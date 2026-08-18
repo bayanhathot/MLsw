@@ -87,10 +87,10 @@ class CatalogTrack(Base):
     # image or an external fetch.
     cover_storage_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # Computed by upload_queue.py's worker for every upload already; this
-    # column just stops it from being discarded. Indexed for a future fast
-    # duplicate-file lookup -- no dedup *policy* (reuse vs. reject vs. allow)
-    # is implemented yet, that's a separate decision (see the architecture
-    # doc §4.1) this milestone doesn't need to make.
+    # column just stops it from being discarded. Indexed both for a fast
+    # duplicate-file lookup and because routers/catalog.py's dedup policy
+    # (reuse an existing row's storage/analysis for byte-identical audio,
+    # see _find_duplicate_by_checksum) queries it on every upload.
     checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     # Filled in by the one-time BPM/key/best-segment analysis job.
@@ -100,5 +100,19 @@ class CatalogTrack(Base):
     segment_start_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_end_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Which build of the analysis pipeline produced the fields above ("v1" =
+    # the current librosa chroma+beat_track+self-similarity approach, see
+    # audio_analysis.py's module docstring) and when it ran -- both null
+    # until analysis actually completes (never set on a "failed" run, so a
+    # failed row's null version/timestamp naturally falls into any future
+    # "reprocess" query without needing its own separate condition). Stored
+    # independently, not derived from one another: targeted reprocessing
+    # will want "everything below version N" and "everything analyzed
+    # before date X" as two different queries, not one computed from the
+    # other. String, matching this codebase's other versioned fields
+    # (user_music_profiles.dna_version, ColdSeedRun.version) rather than a
+    # bare integer.
+    analysis_version: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)

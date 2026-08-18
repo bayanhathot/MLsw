@@ -250,6 +250,8 @@ def _build_catalog_track(
         row.segment_start_second = duplicate.segment_start_second
         row.segment_end_second = duplicate.segment_end_second
         row.segment_method = duplicate.segment_method
+        row.analysis_version = duplicate.analysis_version
+        row.analyzed_at = duplicate.analyzed_at
     return row
 
 

@@ -105,6 +105,11 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     assert row.musical_key is not None
     assert row.segment_start_second is not None
     assert row.segment_end_second > row.segment_start_second
+    # Lets future targeted reprocessing (e.g. "everything below version N",
+    # "everything analyzed before date X") query these independently --
+    # see CatalogTrack.analysis_version's own docstring.
+    assert row.analysis_version == "v1"
+    assert row.analyzed_at is not None
 
 
 def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client, db_session, monkeypatch):
@@ -146,6 +151,8 @@ def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client
     assert second_row.segment_start_second == first_row.segment_start_second
     assert second_row.segment_end_second == first_row.segment_end_second
     assert second_row.storage_name == first_row.storage_name  # reused physical file
+    assert second_row.analysis_version == first_row.analysis_version
+    assert second_row.analyzed_at == first_row.analyzed_at
 
 
 def test_duplicate_upload_with_different_metadata_still_creates_its_own_row(client, db_session):
