@@ -40,11 +40,28 @@ class DeterministicTransitionPlanner(TransitionPlanner):
         next_segment: SelectedSegment,
         *,
         prefers_smoother: bool = False,
+        max_crossfade_ms: int | None = None,
     ) -> TransitionPlan:
+        """`max_crossfade_ms`, when given, is a hard ceiling applied *after*
+        every other rule below (including the MIN_CROSSFADE_MS floor) --
+        session_manager.py's live-crossfade rendering reserves a fixed-size
+        window at the tail of each selected segment before a transition is
+        even planned, and the render literally cannot blend more audio than
+        that window holds. A short reserved window can therefore push
+        crossfade_ms *below* MIN_CROSSFADE_MS -- that's intentional: a hard
+        physical constraint (how much audio was actually reserved) always
+        wins over an aesthetic floor. mix_service.py's calls never pass
+        this (whole segments are already fully available when a mix
+        renders, no reservation happens), so this is a no-op for it --
+        never let a session-only tuning knob affect mix rendering."""
+
         if previous is None:
+            first_crossfade_ms = BASE_CROSSFADE_MS if prefers_smoother else 0
+            if max_crossfade_ms is not None:
+                first_crossfade_ms = min(first_crossfade_ms, max_crossfade_ms)
             return TransitionPlan(
-                crossfade_ms=BASE_CROSSFADE_MS if prefers_smoother else 0,
-                style="crossfade" if prefers_smoother else "cut",
+                crossfade_ms=first_crossfade_ms,
+                style="crossfade" if (prefers_smoother and first_crossfade_ms > 0) else "cut",
                 notes="First track in this session/mix; nothing to blend from yet.",
             )
 
@@ -74,4 +91,8 @@ class DeterministicTransitionPlanner(TransitionPlanner):
             notes += " Extended further because the listener asked for smoother transitions."
 
         crossfade_ms = max(MIN_CROSSFADE_MS, min(MAX_CROSSFADE_MS, crossfade_ms))
+        if max_crossfade_ms is not None:
+            # Applied last, deliberately after the MIN_CROSSFADE_MS floor
+            # above -- see this method's docstring.
+            crossfade_ms = min(crossfade_ms, max_crossfade_ms)
         return TransitionPlan(crossfade_ms=crossfade_ms, style="crossfade", notes=notes)

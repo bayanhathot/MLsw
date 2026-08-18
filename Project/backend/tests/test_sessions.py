@@ -4,7 +4,7 @@ from pathlib import Path
 from conftest import register_and_login
 
 from app.database.models.session import DJSession, UserPreference
-from app.schemas import PromptIntent
+from app.schemas import PromptIntent, SelectedSegment, Track
 from app.services import session_candidate_pool, session_manager, upload_queue
 from app.services.pipeline import audio_renderer
 from app.services.pipeline.audius_retriever import MultiQueryAudiusRetriever
@@ -89,6 +89,18 @@ def _patch_audius(monkeypatch, tracks):
     monkeypatch.setattr(
         "app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None)
     )
+
+
+def _disable_reservation(monkeypatch):
+    """Zeroes the live-crossfade reserved-tail window (session_manager.
+    RESERVED_TRANSITION_MS) so advance() always does a real fresh
+    resolution immediately, matching this test's pre-crossfade assumption
+    -- it's exercising candidate rotation / prepared-item semantics, not
+    the reservation mechanism itself. See the "live crossfades" tests
+    further down for coverage of the reservation/bridge/reserved_plain
+    mechanism this disables."""
+
+    monkeypatch.setattr(session_manager, "RESERVED_TRANSITION_MS", 0)
 
 
 def test_session_is_unique_persistent_and_feedback_changes_selection(client, db_session):
@@ -642,6 +654,7 @@ def test_when_audius_also_finds_nothing_the_catalogs_own_weak_match_still_serves
 
 def test_advance_continues_without_input_and_rotates_through_candidates(client, monkeypatch):
     _patch_audius(monkeypatch, _wassouf_tracks())
+    _disable_reservation(monkeypatch)
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
     ).json()
@@ -671,6 +684,7 @@ def test_advance_persists_played_artists_alongside_played_track_keys(client, mon
     # resolution -- the ranking-level diversity behavior itself is covered
     # in test_pipeline.py against _rank_by_metadata directly.
     _patch_audius(monkeypatch, _wassouf_tracks())
+    _disable_reservation(monkeypatch)
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
     ).json()
@@ -709,6 +723,7 @@ def test_advance_refreshes_the_pool_once_fresh_candidates_drop_below_threshold(c
     # cached pool -- below the threshold -- so the very next advance() must
     # force a real retrieval even though the intent hasn't changed at all.
     _patch_audius(monkeypatch, _wassouf_tracks())
+    _disable_reservation(monkeypatch)
     calls = _count_retrieve_calls(monkeypatch)
 
     session = client.post(
@@ -801,6 +816,7 @@ def test_advance_consumes_a_valid_prepared_item_without_calling_the_retriever_ag
 
 def test_advance_does_a_real_resolution_when_no_prepared_item_exists(client, monkeypatch, db_session):
     _patch_audius(monkeypatch, _wassouf_tracks())
+    _disable_reservation(monkeypatch)
     calls = _count_retrieve_calls(monkeypatch)
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
@@ -816,6 +832,10 @@ def test_advance_does_a_real_resolution_when_no_prepared_item_exists(client, mon
 
 
 def test_advance_does_a_real_resolution_when_the_prepared_item_has_expired(client, monkeypatch):
+    # Reservation deliberately left on here (unlike most of this file's
+    # other prepared-item tests): prepare-next only ever prepares a
+    # *bridge* out of a real reserved tail, so proving "an expired bridge
+    # is rejected" needs that tail to actually exist.
     _patch_audius(monkeypatch, _wassouf_tracks())
     calls = _count_retrieve_calls(monkeypatch)
     monkeypatch.setattr(session_manager, "PREPARED_NEXT_TTL_SECONDS", 0.05)
@@ -829,12 +849,23 @@ def test_advance_does_a_real_resolution_when_the_prepared_item_has_expired(clien
     assert prep.status_code == 200
     assert prep.json()["prepared"] is True
     assert calls["count"] == 2
+    prepared_bridge_url = prep.json()["audioUrl"]
 
     time.sleep(0.1)
     response = client.post(f"/sessions/{session['id']}/advance")
     assert response.status_code == 200
-    # The prepared item had aged past PREPARED_NEXT_TTL_SECONDS, so this fell
-    # through to a real resolution instead of consuming stale state.
+    # The expired bridge was rejected, not served -- but the current
+    # segment's own already-rendered reserved tail still plays out in full
+    # before any new retrieval happens (never fabricated, never skipped).
+    assert response.json()["audioUrl"] != prepared_bridge_url
+    assert calls["count"] == 2
+
+    # *Now* nothing further is staged (the reserved tail was the last
+    # already-rendered piece) -- the next advance is a genuine fresh
+    # resolution, restoring this test's original "eventually falls through
+    # to a real resolution" guarantee.
+    response = client.post(f"/sessions/{session['id']}/advance")
+    assert response.status_code == 200
     assert calls["count"] == 3
 
 
@@ -848,6 +879,7 @@ def test_advance_does_a_real_resolution_when_prepared_fingerprint_mismatches(
     # fingerprint check has to catch this, not just apply_feedback's
     # explicit clear (covered separately below).
     _patch_audius(monkeypatch, _wassouf_tracks())
+    _disable_reservation(monkeypatch)
     calls = _count_retrieve_calls(monkeypatch)
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
@@ -1036,6 +1068,10 @@ def test_advance_rejects_a_prepared_item_already_played_by_a_concurrent_advance(
     # genuinely separate DB session (db_session) that commits the "advance
     # already played this track" state right after prepare_next's own
     # resolution finishes, but before it re-checks and writes.
+    # Reservation deliberately left on (unlike most of this file's other
+    # prepared-item tests): prepare-next only ever prepares a *bridge* out
+    # of a real reserved tail, so this race needs that tail to actually
+    # exist.
     _patch_audius(monkeypatch, _wassouf_tracks())
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
@@ -1074,12 +1110,23 @@ def test_advance_rejects_a_prepared_item_already_played_by_a_concurrent_advance(
     response = client.post(f"/sessions/{session_id}/advance")
     assert response.status_code == 200
     body = response.json()
-    # Not the stale prepared item -- a real re-resolution served something
-    # else instead of replaying the track that just played.
+    # Not the stale prepared item -- the rejected bridge was discarded, and
+    # the current segment's own already-rendered reserved tail played out
+    # in full instead (never fabricated, never skipped), with no retrieval.
     assert body["audioUrl"] != prepared_audio_url
     assert body["nowPlaying"]["title"] != prepared_title
-    # And it was a genuine resolution, not a same-track fast path that
-    # happened to look different -- the fast path makes zero retrieve() calls.
+    assert calls["count"] == 0
+
+    # *Now* nothing further is staged -- the next advance is a genuine
+    # fresh resolution, restoring this test's original "a real re-resolution
+    # served something else" guarantee.
+    response = client.post(f"/sessions/{session_id}/advance")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["audioUrl"] != prepared_audio_url
+    assert body["nowPlaying"]["title"] != prepared_title
+    # A genuine resolution, not a same-track fast path that happened to
+    # look different -- the fast path makes zero retrieve() calls.
     assert calls["count"] == 1
 
 
@@ -1126,6 +1173,9 @@ def test_advance_never_serves_a_prepared_item_whose_track_key_was_already_played
     # unexpired) record is still rejected once its track_key is already in
     # played_track_keys_json, regardless of how it got there.
     _patch_audius(monkeypatch, _wassouf_tracks())
+    # This test is about the containment check itself, not the reserved-tail
+    # mechanism (see _disable_reservation's docstring).
+    _disable_reservation(monkeypatch)
     calls = _count_retrieve_calls(monkeypatch)
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
@@ -1311,3 +1361,219 @@ def test_reasoning_and_next_direction_reflect_feedback_history(client):
         f"/sessions/{session['id']}/feedback", json={"feedback": "Smoother please"}
     ).json()
     assert "Smoother please" in feedback["reasoning"]["nextDirection"]
+
+
+# --- Phase 9: live in-session crossfades (reserved-region mechanism) ------
+
+
+def test_reserved_ms_for_floors_to_half_a_short_segments_duration():
+    stub_track = Track(
+        source="audius", source_track_id="1", title="T", artist="A", album=None,
+        audio_url="https://example.test/1", cover_url=None, duration_seconds=90,
+        genre=None, vibe=None, vibe_label=None, catalog_track_id=None, local_path=None,
+    )
+    short_segment = SelectedSegment(
+        track=stub_track, start_second=0, end_second=6,
+        method="whole_clip", bpm=None, musical_key=None,
+    )
+    # Half of 6000ms, well under RESERVED_TRANSITION_MS -- the short segment
+    # itself is the binding constraint, not the constant.
+    assert session_manager._reserved_ms_for(short_segment) == 3000
+
+    long_segment = SelectedSegment(
+        track=stub_track, start_second=0, end_second=60,
+        method="whole_clip", bpm=None, musical_key=None,
+    )
+    assert session_manager._reserved_ms_for(long_segment) == session_manager.RESERVED_TRANSITION_MS
+
+
+def test_session_body_then_bridge_then_continuation_covers_the_full_sequence_with_no_gap_or_duplication(
+    client, monkeypatch, db_session
+):
+    # The full three-stage sequence a live session actually goes through:
+    # body (with a reserved tail already rendered) -> a prepared bridge
+    # promoted in -> the bridge's own stashed next-body promoted in, with
+    # no further retrieval at any promotion step.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+    assert calls["count"] == 1
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    body_now_playing = row.now_playing_json
+    assert body_now_playing["stage"] == "body"
+    assert body_now_playing["resume_offset_ms"] == 0
+    segment = body_now_playing["segment"]
+    full_duration_ms = (segment["end_second"] - segment["start_second"]) * 1000
+    # The reservation actually wired through session_manager matches
+    # _reserved_ms_for's own contract applied to the real resolved segment.
+    assert body_now_playing["reserved_ms"] == min(
+        session_manager.RESERVED_TRANSITION_MS, full_duration_ms // 2
+    )
+    assert body_now_playing["reserved_ms"] > 0  # sanity: this fixture reserves something real
+    assert body_now_playing["tail_audio_url"] is not None
+
+    prep = client.post(f"/sessions/{session_id}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+    assert calls["count"] == 2  # prepare-next's own one real resolution
+
+    db_session.refresh(row)
+    prepared_bridge = row.prepared_next_json["now_playing"]
+    assert prepared_bridge["stage"] == "bridge"
+    # The bridge's actually-used crossfade never exceeds what this segment
+    # actually reserved -- the physical ceiling from TransitionPlanner's
+    # max_crossfade_ms.
+    assert prepared_bridge["resume_offset_ms"] <= body_now_playing["reserved_ms"]
+
+    advanced_to_bridge = client.post(f"/sessions/{session_id}/advance")
+    assert advanced_to_bridge.status_code == 200
+    assert advanced_to_bridge.json()["audioUrl"] == prepared_bridge["audio_url"]
+    assert calls["count"] == 2  # promoting the ready bridge made no new retrieve() call
+
+    db_session.refresh(row)
+    bridge_now_playing = row.now_playing_json
+    assert bridge_now_playing["stage"] == "bridge"
+    stashed_resume_offset_ms = bridge_now_playing["resume_offset_ms"]
+    stashed_next_body_url = bridge_now_playing["next_body_audio_url"]
+    assert row.prepared_next_json is None  # consumed and cleared
+
+    advanced_to_body = client.post(f"/sessions/{session_id}/advance")
+    assert advanced_to_body.status_code == 200
+    # Pure promotion of the already-staged next body -- no further retrieval.
+    assert calls["count"] == 2
+    assert advanced_to_body.json()["audioUrl"] == stashed_next_body_url
+
+    db_session.refresh(row)
+    continuation_now_playing = row.now_playing_json
+    assert continuation_now_playing["stage"] == "body"
+    assert continuation_now_playing["resume_offset_ms"] == stashed_resume_offset_ms
+    assert continuation_now_playing["audio_url"] == stashed_next_body_url
+
+
+def test_session_bridge_crossfade_is_capped_at_the_reserved_tail_length(
+    client, monkeypatch, db_session
+):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    # Shorter than MIN_CROSSFADE_MS (1500ms) -- DeterministicTransitionPlanner's
+    # own tempo/key logic would never pick this on its own; only the
+    # reservation's physical ceiling can force it this low.
+    monkeypatch.setattr(session_manager, "RESERVED_TRANSITION_MS", 800)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    reserved_ms = row.now_playing_json["reserved_ms"]
+    assert reserved_ms == 800  # the fixture segment is long enough not to hit the half-duration floor
+
+    prep = client.post(f"/sessions/{session_id}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+
+    db_session.refresh(row)
+    bridge_now_playing = row.prepared_next_json["now_playing"]
+    assert bridge_now_playing["resume_offset_ms"] <= reserved_ms
+
+
+def test_session_reserved_tail_plays_in_full_when_no_bridge_is_ready_yet(
+    client, monkeypatch, db_session
+):
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+    assert calls["count"] == 1
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    assert row.prepared_next_json is None  # nothing prepared yet
+    tail_audio_url = row.now_playing_json["tail_audio_url"]
+
+    # No /prepare-next call -- advance() must still serve the reserved tail
+    # in full rather than skip or fabricate anything, before a fresh
+    # resolution ever happens.
+    response = client.post(f"/sessions/{session_id}/advance")
+    assert response.status_code == 200
+    assert response.json()["audioUrl"] == tail_audio_url
+    assert calls["count"] == 1  # no retrieval at all for this step
+
+    db_session.refresh(row)
+    assert row.now_playing_json["stage"] == "reserved_plain"
+
+    # And *now* the next advance does a genuine fresh resolution.
+    response = client.post(f"/sessions/{session_id}/advance")
+    assert response.status_code == 200
+    assert calls["count"] == 2
+
+
+def test_prepare_next_bridge_failure_falls_through_to_the_next_candidate_and_leaves_current_track_untouched(
+    client, monkeypatch, db_session
+):
+    tracks = _wassouf_tracks()
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: tracks,
+    )
+
+    def selective_download(url):
+        # Only the top-ranked *next*-track candidate is broken -- proves
+        # the bridge path reuses the same per-candidate retry loop
+        # render_track_transition already relies on, rather than giving up
+        # on the first failure.
+        if url == tracks[0]["audio_url"]:
+            return None, "download_failed_ConnectError"
+        return _DEMO_WAV_BYTES, None
+
+    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", selective_download)
+
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    original_now_playing = dict(row.now_playing_json)
+
+    prep = client.post(f"/sessions/{session_id}/prepare-next")
+    assert prep.status_code == 200
+    assert prep.json()["prepared"] is True
+
+    db_session.refresh(row)
+    # The current track's own already-rendered body/tail were never
+    # touched -- prepare_next only ever writes to prepared_next_json.
+    assert row.now_playing_json == original_now_playing
+    assert row.prepared_next_json["now_playing"]["stage"] == "bridge"
+
+
+def test_advance_still_works_on_a_legacy_session_row_with_no_stage_key(
+    client, monkeypatch, db_session
+):
+    # A session row created before the live-crossfade "stage" key existed:
+    # now_playing_json had none of stage/resume_offset_ms/reserved_ms/
+    # tail_audio_url at all. advance_session must still fall straight
+    # through to a real resolution, exactly like its only behavior before
+    # this mechanism existed.
+    _patch_audius(monkeypatch, _wassouf_tracks())
+    calls = _count_retrieve_calls(monkeypatch)
+    session = client.post(
+        "/sessions/start", json={"prompt": "play something by George Wassouf"}
+    ).json()
+    session_id = session["id"]
+    assert calls["count"] == 1
+
+    row = db_session.query(DJSession).filter_by(id=session_id).one()
+    legacy_now_playing = {
+        key: value for key, value in row.now_playing_json.items()
+        if key not in ("stage", "resume_offset_ms", "reserved_ms", "tail_audio_url")
+    }
+    row.now_playing_json = legacy_now_playing
+    db_session.commit()
+
+    response = client.post(f"/sessions/{session_id}/advance")
+    assert response.status_code == 200
+    assert calls["count"] == 2

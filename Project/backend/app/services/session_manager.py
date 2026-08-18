@@ -20,11 +20,13 @@ from sqlalchemy.orm import Session
 from app.core.time import utc_now
 from app.database.models.session import DJSession, SessionFeedback, UserPreference
 from app.schemas import (
+    BridgeRender,
     NowPlayingRead,
     PromptIntent,
     ReasoningRead,
     SelectedSegment,
     SessionRead,
+    StagedRender,
     Track,
 )
 from app.services import (
@@ -48,6 +50,7 @@ from app.services.pipeline.orchestrator import (
     retrieve_candidates,
     retrieve_candidates_with_fallback,
 )
+from app.services.pipeline.transition_planner import MAX_CROSSFADE_MS
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,17 @@ AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDID
 # the VibeUnderstander/Ollama stage and retrieval already spent. Deliberately
 # well under that 45s ceiling, not equal to it.
 AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SECONDS", "25"))
+
+# How much of a selected segment's tail is carved off, blind, the instant
+# the segment is chosen -- before any transition into a next track is even
+# known -- so a real crossfade can later be blended into it without ever
+# re-fetching or replaying audio (see this module's live-crossfade
+# docstring further down, and DeterministicTransitionPlanner.plan()'s
+# max_crossfade_ms docstring for how this reservation caps the crossfade
+# actually rendered). Defaults to MAX_CROSSFADE_MS: under the planner's own
+# clamp, no crossfade it would ever pick exceeds this, so the reservation
+# is non-binding unless tuned independently.
+RESERVED_TRANSITION_MS = int(os.getenv("RESERVED_TRANSITION_MS", str(MAX_CROSSFADE_MS)))
 
 COVER_URL = "/brand/cuemix-logo.svg"
 
@@ -251,6 +265,71 @@ def _track_key(track: Track) -> str:
     return f"{track.source}:{track.source_track_id}"
 
 
+def _reserved_ms_for(segment: SelectedSegment) -> int:
+    """Never reserves more than half of `segment`'s own duration -- a short
+    segment (a tight chorus-detected window, or a brief upload) could
+    otherwise have its entire body eaten by RESERVED_TRANSITION_MS, leaving
+    nothing to actually play before the reserved window starts. This can
+    push the eventual crossfade below MIN_CROSSFADE_MS via
+    TransitionPlanner.plan()'s max_crossfade_ms -- see that method's
+    docstring for why that's intentional."""
+
+    duration_ms = max(0, (segment.end_second - segment.start_second) * 1000)
+    return min(RESERVED_TRANSITION_MS, duration_ms // 2)
+
+
+def _staged_pass_through(rendered: object) -> tuple[bool, str | None]:
+    """Reads (is_pass_through, fallback_reason) off whichever staged-render
+    shape `rendered` actually is -- StagedTrackRender (a plain body render)
+    exposes it on `.body`; BridgeRender exposes the equivalent on `.bridge`
+    (its failure branch marks `.bridge`/`.next_body` identically, so
+    `.bridge` alone is a faithful signal either way). Centralized so
+    _try_render_ranked_candidates and _resolve_and_render's rescue path
+    don't each need their own isinstance branch."""
+
+    body = rendered.bridge if isinstance(rendered, BridgeRender) else rendered.body
+    return body.is_pass_through, body.fallback_reason
+
+
+def _promote(
+    session: DJSession,
+    *,
+    now_playing: dict,
+    reasoning: dict,
+    pipeline_trace: dict,
+    retriever_name: str,
+    vibe_label: str | None,
+    track_key: str | None = None,
+    artist: str | None = None,
+) -> None:
+    """Shared bookkeeping applied every time a track (or a stage transition
+    within one) becomes what a session actually reports as now-playing --
+    previously duplicated ad hoc at each promotion site. Does not commit;
+    the caller commits once, after any of its own additional field updates
+    (e.g. apply_feedback's intent_json).
+
+    `track_key`/`artist` are None for a promotion that doesn't represent a
+    *new* logical track starting (a bridge finishing into its own body, or
+    a reserved tail playing out verbatim) -- play history is only ever
+    appended once per logical track, at the moment a fresh resolution or a
+    body->bridge promotion first commits to it (a bridge already contains
+    that track's audio), never again at a later stage transition within
+    that same track's playback."""
+
+    session.now_playing_json = now_playing
+    session.reasoning_json = reasoning
+    session.pipeline_trace_json = pipeline_trace
+    session.retriever_name = retriever_name
+    session.vibe_label = vibe_label or session.vibe_label
+    if track_key is not None:
+        session.played_track_keys_json = (
+            (session.played_track_keys_json or []) + [track_key]
+        )[-_PLAYED_TRACK_HISTORY:]
+        session.played_artists_json = (
+            (session.played_artists_json or []) + [artist]
+        )[-_PLAYED_TRACK_HISTORY:]
+
+
 def _delete_rendered_file(audio_url: str) -> None:
     """Deletes the on-disk render behind a now_playing-shaped `audio_url`,
     resolved the same way routers/media.py's /renders/{filename} route does
@@ -308,7 +387,9 @@ def _try_render_ranked_candidates(
     previous_segment: SelectedSegment | None,
     prefers_smoother: bool,
     deadline: float,
-) -> tuple[Track, SelectedSegment, dict, dict, list[dict]]:
+    resume_offset_ms: int = 0,
+    bridge_from: StagedRender | None = None,
+) -> tuple[Track, SelectedSegment, object, object, list[dict]]:
     """Filters `candidates` down to ones not already known-broken (recording
     the rest as skipped -- see known_broken_tracks.py), then tries what's
     left, in ranked order, until one renders for real, AUDIO_RENDER_RETRY_LIMIT
@@ -319,7 +400,19 @@ def _try_render_ranked_candidates(
     pass-through. Every genuine render failure encountered here is
     persisted via known_broken_tracks.mark_broken so a later resolution --
     this session's or another's -- can skip it outright. `candidates` must
-    be non-empty."""
+    be non-empty.
+
+    `bridge_from`, when given, means each candidate is tried as the *next*
+    track of a live crossfade bridge out of an already-rendered reserved
+    tail (renderer.render_bridge) rather than a plain standalone body
+    (renderer.render_track_transition) -- see session_manager.py's
+    live-crossfade docstring. `resume_offset_ms` only applies to the plain
+    (non-bridge) path, for a track resuming after its own head already
+    played as part of a bridge that led into it; a bridge candidate's own
+    resume point is entirely decided by render_bridge's actual clamped
+    crossfade, not this parameter. The two are mutually exclusive in
+    practice (every real caller passes at most one), but nothing here
+    enforces that -- it's true by construction of the call sites."""
 
     skipped_tracks: list[dict] = []
     known_broken_candidates, renderable_candidates = [], []
@@ -349,15 +442,35 @@ def _try_render_ranked_candidates(
     for index, candidate in enumerate(attempts):
         track = candidate
         segment = selector.select(db, track)
-        transition = planner.plan(previous_segment, segment, prefers_smoother=prefers_smoother)
-        rendered = renderer.render([segment], [transition])
-        if rendered.fallback_reason:
+        # bridge_from.duration_ms is the previous track's already-rendered
+        # reserved tail length -- a hard physical ceiling on how much audio
+        # render_bridge can actually blend, applied here (not just inside
+        # the renderer) so the descriptive transition.notes text and the
+        # real render agree on the same crossfade_ms. The plain (non-bridge)
+        # path passes no cap -- its `transition` here is purely descriptive
+        # (render_track_transition never blends), matching today's behavior.
+        max_crossfade_ms = bridge_from.duration_ms if bridge_from is not None else None
+        transition = planner.plan(
+            previous_segment, segment, prefers_smoother=prefers_smoother,
+            max_crossfade_ms=max_crossfade_ms,
+        )
+        if bridge_from is None:
+            rendered = renderer.render_track_transition(
+                segment, resume_offset_ms=resume_offset_ms, reserved_ms=_reserved_ms_for(segment),
+            )
+        else:
+            rendered = renderer.render_bridge(
+                bridge_from, segment, crossfade_ms=transition.crossfade_ms,
+                reserved_ms=_reserved_ms_for(segment),
+            )
+        is_pass_through, fallback_reason = _staged_pass_through(rendered)
+        if fallback_reason:
             # The failure itself is what's informative here, not which
             # retry slot it landed in -- even the final kept attempt (a
             # pass-through with no better alternative left) is worth
             # remembering, so the *next* resolution skips straight past it
             # instead of re-discovering the same dead end.
-            known_broken_tracks.mark_broken(db, track, rendered.fallback_reason)
+            known_broken_tracks.mark_broken(db, track, fallback_reason)
         # Stop -- and keep this attempt, whatever it is -- once it succeeds,
         # once the retry budget is spent, or once the shared time budget
         # runs out (most failures are fast HTTP errors, but a genuinely
@@ -366,13 +479,13 @@ def _try_render_ranked_candidates(
         # attempt is always the final result, even a failed one, never
         # itself recorded as "skipped" (that label is only for a candidate
         # discarded in favor of a different one that was tried next).
-        if not rendered.is_pass_through or index == len(attempts) - 1 or time.monotonic() >= deadline:
+        if not is_pass_through or index == len(attempts) - 1 or time.monotonic() >= deadline:
             break
         skipped_tracks.append({
             "source": track.source,
             "source_track_id": track.source_track_id,
             "title": track.title,
-            "fallback_reason": rendered.fallback_reason,
+            "fallback_reason": fallback_reason,
         })
     return track, segment, transition, rendered, skipped_tracks
 
@@ -392,6 +505,8 @@ def _resolve_and_render(
     exclude_track_keys: frozenset[str] = frozenset(),
     recent_artists: frozenset[str] = frozenset(),
     viewer_id: int | None = None,
+    resume_offset_ms: int = 0,
+    bridge_from: StagedRender | None = None,
 ) -> tuple[Track, SelectedSegment, dict, dict, dict, CandidateRetriever]:
     """Runs CandidateRetriever -> SegmentSelector -> TransitionPlanner ->
     AudioRenderer for one session-sized (single track) resolution and
@@ -401,6 +516,19 @@ def _resolve_and_render(
     (routers/debug.py). The caller fills in the vibe_understander stage,
     since understand() may or may not have been called this resolution
     (feedback re-resolves without a new LLM call).
+
+    `bridge_from`, when given, means this resolution is preparing a live
+    crossfade bridge out of the session's current reserved tail rather than
+    a standalone track (see this module's live-crossfade docstring further
+    down) -- every candidate tried is rendered via renderer.render_bridge
+    instead of render_track_transition, and the returned `now_playing`
+    describes the bridge clip itself (`stage: "bridge"`), carrying the
+    resolved next track's own pre-rendered body/tail alongside it so
+    promoting past the bridge later needs no further computation.
+    `resume_offset_ms` only applies to the non-bridge path (a track
+    resuming after its own head already played as part of a bridge that
+    led into it) -- ignored when `bridge_from` is given, since a bridge
+    candidate's resume point is decided by the render itself.
 
     `retriever` (the local catalog) is tried first; `fallback_retriever`
     (Audius) only runs when `retriever` plainly finds nothing, or its own
@@ -500,7 +628,7 @@ def _resolve_and_render(
     track, segment, transition, rendered, skipped_tracks = _try_render_ranked_candidates(
         db, fresh_candidates, selector, planner, renderer,
         previous_segment=previous_segment, prefers_smoother=prefers_smoother,
-        deadline=render_deadline,
+        deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
     )
 
     # served_by's own candidates are all genuinely broken (not just
@@ -528,9 +656,10 @@ def _resolve_and_render(
     else:
         rescue_source = None
 
+    rendered_is_pass_through, rendered_fallback_reason = _staged_pass_through(rendered)
     if (
         rescue_source is not None
-        and rendered.is_pass_through
+        and rendered_is_pass_through
         and time.monotonic() < render_deadline
     ):
         try:
@@ -549,14 +678,15 @@ def _resolve_and_render(
             ) = _try_render_ranked_candidates(
                 db, fresh_rescue_candidates, selector, planner, renderer,
                 previous_segment=previous_segment, prefers_smoother=prefers_smoother,
-                deadline=render_deadline,
+                deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
             )
-            if not rescue_rendered.is_pass_through:
+            rescue_is_pass_through, _rescue_fallback_reason = _staged_pass_through(rescue_rendered)
+            if not rescue_is_pass_through:
                 skipped_tracks.append({
                     "source": track.source,
                     "source_track_id": track.source_track_id,
                     "title": track.title,
-                    "fallback_reason": rendered.fallback_reason,
+                    "fallback_reason": rendered_fallback_reason,
                 })
                 skipped_tracks.extend(rescue_skipped)
                 track, segment, transition, rendered = (
@@ -564,15 +694,57 @@ def _resolve_and_render(
                 )
                 served_by = rescue_source
 
-    now_playing = {
-        "title": track.title,
-        "artist": track.artist,
-        "album": track.album or "Cuemix catalog",
-        "cover_url": track.cover_url or COVER_URL,
-        "role": _role_for(track),
-        "audio_url": rendered.audio_url,
-        "segment": segment.model_dump(mode="json"),
-    }
+    # bridge_from consistently determines rendered's shape across both the
+    # primary and any rescue attempt above (rescue always reuses the same
+    # bridge_from) -- so this one check is enough to know which of
+    # StagedTrackRender/BridgeRender `rendered` actually is.
+    if bridge_from is None:
+        reserved_ms = _reserved_ms_for(segment) if rendered.reserved_tail is not None else 0
+        now_playing = {
+            "title": track.title,
+            "artist": track.artist,
+            "album": track.album or "Cuemix catalog",
+            "cover_url": track.cover_url or COVER_URL,
+            "role": _role_for(track),
+            "audio_url": rendered.body.audio_url,
+            "segment": segment.model_dump(mode="json"),
+            "stage": "body",
+            "resume_offset_ms": resume_offset_ms,
+            "reserved_ms": reserved_ms,
+            "tail_audio_url": rendered.reserved_tail.audio_url if rendered.reserved_tail else None,
+        }
+        renderer_is_pass_through = rendered.body.is_pass_through
+        renderer_resolved_audio_url = rendered.body.audio_url
+        renderer_fallback_reason = rendered.body.fallback_reason
+    else:
+        next_reserved_ms = (
+            _reserved_ms_for(segment) if rendered.next_reserved_tail is not None else 0
+        )
+        now_playing = {
+            "title": track.title,
+            "artist": track.artist,
+            "album": track.album or "Cuemix catalog",
+            "cover_url": track.cover_url or COVER_URL,
+            "role": _role_for(track),
+            "audio_url": rendered.bridge.audio_url,
+            "segment": segment.model_dump(mode="json"),
+            "stage": "bridge",
+            # The bridge's *actually* rendered crossfade -- render_bridge
+            # may have clamped this defensively past what `transition`
+            # below requested (see BridgeRender.crossfade_ms's docstring).
+            # This exact value is what the next track's own body must
+            # resume from once the bridge finishes, or audio at the seam
+            # gets replayed or skipped.
+            "resume_offset_ms": rendered.crossfade_ms,
+            "reserved_ms": next_reserved_ms,
+            "tail_audio_url": (
+                rendered.next_reserved_tail.audio_url if rendered.next_reserved_tail else None
+            ),
+            "next_body_audio_url": rendered.next_body.audio_url,
+        }
+        renderer_is_pass_through = rendered.bridge.is_pass_through
+        renderer_resolved_audio_url = rendered.bridge.audio_url
+        renderer_fallback_reason = rendered.bridge.fallback_reason
     reasoning = {
         "selectedMoment": _selected_moment_text(segment),
         "transitionPlan": transition.notes,
@@ -642,16 +814,16 @@ def _resolve_and_render(
         },
         "audio_renderer": {
             "implementation": type(renderer).__name__,
-            "is_pass_through": rendered.is_pass_through,
-            "offset_count": len(rendered.offsets),
+            "is_pass_through": renderer_is_pass_through,
+            "stage": now_playing["stage"],
             # The URL actually handed to the player, and -- when
             # is_pass_through is True -- why: surfaced so a "won't play"
             # report is diagnosable straight from the debug panel (was it
             # our own /media/renders/... file, or a raw external stream URL
             # that never got rendered at all, and if the latter, did the
             # download or the decode fail).
-            "resolved_audio_url": rendered.audio_url,
-            "fallback_reason": rendered.fallback_reason,
+            "resolved_audio_url": renderer_resolved_audio_url,
+            "fallback_reason": renderer_fallback_reason,
             # Candidates tried and discarded before landing on `track`
             # (empty when the first candidate rendered fine) -- see
             # AUDIO_RENDER_RETRY_LIMIT.
@@ -852,17 +1024,12 @@ def apply_feedback(
             # NOT have caught a stale prepared item in that case, only
             # explicit clearing here does.
             session.prepared_next_json = None
-            session.now_playing_json = now_playing
-            session.reasoning_json = reasoning
-            session.pipeline_trace_json = pipeline_trace
-            session.retriever_name = served_by.name
-            session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
-            session.played_track_keys_json = (
-                (session.played_track_keys_json or []) + [_track_key(track)]
-            )[-_PLAYED_TRACK_HISTORY:]
-            session.played_artists_json = (
-                (session.played_artists_json or []) + [track.artist]
-            )[-_PLAYED_TRACK_HISTORY:]
+            _promote(
+                session, now_playing=now_playing, reasoning=reasoning,
+                pipeline_trace=pipeline_trace, retriever_name=served_by.name,
+                vibe_label=now_playing["segment"]["track"]["vibe_label"],
+                track_key=_track_key(track), artist=track.artist,
+            )
             resolved_again = True
         except NoMatchingCandidate:
             # Nothing matched the mutated intent closely enough; keep the
@@ -912,77 +1079,151 @@ def advance_session(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> SessionRead:
-    """Continues a still-playing session onto the next track/segment
-    matching its current (unmutated) intent once the current one finishes --
-    the continuous, no-input-required loop this pipeline was built around.
-    Called automatically by the frontend on media-ended, not by user action,
-    so it never mutates intent the way feedback does; it only rotates
-    through the same candidate pool feedback would use, skipping whatever
-    the session already played recently so it doesn't immediately repeat.
+    """Continues a still-playing session onto the next segment of live
+    audio matching its current (unmutated) intent once the current one
+    finishes -- the continuous, no-input-required loop this pipeline was
+    built around. Called automatically by the frontend on media-ended, not
+    by user action, so it never mutates intent the way feedback does; it
+    only rotates through the same candidate pool feedback would use,
+    skipping whatever the session already played recently so it doesn't
+    immediately repeat.
 
     Explicit coaching feedback (apply_feedback) still wins if the two race:
     both are ordinary commits to the same DJSession row, so whichever
     request's commit lands last is what persists -- no special locking
     needed, same as any other concurrent write to one row.
 
-    PHASE_C_PREFETCH_DESIGN.md section 3.3: if prepare_next() already parked
-    a still-valid result for this exact intent, that's applied directly
-    instead -- no retrieve/select/plan/render at all. The prepared item is
-    re-validated against the session's *current* intent fingerprint right
-    here, not trusted just because it exists, since feedback may have
-    mutated the intent after it was prepared but before this call landed.
+    Every selected segment reserves a fixed window at its own tail the
+    moment it's chosen (see RESERVED_TRANSITION_MS/_reserved_ms_for) --
+    session.now_playing_json["stage"] tracks which of three pieces is
+    currently playing, and this function's job is to figure out which
+    stage comes next, dispatching on it:
 
-    Fingerprint + TTL alone aren't enough, though: prepare_next() can still
-    be resolving (its render alone can take 25s+, well past the ~10s of
-    track remaining that triggers it) when this session's current track
-    ends and this call runs its own resolution first, independently landing
-    on the same track (selection is fully deterministic, and both runs share
-    the same intent/exclude set) -- prepare_next() then finishes and writes
-    that same track as "prepared," which this fast path would otherwise
-    replay immediately on the *next* advance. So the prepared item is also
-    rejected outright if its track_key is already in played_track_keys_json,
-    falling through to a normal re-resolution (which already excludes played
-    tracks) instead of serving a guaranteed repeat."""
+    - "bridge" -- the reserved tail already blended into a resolved next
+      track's head is what's currently playing. It ends into that next
+      track's own pre-rendered body, already staged in this same
+      now_playing_json (next_body_audio_url/resume_offset_ms/reserved_ms/
+      tail_audio_url) by the earlier body->bridge promotion below -- pure
+      bookkeeping, no retrieval/render, no play-count change (a bridge
+      already contains that track's audio, so play history was committed
+      when the bridge itself started, not now).
+    - "body" -- the current track's own (non-reserved) audio is playing.
+      PHASE_C_PREFETCH_DESIGN.md section 3.3: if prepare_next() already
+      parked a still-valid *bridge* for this exact intent, that's promoted
+      directly (no retrieve/select/plan/render) -- re-validated against the
+      session's *current* intent fingerprint right here, not trusted just
+      because it exists, since feedback may have mutated the intent after
+      it was prepared but before this call landed. Fingerprint + TTL alone
+      aren't enough, though: prepare_next() can still be resolving (its
+      render alone can take 25s+, well past the ~10s of track remaining
+      that triggers it) when this session's current track ends and this
+      call runs its own resolution first, independently landing on the same
+      track (selection is fully deterministic, and both runs share the same
+      intent/exclude set) -- prepare_next() then finishes and writes that
+      same track as "prepared," which this fast path would otherwise replay
+      immediately on the *next* advance. So the prepared item is also
+      rejected outright if its track_key is already in played_track_keys_json,
+      falling through instead. Absent a ready bridge, the segment's own
+      already-rendered reserved tail (this stage's `reserved_ms`/
+      `tail_audio_url`) plays next verbatim, unblended ("reserved_plain") --
+      never cut short, and never a fresh resolution while there's still
+      reserved audio left to honestly play. Only when nothing was reserved
+      at all (a very short segment; see _reserved_ms_for) does this fall
+      straight through to a fresh resolution instead.
+    - "reserved_plain", or no "stage" key at all (a session row from before
+      this mechanism existed) -- nothing further is already staged; falls
+      through to a genuinely fresh resolution, exactly like this function's
+      only behavior before live crossfades existed."""
 
     intent = PromptIntent.model_validate(session.intent_json)
-    fingerprint = session_candidate_pool.fingerprint_for(intent)
-    prepared = session.prepared_next_json
-    played_track_keys = session.played_track_keys_json or []
-    if (
-        _prepared_is_valid(prepared, fingerprint)
-        and prepared["track_key"] not in played_track_keys
-    ):
-        pipeline_trace = prepared["pipeline_trace"]
-        pipeline_trace["vibe_understander"] = {
-            "implementation": type(get_vibe_understander()).__name__,
-            "invoked": False,
-            "intent": intent.model_dump(mode="json"),
-            "original_intent": _effective_original_intent(session),
+    now_playing = session.now_playing_json
+    stage = now_playing.get("stage")
+
+    if stage == "bridge":
+        promoted = {
+            key: now_playing[key]
+            for key in ("title", "artist", "album", "cover_url", "role", "segment")
         }
-        session.now_playing_json = prepared["now_playing"]
-        session.reasoning_json = prepared["reasoning"]
-        session.pipeline_trace_json = pipeline_trace
-        session.retriever_name = pipeline_trace["candidate_retriever"]["name"]
-        session.vibe_label = (
-            prepared["now_playing"]["segment"]["track"]["vibe_label"] or session.vibe_label
+        promoted.update(
+            audio_url=now_playing["next_body_audio_url"],
+            stage="body",
+            resume_offset_ms=now_playing["resume_offset_ms"],
+            reserved_ms=now_playing["reserved_ms"],
+            tail_audio_url=now_playing["tail_audio_url"],
         )
-        session.played_track_keys_json = (
-            (session.played_track_keys_json or []) + [prepared["track_key"]]
-        )[-_PLAYED_TRACK_HISTORY:]
-        session.played_artists_json = (
-            (session.played_artists_json or []) + [prepared["artist"]]
-        )[-_PLAYED_TRACK_HISTORY:]
-        session.prepared_next_json = None
+        _promote(
+            session, now_playing=promoted, reasoning=session.reasoning_json,
+            pipeline_trace=session.pipeline_trace_json, retriever_name=session.retriever_name,
+            vibe_label=session.vibe_label,
+        )
         db.commit()
         db.refresh(session)
         notify_pipeline_debug_change()
         return serialize_session(session)
 
-    previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
+    if stage == "body":
+        fingerprint = session_candidate_pool.fingerprint_for(intent)
+        prepared = session.prepared_next_json
+        played_track_keys = session.played_track_keys_json or []
+        if (
+            _prepared_is_valid(prepared, fingerprint)
+            and prepared["track_key"] not in played_track_keys
+        ):
+            pipeline_trace = prepared["pipeline_trace"]
+            pipeline_trace["vibe_understander"] = {
+                "implementation": type(get_vibe_understander()).__name__,
+                "invoked": False,
+                "intent": intent.model_dump(mode="json"),
+                "original_intent": _effective_original_intent(session),
+            }
+            _promote(
+                session, now_playing=prepared["now_playing"], reasoning=prepared["reasoning"],
+                pipeline_trace=pipeline_trace,
+                retriever_name=pipeline_trace["candidate_retriever"]["name"],
+                vibe_label=prepared["now_playing"]["segment"]["track"]["vibe_label"],
+                track_key=prepared["track_key"], artist=prepared["artist"],
+            )
+            session.prepared_next_json = None
+            db.commit()
+            db.refresh(session)
+            notify_pipeline_debug_change()
+            return serialize_session(session)
+
+        reserved_ms = now_playing.get("reserved_ms", 0)
+        tail_audio_url = now_playing.get("tail_audio_url")
+        if reserved_ms > 0 and tail_audio_url:
+            # No bridge ready yet -- the reserved window still plays in
+            # full, verbatim, rather than ever being skipped or cut short;
+            # a fresh resolution only happens once *this* ends too.
+            promoted = {
+                key: now_playing[key]
+                for key in ("title", "artist", "album", "cover_url", "role", "segment")
+            }
+            promoted.update(
+                audio_url=tail_audio_url, stage="reserved_plain",
+                resume_offset_ms=0, reserved_ms=0, tail_audio_url=None,
+            )
+            _promote(
+                session, now_playing=promoted, reasoning=session.reasoning_json,
+                pipeline_trace=session.pipeline_trace_json, retriever_name=session.retriever_name,
+                vibe_label=session.vibe_label,
+            )
+            db.commit()
+            db.refresh(session)
+            notify_pipeline_debug_change()
+            return serialize_session(session)
+        # reserved_ms == 0 (nothing was reserved for this segment -- see
+        # _reserved_ms_for) -- falls through to a fresh resolution below,
+        # same as "reserved_plain" already finishing.
+
+    # stage in (None, "reserved_plain"), or "body" with nothing reserved --
+    # a genuinely fresh resolution, exactly like this function's only
+    # behavior before live crossfades existed.
+    previous_segment = SelectedSegment.model_validate(now_playing["segment"])
     exclude = frozenset(session.played_track_keys_json or [])
     recent_artists = frozenset(session.played_artists_json or [])
     try:
-        track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
+        track, _, fresh_now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
             db, intent, retriever, fallback_retriever, selector, planner, renderer,
             session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
             exclude_track_keys=exclude, recent_artists=recent_artists,
@@ -1010,17 +1251,12 @@ def advance_session(
         # feedback was never used this session).
         "original_intent": _effective_original_intent(session),
     }
-    session.now_playing_json = now_playing
-    session.reasoning_json = reasoning
-    session.pipeline_trace_json = pipeline_trace
-    session.retriever_name = served_by.name
-    session.vibe_label = now_playing["segment"]["track"]["vibe_label"] or session.vibe_label
-    session.played_track_keys_json = (
-        (session.played_track_keys_json or []) + [_track_key(track)]
-    )[-_PLAYED_TRACK_HISTORY:]
-    session.played_artists_json = (
-        (session.played_artists_json or []) + [track.artist]
-    )[-_PLAYED_TRACK_HISTORY:]
+    _promote(
+        session, now_playing=fresh_now_playing, reasoning=reasoning, pipeline_trace=pipeline_trace,
+        retriever_name=served_by.name,
+        vibe_label=fresh_now_playing["segment"]["track"]["vibe_label"],
+        track_key=_track_key(track), artist=track.artist,
+    )
 
     db.commit()
     db.refresh(session)
@@ -1038,31 +1274,44 @@ def prepare_next(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> None:
-    """PHASE_C_PREFETCH_DESIGN.md section 3.2: runs the exact same resolution
-    advance_session() would do, ahead of time, and parks the result in
+    """PHASE_C_PREFETCH_DESIGN.md section 3.2, extended for live in-session
+    crossfades: while the session's current segment is in its "body" stage
+    (see advance_session's docstring for the full stage state machine),
+    tries to resolve and render a *bridge* out of that body's own
+    already-rendered reserved tail ahead of the ~10s of track remaining
+    that triggers this call, and parks the result in
     session.prepared_next_json instead of the live now_playing_json/
     reasoning_json/pipeline_trace fields -- nothing this session currently
     reports as playing is touched. A no-op if the session isn't
-    `"playing"`, or if a still-valid (unexpired, current-fingerprint)
-    prepared item already exists.
+    `"playing"`, if its current stage isn't "body" (a bridge or reserved
+    tail is already staged or playing -- nothing further to look ahead to
+    until a fresh resolution happens), if nothing was reserved for the
+    current segment at all (see _reserved_ms_for), or if a still-valid
+    (unexpired, current-fingerprint) prepared item already exists.
 
     Guarded by a per-session Lock so two near-simultaneous calls for the
     same session don't both pay for a full retrieval/render -- see the
     module-level _prepare_locks comment for why this is a latency nicety,
     not a correctness requirement (section 3.5).
 
-    A different race matters more: stop_session() or apply_feedback()
-    (the branch that clears prepared_next_json on intent mutation) can
-    commit *while* this function's own retrieval/render work is still
-    running. Without a re-check, this function's eventual write would land
-    afterward and silently resurrect a prepared item on a session that was
-    just stopped, or whose intent just changed -- so right before writing,
-    the session's current state is re-fetched and re-validated against the
-    fingerprint this resolution actually ran against, and the result is
-    discarded if either no longer matches: not written to the DB, and the
-    audio file already rendered for it is deleted too (_delete_rendered_file)
-    rather than left as a permanent orphan on disk. This is a normal,
-    expected outcome of the race, not an error."""
+    A different race matters more: stop_session(), apply_feedback() (the
+    branch that clears prepared_next_json on intent mutation), or
+    advance_session() itself (which can promote the current body's own
+    reserved tail straight into "reserved_plain" while this is still
+    resolving) can all commit *while* this function's own retrieval/render
+    work is still running. Without a re-check, this function's eventual
+    write would land afterward and silently resurrect a prepared bridge
+    built from a tail the session has already moved past -- so right
+    before writing, the session's current state is re-fetched and
+    re-validated against the fingerprint this resolution actually ran
+    against *and* the exact tail_audio_url it bridged from (fingerprint
+    alone isn't enough: the intent can stay unchanged across an unrelated
+    stage transition), and the result is discarded if any of it no longer
+    matches: not written to the DB, and every file this call rendered (the
+    bridge, the next track's own body, and its own new reserved tail) is
+    deleted too (_delete_rendered_file) rather than left as a permanent
+    orphan on disk. This is a normal, expected outcome of the race, not an
+    error."""
 
     if session.status != "playing":
         return
@@ -1074,12 +1323,28 @@ def prepare_next(
         # second redundant attempt.
         return
     try:
+        if session.now_playing_json.get("stage") != "body":
+            # A bridge or a reserved tail is already staged or playing --
+            # advance_session already knows what comes next without this.
+            return
+
         intent = PromptIntent.model_validate(session.intent_json)
         fingerprint = session_candidate_pool.fingerprint_for(intent)
         if _prepared_is_valid(session.prepared_next_json, fingerprint):
             return
 
-        previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
+        origin_now_playing = session.now_playing_json
+        origin_tail_audio_url = origin_now_playing.get("tail_audio_url")
+        origin_reserved_ms = origin_now_playing.get("reserved_ms", 0)
+        if not origin_tail_audio_url or origin_reserved_ms <= 0:
+            # Nothing was reserved for the current segment (a very short
+            # one -- see _reserved_ms_for) -- advance_session falls
+            # straight through to a fresh resolution once it ends; there's
+            # nothing to bridge from ahead of time.
+            return
+        bridge_from = StagedRender(audio_url=origin_tail_audio_url, duration_ms=origin_reserved_ms)
+
+        previous_segment = SelectedSegment.model_validate(origin_now_playing["segment"])
         exclude = frozenset(session.played_track_keys_json or [])
         recent_artists = frozenset(session.played_artists_json or [])
         try:
@@ -1087,12 +1352,13 @@ def prepare_next(
                 db, intent, retriever, fallback_retriever, selector, planner, renderer,
                 session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
                 exclude_track_keys=exclude, recent_artists=recent_artists,
-                viewer_id=session.user_id,
+                viewer_id=session.user_id, bridge_from=bridge_from,
             )
         except NoMatchingCandidate:
-            # Nothing to prepare ahead of time; advance_session falls back to
-            # its own real resolution when it's actually called, same as it
-            # always has.
+            # Nothing to bridge into ahead of time; advance_session falls
+            # back to its own real resolution (the reserved tail playing
+            # out plain, then a fresh one) when it's actually needed, same
+            # as it always has.
             return
         except Exception:
             # This is already a best-effort prefetch (see this function's
@@ -1103,22 +1369,35 @@ def prepare_next(
             logger.exception("prepare_next: unexpected error resolving session %s", session.id)
             return
 
-        # Re-fetch and re-validate right before writing: stop_session() or
-        # apply_feedback() may have committed while the retrieval/render
-        # work above was in flight. db.refresh() picks up whatever is
-        # actually committed now, not whatever this function saw when it
-        # started -- a plain re-check of the in-memory `session` object
-        # wouldn't catch a change made through a different Session/request.
+        # Re-fetch and re-validate right before writing: stop_session(),
+        # apply_feedback(), or advance_session() itself may have committed
+        # while the retrieval/render work above was in flight. db.refresh()
+        # picks up whatever is actually committed now, not whatever this
+        # function saw when it started -- a plain re-check of the in-memory
+        # `session` object wouldn't catch a change made through a different
+        # Session/request.
         db.refresh(session)
         current_intent = PromptIntent.model_validate(session.intent_json)
         current_fingerprint = session_candidate_pool.fingerprint_for(current_intent)
-        if session.status != "playing" or current_fingerprint != fingerprint:
-            # The DB record is correctly never written on this path, but the
-            # audio file _resolve_and_render already rendered to disk above
-            # is now unused and would otherwise sit there as a permanent
-            # orphan (see _delete_rendered_file) until the next _export()
-            # call's TTL sweep happens to catch it.
-            _delete_rendered_file(now_playing["audio_url"])
+        current_now_playing = session.now_playing_json
+        if (
+            session.status != "playing"
+            or current_fingerprint != fingerprint
+            or current_now_playing.get("stage") != "body"
+            or current_now_playing.get("tail_audio_url") != origin_tail_audio_url
+        ):
+            # The DB record is correctly never written on this path, but
+            # the audio files _resolve_and_render already rendered to disk
+            # above are now unused and would otherwise sit there as
+            # permanent orphans (see _delete_rendered_file) until the next
+            # _export() call's TTL sweep happens to catch them.
+            for stale_url in (
+                now_playing.get("audio_url"),
+                now_playing.get("next_body_audio_url"),
+                now_playing.get("tail_audio_url"),
+            ):
+                if stale_url:
+                    _delete_rendered_file(stale_url)
             return
 
         session.prepared_next_json = {

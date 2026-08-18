@@ -35,7 +35,7 @@ from app.services.pipeline.dependencies import _build_vibe_understander
 from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 from app.services.pipeline.query_planner import build_queries
 from app.services.pipeline.segment_selector import LibrosaSegmentSelector
-from app.services.pipeline.transition_planner import DeterministicTransitionPlanner
+from app.services.pipeline.transition_planner import MIN_CROSSFADE_MS, DeterministicTransitionPlanner
 from app.services.pipeline.vibe import DeterministicOnlyVibeUnderstander, OllamaVibeUnderstander
 from app.services.prompt_parser import deterministic_parse
 
@@ -1151,6 +1151,35 @@ def test_transition_planner_smoother_flag_always_lengthens_crossfade():
     assert smoother.crossfade_ms > normal.crossfade_ms
 
 
+def test_transition_planner_max_crossfade_ms_caps_below_the_tempo_key_ideal():
+    # session_manager.py's live-crossfade rendering can only ever blend as
+    # much audio as it physically reserved -- max_crossfade_ms is how that
+    # hard ceiling reaches the planner.
+    planner = DeterministicTransitionPlanner()
+    compatible = planner.plan(_segment(bpm=120, key="C"), _segment(bpm=121, key="C"))
+    capped = planner.plan(
+        _segment(bpm=120, key="C"), _segment(bpm=121, key="C"), max_crossfade_ms=2000,
+    )
+    assert compatible.crossfade_ms > 2000  # sanity: the cap actually bites
+    assert capped.crossfade_ms == 2000
+
+
+def test_transition_planner_max_crossfade_ms_can_push_below_the_min_floor():
+    # A short reserved window is a physical constraint, not an aesthetic
+    # one -- it wins over MIN_CROSSFADE_MS, deliberately (see
+    # DeterministicTransitionPlanner.plan()'s own docstring).
+    planner = DeterministicTransitionPlanner()
+    capped = planner.plan(_segment(bpm=90, key="C"), _segment(bpm=140, key="F#"), max_crossfade_ms=500)
+    assert capped.crossfade_ms == 500
+    assert capped.crossfade_ms < MIN_CROSSFADE_MS
+
+
+def test_transition_planner_max_crossfade_ms_also_caps_the_first_segment_case():
+    planner = DeterministicTransitionPlanner()
+    capped = planner.plan(None, _segment(), prefers_smoother=True, max_crossfade_ms=1000)
+    assert capped.crossfade_ms == 1000
+
+
 def test_rendered_session_audio_is_actually_servable(client):
     session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
     served = client.get(session["audioUrl"].removeprefix("/api"))
@@ -1199,6 +1228,118 @@ def _local_file_segment() -> SelectedSegment:
         bpm=None,
         musical_key=None,
     )
+
+
+def _local_file_segment_long(*, start_second=0, end_second=30) -> SelectedSegment:
+    # A 30s window into the real 60s demo wav -- long enough to actually
+    # carve out a multi-second reserved tail, unlike _local_file_segment's
+    # 1s window (too short for any of the live-crossfade math below).
+    return SelectedSegment(
+        track=_track(local_path=str(_DEMO_WAV_PATH)),
+        start_second=start_second, end_second=end_second,
+        method="whole_clip", bpm=None, musical_key=None,
+    )
+
+
+def test_render_track_transition_splits_body_and_reserved_tail_with_no_audio_lost():
+    renderer = PydubAudioRenderer()
+    result = renderer.render_track_transition(
+        _local_file_segment_long(), resume_offset_ms=0, reserved_ms=5000,
+    )
+    assert result.body.is_pass_through is False
+    assert result.reserved_tail is not None
+    assert result.reserved_tail.duration_ms == 5000
+    # The full 30s segment is accounted for exactly once between the two
+    # pieces -- nothing dropped, nothing duplicated.
+    assert result.body.duration_ms + result.reserved_tail.duration_ms == 30000
+
+
+def test_render_track_transition_resume_offset_ms_shortens_only_the_body():
+    renderer = PydubAudioRenderer()
+    result = renderer.render_track_transition(
+        _local_file_segment_long(), resume_offset_ms=10000, reserved_ms=5000,
+    )
+    # The first 10s was already played as part of a prior bridge -- this
+    # body correctly starts after it, not from the top.
+    assert result.body.duration_ms == 15000
+    assert result.reserved_tail.duration_ms == 5000
+
+
+def test_render_track_transition_reserved_ms_zero_produces_no_tail():
+    renderer = PydubAudioRenderer()
+    result = renderer.render_track_transition(
+        _local_file_segment_long(), resume_offset_ms=0, reserved_ms=0,
+    )
+    assert result.reserved_tail is None
+    assert result.body.duration_ms == 30000
+
+
+def test_render_track_transition_pass_through_on_load_failure(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_ConnectError"),
+    )
+    renderer = PydubAudioRenderer()
+    result = renderer.render_track_transition(_segment(), resume_offset_ms=0, reserved_ms=5000)
+    assert result.body.is_pass_through is True
+    assert result.body.fallback_reason == "download_failed_ConnectError"
+    assert result.reserved_tail is None
+
+
+def test_render_bridge_is_exactly_reserved_ms_long_and_covers_the_next_track_with_no_gap_or_overlap():
+    renderer = PydubAudioRenderer()
+    staged = renderer.render_track_transition(
+        _local_file_segment_long(), resume_offset_ms=0, reserved_ms=5000,
+    )
+    bridge = renderer.render_bridge(
+        staged.reserved_tail, _local_file_segment_long(), crossfade_ms=3000, reserved_ms=4000,
+    )
+    # Invariant 1: the bridge is always exactly as long as the tail it was
+    # built from, regardless of the requested crossfade_ms -- a shorter
+    # blended_overlap is compensated for by a longer plain_prefix.
+    assert bridge.bridge.duration_ms == staged.reserved_tail.duration_ms == 5000
+    assert bridge.crossfade_ms == 3000  # no clamping needed here
+    # Invariant 2: crossfade_ms (consumed inside the bridge) + next_body +
+    # next_reserved_tail covers the *next* track's full 30s segment exactly
+    # once -- proves nothing from it is skipped, and nothing replayed.
+    assert bridge.crossfade_ms + bridge.next_body.duration_ms + bridge.next_reserved_tail.duration_ms == 30000
+
+
+def test_render_bridge_clamps_an_oversized_crossfade_request_and_reports_the_real_value():
+    renderer = PydubAudioRenderer()
+    staged = renderer.render_track_transition(
+        _local_file_segment_long(), resume_offset_ms=0, reserved_ms=5000,
+    )
+    # Requesting more crossfade than the reserved tail actually holds.
+    bridge = renderer.render_bridge(
+        staged.reserved_tail, _local_file_segment_long(), crossfade_ms=10000, reserved_ms=4000,
+    )
+    actual_crossfade = bridge.crossfade_ms
+    assert actual_crossfade < 10000
+    assert actual_crossfade == min(10000, staged.reserved_tail.duration_ms - 1, 30000 - 1)
+    # next_body/next_reserved_tail were sliced using this same clamped
+    # value, not the original request -- a caller that resumed next_body
+    # from the *requested* 10000ms instead of bridge.crossfade_ms would
+    # either skip or duplicate audio at this exact seam.
+    assert actual_crossfade + bridge.next_body.duration_ms + bridge.next_reserved_tail.duration_ms == 30000
+
+
+def test_render_bridge_falls_back_to_pass_through_when_the_next_track_cannot_be_fetched(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (None, "download_failed_ConnectError"),
+    )
+    renderer = PydubAudioRenderer()
+    staged = renderer.render_track_transition(
+        _local_file_segment_long(), resume_offset_ms=0, reserved_ms=5000,
+    )
+    bridge = renderer.render_bridge(
+        staged.reserved_tail, _segment(), crossfade_ms=3000, reserved_ms=4000,
+    )
+    assert bridge.bridge.is_pass_through is True
+    assert bridge.next_body.is_pass_through is True
+    assert bridge.next_reserved_tail is None
+    assert bridge.crossfade_ms == 0
 
 
 def test_export_sweeps_a_render_older_than_the_ttl():

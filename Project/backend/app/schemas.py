@@ -598,6 +598,56 @@ class RenderedAudio(BaseModel):
     fallback_reason: str | None = None
 
 
+class StagedRender(BaseModel):
+    """One playable clip produced by AudioRenderer.render_track_transition/
+    render_bridge (session_manager.py's live-crossfade reserved-region
+    mechanism) -- a single rendered file plus its own duration, not a
+    composite with per-input offsets like RenderedAudio (whose `offsets`
+    field is mix-specific and meaningless for a single staged clip)."""
+
+    audio_url: str
+    duration_ms: int = Field(ge=0)
+    is_pass_through: bool = False
+    fallback_reason: str | None = None
+
+
+class StagedTrackRender(BaseModel):
+    """A track's audio split at selection time into a body (played first,
+    unchanged from today's single-segment playback) and a reserved tail
+    (always played next, either blended into a real crossfade or verbatim
+    -- see AudioRenderer.render_track_transition). `reserved_tail` is None
+    only when `body.is_pass_through` is True -- a track whose audio
+    couldn't be fetched at all never enters the reserved-window mechanism,
+    it behaves exactly like today's single pass-through."""
+
+    body: StagedRender
+    reserved_tail: StagedRender | None = None
+
+
+class BridgeRender(BaseModel):
+    """The output of AudioRenderer.render_bridge: the previous track's
+    reserved tail blended against a resolved next track's head (`bridge`),
+    plus that next track's own body+tail, rendered in the same call since
+    its audio was already loaded to build the blend -- no second fetch
+    needed when the bridge finishes playing and the next track's body
+    starts. `next_reserved_tail` is None under the same pass-through
+    condition as StagedTrackRender.reserved_tail.
+
+    `crossfade_ms` is the *actually used* blend length -- render_bridge
+    clamps its caller-requested crossfade_ms defensively against both
+    clips' real lengths before rendering, so this can be shorter than what
+    was asked for. session_manager.py must use this value (not its own
+    request) as `next_body`'s resume point: any mismatch between the two
+    would either replay already-blended audio a second time or skip a gap
+    of it at the seam between the bridge and next_body. 0 alongside a
+    pass-through `bridge`/`next_body` (no real blend happened)."""
+
+    bridge: StagedRender
+    next_body: StagedRender
+    next_reserved_tail: StagedRender | None = None
+    crossfade_ms: int = Field(ge=0, default=0)
+
+
 # ---------------------------------------------------------------------------
 # Internal pipeline/Ollama debug panel (routers/debug.py). Observability
 # only -- read-only reflections of state the pipeline/session layer already

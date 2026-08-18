@@ -9,7 +9,16 @@ from abc import ABC, abstractmethod
 
 from sqlalchemy.orm import Session
 
-from app.schemas import PromptIntent, RenderedAudio, SelectedSegment, Track, TransitionPlan
+from app.schemas import (
+    BridgeRender,
+    PromptIntent,
+    RenderedAudio,
+    SelectedSegment,
+    StagedRender,
+    StagedTrackRender,
+    Track,
+    TransitionPlan,
+)
 
 
 class VibeUnderstander(ABC):
@@ -72,7 +81,14 @@ class TransitionPlanner(ABC):
         next_segment: SelectedSegment,
         *,
         prefers_smoother: bool = False,
+        max_crossfade_ms: int | None = None,
     ) -> TransitionPlan:
+        """`max_crossfade_ms` is an optional hard ceiling on the returned
+        crossfade_ms -- see DeterministicTransitionPlanner.plan()'s
+        docstring for why (session_manager.py's reserved-region live
+        crossfade mechanism; a no-op for any caller that doesn't pass it,
+        e.g. mix_service.py)."""
+
         raise NotImplementedError
 
 
@@ -83,4 +99,53 @@ class AudioRenderer(ABC):
     def render(
         self, segments: list[SelectedSegment], transitions: list[TransitionPlan]
     ) -> RenderedAudio:
+        raise NotImplementedError
+
+    @abstractmethod
+    def render_track_transition(
+        self, segment: SelectedSegment, *, resume_offset_ms: int, reserved_ms: int
+    ) -> StagedTrackRender:
+        """Loads `segment`'s audio once and splits it into a body (played
+        first, from `resume_offset_ms` into the clip up to `reserved_ms`
+        short of its own end) and a reserved tail (`reserved_ms` long,
+        always played next -- see session_manager.py's reserved-region
+        mechanism for why this is decided now, before any transition is
+        planned). `resume_offset_ms` is 0 for a fresh track, or the
+        crossfade length of the bridge that led into it for a track
+        resuming after its own head was already played as part of a
+        bridge. On a load failure, returns a StagedTrackRender whose body
+        is an honest pass-through (same contract render()'s single-segment
+        path already uses) and whose reserved_tail is None -- a track that
+        couldn't be fetched never enters the reserved-window mechanism."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def render_bridge(
+        self,
+        tail: StagedRender,
+        next_segment: SelectedSegment,
+        *,
+        crossfade_ms: int,
+        reserved_ms: int,
+    ) -> BridgeRender:
+        """Blends `tail` (an already-rendered reserved tail, `reserved_ms`
+        long) against `next_segment`'s head into a bridge clip exactly
+        `reserved_ms` long (a plain prefix of `reserved_ms - crossfade_ms`,
+        then a true blended overlap of `crossfade_ms`) -- and, since
+        `next_segment`'s audio is loaded to build that blend anyway, also
+        renders its own body+tail in the same call (resume_offset_ms=
+        crossfade_ms), so the next track's own playback needs no further
+        fetch once the bridge finishes. On a failure to load
+        `next_segment`'s audio, returns a BridgeRender whose `bridge` is a
+        pass-through and whose `next_body`/`next_reserved_tail` reflect
+        that same failure -- the caller (session_manager.py) treats this
+        exactly like today's single-candidate render failure and falls
+        through to the next ranked candidate. The returned
+        `BridgeRender.crossfade_ms` is the actually-used blend length
+        (`crossfade_ms`, defensively re-clamped against both clips' real
+        lengths) -- session_manager.py must resume `next_body`'s own
+        playback from exactly this value, not its own request, or audio
+        gets replayed or skipped at the bridge/next_body seam."""
+
         raise NotImplementedError
