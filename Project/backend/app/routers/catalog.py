@@ -246,7 +246,9 @@ def _build_catalog_track(
     )
     if duplicate is not None:
         row.bpm = duplicate.bpm
+        row.bpm_confidence = duplicate.bpm_confidence
         row.musical_key = duplicate.musical_key
+        row.key_confidence = duplicate.key_confidence
         row.segment_start_second = duplicate.segment_start_second
         row.segment_end_second = duplicate.segment_end_second
         row.segment_method = duplicate.segment_method

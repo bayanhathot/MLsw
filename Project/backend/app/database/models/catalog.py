@@ -96,7 +96,24 @@ class CatalogTrack(Base):
     # Filled in by the one-time BPM/key/best-segment analysis job.
     analysis_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # A genuine confidence signal read off the same onset-strength
+    # autocorrelation beat_track uses internally to choose bpm -- not an
+    # invented number (see audio_analysis._bpm_confidence's docstring for
+    # the derivation). Normalized to [0.0, 1.0]: 1.0 means the chosen
+    # tempo's periodicity dominated essentially every analyzed window;
+    # values near 0.0 mean it was rarely the dominant periodicity, i.e. a
+    # genuinely weak/ambiguous beat.
+    bpm_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     musical_key: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # How much more energy the winning pitch class carries than its
+    # runner-up in the same mean chroma profile musical_key is chosen from
+    # (see audio_analysis._key_confidence). Normalized to [0.0, 1.0]: 0.0
+    # means the top two pitch classes were tied (maximally ambiguous key),
+    # 1.0 means the runner-up carried none of the winner's energy. This is
+    # a confidence signal for the *heuristic's own pick*, not a fix for
+    # the heuristic's known major/minor detection limitation -- see this
+    # column's neighbor and audio_analysis.py's module docstring.
+    key_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     segment_start_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_end_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)

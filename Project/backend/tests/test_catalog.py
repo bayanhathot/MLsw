@@ -110,6 +110,13 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     # see CatalogTrack.analysis_version's own docstring.
     assert row.analysis_version == "v1"
     assert row.analyzed_at is not None
+    # Genuine confidence signals read off the same librosa computations
+    # bpm/musical_key are chosen from (see audio_analysis._bpm_confidence/
+    # _key_confidence), not placeholders -- both normalized to [0.0, 1.0].
+    assert row.bpm_confidence is not None
+    assert 0.0 <= row.bpm_confidence <= 1.0
+    assert row.key_confidence is not None
+    assert 0.0 <= row.key_confidence <= 1.0
 
 
 def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client, db_session, monkeypatch):
@@ -153,6 +160,8 @@ def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client
     assert second_row.storage_name == first_row.storage_name  # reused physical file
     assert second_row.analysis_version == first_row.analysis_version
     assert second_row.analyzed_at == first_row.analyzed_at
+    assert second_row.bpm_confidence == first_row.bpm_confidence
+    assert second_row.key_confidence == first_row.key_confidence
 
 
 def test_duplicate_upload_with_different_metadata_still_creates_its_own_row(client, db_session):

@@ -42,10 +42,62 @@ _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B
 _MAX_ANALYSIS_SECONDS = 240
 _TARGET_SEGMENT_SECONDS = 30
 _CHROMA_HOP_LENGTH = 512
+_BEAT_HOP_LENGTH = 512  # matches librosa.beat.beat_track's own default
+# librosa.feature.tempo's own default autocorrelation window, in seconds --
+# matched here so _bpm_confidence reads the tempogram at the same
+# resolution beat_track's internal tempo estimate was chosen from.
+_TEMPO_AUTOCORRELATION_SECONDS = 8.0
 
 
 def _estimate_key(chroma: np.ndarray) -> str:
     return _PITCH_CLASSES[int(np.argmax(chroma.mean(axis=1)))]
+
+
+def _bpm_confidence(
+    librosa_module, onset_envelope: np.ndarray, sr: float, hop_length: int, tempo_bpm: float
+) -> float:
+    """A confidence-like signal for the chosen tempo, read from the same
+    onset-strength autocorrelation beat_track uses internally to pick that
+    tempo in the first place (see librosa.feature.tempo's implementation,
+    which beat_track calls directly) -- not an invented number.
+    librosa.feature.tempogram normalizes every analyzed window so its own
+    strongest periodicity is exactly 1.0; this is the *average*, across
+    every window, of that normalized strength specifically at the chosen
+    tempo's lag. 1.0 would mean every single window's strongest
+    periodicity coincided exactly with the chosen tempo (about as
+    confident as this signal can get); values near 0.0 mean the chosen
+    tempo was rarely the dominant periodicity window-to-window -- a
+    genuinely weak/ambiguous beat, not noise in the measurement. Verified
+    directionally against a synthetic click track (clean, strongly
+    periodic input scores far higher than typical program material)."""
+
+    win_length = int(
+        librosa_module.time_to_frames(_TEMPO_AUTOCORRELATION_SECONDS, sr=sr, hop_length=hop_length)
+    )
+    tempogram = librosa_module.feature.tempogram(
+        onset_envelope=onset_envelope, sr=sr, hop_length=hop_length, win_length=win_length
+    )
+    mean_tempogram = tempogram.mean(axis=-1)
+    bpm_bins = librosa_module.tempo_frequencies(len(mean_tempogram), sr=sr, hop_length=hop_length)
+    closest_bin = int(np.argmin(np.abs(bpm_bins - tempo_bpm)))
+    return float(np.clip(mean_tempogram[closest_bin], 0.0, 1.0))
+
+
+def _key_confidence(chroma: np.ndarray) -> float:
+    """How much more energy the winning pitch class carries than its
+    runner-up, in the same mean chroma profile _estimate_key already
+    computes -- 0.0 if the top two pitch classes are tied (maximally
+    ambiguous), 1.0 if the runner-up carries none of the winner's energy
+    (maximally unambiguous). This does not attempt to fix major/minor
+    detection -- see this module's docstring; that's separate, harder
+    work (real key-finding via Krumhansl-Schmuckler-style template
+    correlation), not in scope here."""
+
+    profile = chroma.mean(axis=1)
+    winner, runner_up = np.sort(profile)[::-1][:2]
+    if winner <= 0:
+        return 0.0
+    return float(np.clip((winner - runner_up) / winner, 0.0, 1.0))
 
 
 def _bucket_chroma(chroma: np.ndarray, frames_per_second: float) -> np.ndarray:
@@ -96,10 +148,26 @@ def analyze_catalog_track(catalog_track_id: int) -> None:
                 str(path), sr=None, mono=True, duration=_MAX_ANALYSIS_SECONDS
             )
             duration_seconds = librosa.get_duration(y=waveform, sr=sr)
-            tempo, _ = librosa.beat.beat_track(y=waveform, sr=sr)
+            # Computed explicitly (rather than passing y= straight to
+            # beat_track) only so _bpm_confidence can read the same
+            # onset-strength signal beat_track uses internally to choose
+            # its tempo -- otherwise identical to beat_track(y=waveform,
+            # sr=sr)'s own default behavior (aggregate=np.median,
+            # hop_length=512), so the tempo output itself is unchanged.
+            onset_envelope = librosa.onset.onset_strength(
+                y=waveform, sr=sr, hop_length=_BEAT_HOP_LENGTH, aggregate=np.median
+            )
+            tempo, _ = librosa.beat.beat_track(
+                onset_envelope=onset_envelope, sr=sr, hop_length=_BEAT_HOP_LENGTH
+            )
+            tempo_bpm = float(np.atleast_1d(tempo)[0])
+            bpm_confidence_value = _bpm_confidence(
+                librosa, onset_envelope, sr, _BEAT_HOP_LENGTH, tempo_bpm
+            )
             chroma = librosa.feature.chroma_cqt(y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
             frames_per_second = sr / _CHROMA_HOP_LENGTH
             musical_key = _estimate_key(chroma)
+            key_confidence_value = _key_confidence(chroma)
             start_second, end_second, method = _best_segment(
                 chroma, frames_per_second, duration_seconds
             )
@@ -113,8 +181,10 @@ def analyze_catalog_track(catalog_track_id: int) -> None:
             db.commit()
             return
 
-        row.bpm = round(float(np.atleast_1d(tempo)[0]), 2)
+        row.bpm = round(tempo_bpm, 2)
+        row.bpm_confidence = round(bpm_confidence_value, 4)
         row.musical_key = musical_key
+        row.key_confidence = round(key_confidence_value, 4)
         row.segment_start_second = start_second
         row.segment_end_second = end_second
         row.segment_method = method
