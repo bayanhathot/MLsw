@@ -8,9 +8,13 @@ Two matching strategies:
     engine the test suite uses -- see _trigram_similarity). Below
     ARTIST_MATCH_THRESHOLD this returns an empty list rather than a guess --
     requirement 8's "report that plainly" behavior.
-  * no artist named -> the same energy/vocals/mood-bucket keyword rules
-    session_manager used to run against the TRACKS dict, now run against
-    real rows tagged with `mood_bucket`.
+  * no artist named -> a broader visibility-filtered pool (capped at
+    NO_ARTIST_CANDIDATE_POOL_CAP), every row of which gets scored on
+    whatever signals it actually has -- genre for a real upload, the old
+    energy/vocals/mood-bucket keyword rules (via mood_bucket) for a seeded
+    row. Deliberately not a hard SQL filter to one mood_bucket: that would
+    exclude every real upload from this branch entirely, since real
+    uploads never have mood_bucket set (see _score_rows).
 
 Whatever a query above returns gets scored (_score_rows) and ranked, but
 `retrieve()` never guarantees a *good* match, only a real one -- see
@@ -66,6 +70,15 @@ WEIGHT_CATALOG_ARTIST_MATCH = float(os.getenv("WEIGHT_CATALOG_ARTIST_MATCH", "0.
 # match directly or still consults Audius -- see is_strong_catalog_match.
 CATALOG_MATCH_THRESHOLD = float(os.getenv("CATALOG_MATCH_THRESHOLD", "0.5"))
 
+# Bounds the no-artist candidate pool retrieve_with_scores pulls for
+# scoring (see its no-artist branch below) -- this project's scale doesn't
+# need real pagination, but querying the whole table unbounded isn't
+# warranted either. Generous enough that a genuine genre/mood match well
+# past the first `limit` rows by insertion order still gets considered;
+# ordered by id purely for a deterministic query, not a ranking signal --
+# ranking happens after scoring, via `total`.
+NO_ARTIST_CANDIDATE_POOL_CAP = int(os.getenv("NO_ARTIST_CANDIDATE_POOL_CAP", "300"))
+
 # The 4 seeded demo rows (migration data insert) point at this repo-bundled
 # asset -- the same file the old TRACKS dict used for every bucket -- rather
 # than something already sitting in UPLOAD_DIR. It's staged into place on
@@ -97,7 +110,18 @@ def _ensure_seed_catalog(db: Session) -> None:
                 storage_name="cuemix-demo.wav",
                 content_type="audio/wav",
                 duration_seconds=60,
-                analysis_status="completed",
+                # Not "completed": that means "librosa actually analyzed
+                # this and here's what it found" (see audio_analysis.py,
+                # which always sets bpm/musical_key in the same commit as
+                # "completed") -- these 4 rows never went through real
+                # analysis at all. "not_applicable" is the accepted,
+                # already-modeled status for exactly this (see the
+                # analysis_status CHECK constraint / schemas.py's Literal);
+                # segment_start/end below are still authoritative for these
+                # rows (deliberately chosen at seed time, not analysis
+                # output) -- see segment_selector.py's matching
+                # analysis_status check.
+                analysis_status="not_applicable",
                 segment_start_second=0,
                 segment_end_second=45,
                 segment_method="whole_clip",
@@ -376,23 +400,40 @@ class CatalogTrackRetriever(CandidateRetriever):
             rows.sort(key=lambda row: breakdown[f"catalog:{row.id}"]["total"], reverse=True)
             return [_to_track(row) for row in rows], breakdown
 
-        bucket = _mood_bucket_for(intent)
+        # Deliberately not filtered to CatalogTrack.mood_bucket == bucket:
+        # mood_bucket is only ever populated on the 4 seeded rows (see
+        # _score_rows' mood_score comment) -- a hard SQL filter on it would
+        # exclude every real upload from this branch entirely, regardless
+        # of how well its genre matches, since real uploads have no
+        # mood_bucket at all. Pulling a broader pool and letting
+        # _score_rows judge each row on whatever signals it actually has
+        # (genre for a real upload, mood_bucket for a seed row) is what
+        # lets a real upload's genre match win here, not just a named-artist
+        # search. NO_ARTIST_CANDIDATE_POOL_CAP bounds this query; ranking
+        # by `total` happens *after* scoring the whole pool, then `limit`
+        # slices the ranked result -- scoring after limiting would silently
+        # drop a better-matching row past the first `limit` by insertion
+        # order (the bug _fuzzy_artist_matches' Postgres path never had,
+        # since it orders by similarity before limiting).
         rows = (
             _visibility_filter(db.query(CatalogTrack), viewer_id)
-            .filter(CatalogTrack.mood_bucket == bucket)
             .order_by(CatalogTrack.id.asc())
-            .limit(limit)
+            .limit(NO_ARTIST_CANDIDATE_POOL_CAP)
             .all()
         )
-        # No "any row anyway" fallback here anymore when the bucket has no
-        # match -- an empty list is reported plainly, same as the artist
-        # branch above. See last_resort_tracks below for where that
-        # behavior moved to.
+        # No "any row anyway" fallback here anymore when the pool is empty
+        # -- an empty list is reported plainly, same as the artist branch
+        # above. See last_resort_tracks below for where that behavior
+        # moved to.
         if not rows:
             return [], {}
         breakdown = _score_rows(rows, intent)
         rows.sort(key=lambda row: breakdown[f"catalog:{row.id}"]["total"], reverse=True)
-        return [_to_track(row) for row in rows], breakdown
+        selected = rows[:limit]
+        selected_breakdown = {
+            f"catalog:{row.id}": breakdown[f"catalog:{row.id}"] for row in selected
+        }
+        return [_to_track(row) for row in selected], selected_breakdown
 
     def retrieve(
         self,

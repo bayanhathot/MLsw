@@ -1269,15 +1269,25 @@ def test_feedback_self_heals_from_the_catalogs_own_weak_match_to_audius(client, 
     """Requirement: self-healing re-resolution still works under the local
     catalog's new primary role. A session that started on the catalog's own
     weak (mood_bucket-only) match -- Audius had nothing then -- must pick
-    Audius back up on the very next feedback-triggered re-resolution once
-    Audius starts returning results, via the fallback tier: each resolution
-    tries the catalog fresh, and a weak catalog match always still gives
-    Audius a real look, nothing is pinned to how the session started."""
+    Audius back up once Audius starts returning results, via the fallback
+    tier: each fresh resolution tries the catalog anew, and a weak catalog
+    match always still gives Audius a real look, nothing is pinned to how
+    the session started.
 
-    session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
+    Deliberately starts on the "focus" bucket (energy="low", via the
+    "focus" keyword), not "energy" (which "hard gym workout" would trigger
+    via "gym"/"workout" -- but those exact words *also* set
+    intent.energy="high" directly in the deterministic parser, so a "more
+    energy" feedback mutation there is a same-value no-op and never
+    actually changes the session_candidate_pool fingerprint; apply_feedback
+    passes no exclude_track_keys of its own, so nothing about that call
+    forces a cache miss on exhaustion either -- self-healing here only
+    happens via a genuine fingerprint change, and low->high is one)."""
+
+    session = client.post("/sessions/start", json={"prompt": "a focus session"}).json()
     # Served by the catalog's own weak match (Audius defaults to no results
     # via the autouse fixture above).
-    assert session["vibeLabel"] == "Gym energy"
+    assert session["vibeLabel"] == "Deep work focus"
 
     _patch_audius(monkeypatch, _wassouf_tracks())
     feedback = client.post(

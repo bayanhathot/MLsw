@@ -217,21 +217,29 @@ def test_pipeline_debug_tier_distinguishes_last_resort_from_a_weak_primary_match
     intent-blind last-resort tier) -- both are catalog-sourced and both can
     read fell_back either way depending on which object actually served.
     The new "tier" field (session_manager.py) is the one thing this test
-    suite didn't already have a way to check end-to-end."""
+    suite didn't already have a way to check end-to-end.
+
+    Reaching tier 4 for a no-artist request needs an explicit assist since
+    the issue-1 fix (catalog_retriever.py's no-artist branch no longer
+    hard-filters to one mood_bucket): tier 1's own query is now a superset
+    of whatever tier 4's last_resort_tracks() would find (same visibility
+    filter, a much larger cap -- NO_ARTIST_CANDIDATE_POOL_CAP vs. the
+    caller's own `limit`), so tier 1 coming back empty now implies tier 4
+    would too, in real usage. Shrinking that cap to 0 here is purely to
+    keep exercising tier 4's code path in a test, not a realistic
+    production scenario -- tier 1 and tier 4 use the same visibility
+    filter, just different limits."""
 
     monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
     )
-    # Prevents catalog_retriever._ensure_seed_catalog's self-heal (it only
-    # fires on a genuinely empty table), so the "focus" mood bucket this
-    # prompt resolves to stays genuinely empty -- forcing tier 4
-    # (last-resort) rather than tier 3 (a weak-but-real primary match).
     db_session.add(CatalogTrack(
         title="Unrelated Smooth Row", artist="Cuemix AI DJ", mood_bucket="smooth",
         visibility="public", storage_name="x.wav", content_type="audio/wav",
     ))
     db_session.commit()
+    monkeypatch.setattr("app.services.pipeline.catalog_retriever.NO_ARTIST_CANDIDATE_POOL_CAP", 0)
 
     started = client.post("/sessions/start", json={"prompt": "smooth focus music work"})
     assert started.status_code == 200

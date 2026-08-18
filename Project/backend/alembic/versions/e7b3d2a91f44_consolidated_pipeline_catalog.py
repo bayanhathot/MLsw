@@ -120,7 +120,11 @@ def upgrade() -> None:
                 "storage_name": "cuemix-demo.wav",
                 "content_type": "audio/wav",
                 "duration_seconds": 60,
-                "analysis_status": "completed",
+                # Not "completed" -- these 4 rows never went through real
+                # librosa analysis (see catalog_retriever._ensure_seed_catalog's
+                # matching comment); "not_applicable" already exists in the
+                # CHECK constraint above for exactly this case.
+                "analysis_status": "not_applicable",
                 "segment_start_second": 0,
                 "segment_end_second": 45,
                 "segment_method": "whole_clip",

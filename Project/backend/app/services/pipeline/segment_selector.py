@@ -5,6 +5,17 @@ For a Track backed by a local file whose analysis has completed, this reads
 the cached chorus/hook window. For anything without a completed local
 analysis -- an Audius preview, or a catalog upload still queued/failed -- the
 whole clip is the selection, per requirement 5.
+
+"completed" and "not_applicable" both mean "trust segment_start/end as
+authoritative" -- "failed"/"pending" don't, since a failed *re*-analysis
+attempt can leave stale segment_start/end sitting from a previous
+successful run (analyze_catalog_track only ever sets analysis_status
+without touching segment fields on failure). "not_applicable" is the
+bundled 4-track demo catalog specifically (catalog_retriever._SEED_TRACKS):
+never analyzed by librosa at all, but their segment_start/end were chosen
+deliberately at seed time, not left over from anything -- excluding them
+here would silently widen their playback window to the whole clip instead
+of the intended 45s loop.
 """
 
 from sqlalchemy.orm import Session
@@ -27,7 +38,7 @@ class LibrosaSegmentSelector(SegmentSelector):
             )
             if (
                 row is not None
-                and row.analysis_status == "completed"
+                and row.analysis_status in ("completed", "not_applicable")
                 and row.segment_start_second is not None
                 and row.segment_end_second is not None
             ):

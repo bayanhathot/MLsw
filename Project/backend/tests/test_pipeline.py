@@ -28,6 +28,7 @@ from app.services.pipeline.catalog_retriever import (
     CatalogTrackRetriever,
     is_strong_catalog_match,
     last_resort_tracks,
+    _ensure_seed_catalog,
     _trigram_similarity,
 )
 from app.services.pipeline.dependencies import _build_vibe_understander
@@ -95,6 +96,94 @@ def test_catalog_retriever_mood_bucket_matches_seeded_rows(db_session):
     tracks = retriever.retrieve(db_session, _intent(energy="high"), limit=5)
     assert tracks and tracks[0].vibe == "energy"
     assert tracks[0].vibe_label == "Gym energy"
+
+
+def test_seed_catalog_rows_report_analysis_status_not_applicable(db_session):
+    """The 4 bundled demo rows never went through real librosa analysis --
+    audio_analysis.py always sets bpm/musical_key in the same commit as
+    analysis_status="completed", and these rows have neither. "completed"
+    would claim real analysis ran when it didn't;  "not_applicable" is the
+    already-modeled, honest status for a row nothing needs to (re-)analyze."""
+
+    _ensure_seed_catalog(db_session)
+    rows = db_session.query(CatalogTrack).filter(CatalogTrack.artist == "Cuemix AI DJ").all()
+    assert len(rows) == 4
+    for row in rows:
+        assert row.analysis_status == "not_applicable"
+        assert row.bpm is None
+        assert row.musical_key is None
+
+
+def test_catalog_retriever_no_artist_branch_lets_a_real_uploads_genre_win(db_session):
+    """The bug: the no-artist branch used to hard-filter to
+    CatalogTrack.mood_bucket == bucket before scoring ever ran, so a real
+    upload (mood_bucket is never set on one, see _score_rows) was excluded
+    from this branch no matter how well its genre matched -- only rows
+    tagged with the right mood_bucket were ever eligible at all. A real
+    upload with a matching genre must now outrank a present-but-wrong-bucket
+    mood_bucket row for the same no-artist request.
+
+    Deliberately picks a bucket mismatch (mood_bucket="vocals" against an
+    energy="high" intent, i.e. target bucket "energy") rather than a
+    matching one: a *matching* mood_bucket row would score total=1.0 the
+    same way a matching genre does (a lone available signal always
+    averages to exactly its own score, regardless of weight -- see
+    _score_rows), which would tie rather than cleanly demonstrate the
+    genre-matching row ranks above it.
+    """
+
+    db_session.add(CatalogTrack(
+        title="Vocal Bucket Row", artist="Cuemix AI DJ", mood_bucket="vocals",
+        vibe_label="Emotional vocals",
+        visibility="public", storage_name="x.wav", content_type="audio/wav",
+    ))
+    db_session.add(CatalogTrack(
+        title="Real House Upload", artist="Some Uploader", genre="house",
+        visibility="public", storage_name="x.wav", content_type="audio/wav",
+    ))
+    db_session.commit()
+
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(energy="high", genres=["house"]), limit=5
+    )
+    assert tracks
+    assert tracks[0].title == "Real House Upload"
+
+
+def test_catalog_retriever_no_artist_branch_ranks_before_limiting_not_after(db_session):
+    """The other bug in the same branch: rows were SQL-limited to `limit`
+    (ordered by id, i.e. insertion order) *before* _score_rows ever ranked
+    anything -- so a better-matching row past the first `limit` by
+    insertion order was silently never even considered.
+    _fuzzy_artist_matches' Postgres path never had this bug (it orders by
+    similarity before limiting); this test pins the no-artist path to the
+    same shape: score the whole (bounded) pool, rank by total, *then*
+    slice to `limit`."""
+
+    limit = 3
+    # `limit` rows inserted first, all with no matching signal at all for
+    # this request -- would fill the SQL LIMIT entirely under the old
+    # limit-then-score behavior.
+    for index in range(limit):
+        db_session.add(CatalogTrack(
+            title=f"Filler {index}", artist="Filler Artist", genre="jazz",
+            visibility="public", storage_name="x.wav", content_type="audio/wav",
+        ))
+    # The genuinely best match, inserted *after* the first `limit` rows --
+    # only reachable if scoring happens before limiting.
+    db_session.add(CatalogTrack(
+        title="Best Match", artist="Late Uploader", genre="techno",
+        visibility="public", storage_name="x.wav", content_type="audio/wav",
+    ))
+    db_session.commit()
+
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(genres=["techno"]), limit=limit
+    )
+    assert tracks
+    assert tracks[0].title == "Best Match"
 
 
 def test_catalog_retriever_finds_close_but_imperfect_artist_spelling(db_session):
@@ -1002,6 +1091,32 @@ def test_segment_selector_reads_cached_analysis_for_completed_catalog_tracks(db_
     assert (segment.start_second, segment.end_second) == (30, 60)
     assert segment.bpm == 128.0
     assert segment.musical_key == "A"
+
+
+def test_segment_selector_trusts_a_not_applicable_rows_deliberately_seeded_window(db_session):
+    """analysis_status="not_applicable" (the bundled 4-track demo catalog,
+    catalog_retriever._SEED_TRACKS -- never analyzed by librosa, but its
+    segment_start/end were chosen deliberately at seed time) must still use
+    that window, not silently widen to the whole clip via duration_seconds
+    -- the same trust "completed" already gets, for a different reason
+    (see this module's docstring)."""
+
+    row = CatalogTrack(
+        title="Seed-Shaped Row", artist="Cuemix AI DJ", storage_name="x.wav",
+        content_type="audio/wav", duration_seconds=60, analysis_status="not_applicable",
+        bpm=None, musical_key=None, segment_start_second=0, segment_end_second=45,
+        segment_method="whole_clip",
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+
+    selector = LibrosaSegmentSelector()
+    track = _track(source="catalog", catalog_track_id=row.id, duration_seconds=60)
+    segment = selector.select(db_session, track)
+    assert (segment.start_second, segment.end_second) == (0, 45)
+    assert segment.bpm is None
+    assert segment.musical_key is None
 
 
 def _segment(bpm=None, key=None) -> SelectedSegment:
