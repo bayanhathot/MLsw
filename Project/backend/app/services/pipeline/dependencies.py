@@ -13,6 +13,29 @@ good answer for yet (ai-dj-segment-metadata-architecture.md §12).
 get_session_candidate_retriever() and get_mix_candidate_retriever() happen
 to return the same catalog singleton today; each is free to diverge to a
 different implementation later without the other, or the caller, changing.
+
+**The trade-off this wiring makes, explicitly:** catalog-primary gives up
+some of Audius's breadth -- effectively unconstrained, any song, any artist
+-- in exchange for the DJ actually being able to reason about what it's
+playing (real BPM/key/segment data, not the "standard crossfade, partial
+tempo/key data" default every Audius track hits). That trade only pays off
+once the catalog has enough real, well-tagged uploads to cover a meaningful
+slice of requests; Audius-as-fallback is what keeps sessions/mixes usable
+in the meantime, while catalog volume grows.
+
+CATALOG_MATCH_THRESHOLD (catalog_retriever.py) is the dial that trade-off
+turns on, and it's genuinely two-sided, not just "tune it higher for
+quality": set it too high and the catalog's own matches rarely clear the
+bar, so the system is Audius-primary in practice regardless of what
+dependencies.py wires -- the intelligence trade-off above never actually
+gets cashed in. Set it too low (or route a bare mood_bucket match around
+is_strong_catalog_match's genre-or-artist requirement) and it reintroduces
+the exact bug the historical Audius-primary swap fixed and Prompt 7/8 spent
+their effort guarding against: a thin catalog match looking like a
+confident one and silently starving Audius of requests it should have
+gotten. There's no static value that's simply "correct" here -- it needs
+tuning against real usage, not theory (same "don't over-tune from theory
+alone" stance ARTIST_MATCH_THRESHOLD already takes).
 """
 
 import logging
