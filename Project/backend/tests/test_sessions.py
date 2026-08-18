@@ -264,6 +264,13 @@ def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_cand
     # download attempts -- capped at AUDIO_RENDER_RETRY_LIMIT -- nor land the
     # session on a dead pass-through when a real fallback source (the local
     # catalog, never a remote fetch) can actually produce playable audio.
+    # The catalog is sessions' primary retriever now: its own weak match
+    # ("chill lofi beats" has no genre/artist to score, so it lands on the
+    # generic "smooth" bucket) still defers to Audius first, which is what
+    # actually serves the (unrenderable) candidates below -- so the render
+    # rescue that lands back on the catalog is *not* a fallback, it's
+    # primary reclaiming service after Audius's candidates turned out to be
+    # dead.
     tracks = [
         {
             "title": f"Broken {i}", "artist": "Artist",
@@ -292,7 +299,9 @@ def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_cand
     # AUDIO_RENDER_RETRY_LIMIT's default, the full candidate pool) and
     # discarded in favor of the catalog rescue.
     assert len(audio_trace["skipped_tracks"]) == 5
-    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
+    # False: the render rescue lands back on `retriever` (the catalog,
+    # primary), not `fallback_retriever` -- see comment above.
+    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
     assert row.pipeline_trace_json["candidate_retriever"]["name"] == "catalog"
 
 
@@ -303,7 +312,9 @@ def test_create_session_keeps_the_pass_through_when_not_even_the_catalog_can_res
     # a named artist absent from the tiny local demo catalog still has
     # nowhere left to fall through to, so the session must land on the
     # retry-capped Audius attempt's honest pass-through, same as before the
-    # rescue existed.
+    # rescue existed. The catalog (primary) has no Nancy Ajram at all, so
+    # this genuinely falls through to Audius (fallback) at the retrieval
+    # stage already, before rendering even starts.
     tracks = [
         {
             "title": f"Broken {i}", "artist": "Nancy Ajram",
@@ -332,7 +343,9 @@ def test_create_session_keeps_the_pass_through_when_not_even_the_catalog_can_res
     audio_trace = row.pipeline_trace_json["audio_renderer"]
     assert audio_trace["is_pass_through"] is True
     assert len(audio_trace["skipped_tracks"]) == 4
-    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+    # True: the catalog (primary) had nothing at all for Nancy Ajram, so
+    # Audius (fallback) served these candidates from the start.
+    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
 
 
 def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monkeypatch, db_session):
@@ -555,12 +568,13 @@ def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(client
     assert "audius" in response.json()["detail"].lower()
 
 
-def test_named_artist_is_served_directly_by_audius_as_the_primary_retriever(
+def test_named_artist_absent_from_the_catalog_falls_back_to_audius(
     client, monkeypatch, db_session
 ):
-    """Audius is sessions' primary retriever now (matching Mixes), so a
-    named artist absent from the tiny local catalog is served on the first
-    try -- this is no longer a fallback."""
+    """The local catalog is sessions' primary retriever now (§12), but a
+    named artist absent from the tiny local catalog still reaches Audius in
+    the same resolution, via the fallback tier -- this is now a genuine
+    fallback (fell_back is True), unlike when Audius itself was primary."""
 
     _patch_audius(monkeypatch, _wassouf_tracks())
     response = client.post(
@@ -573,21 +587,23 @@ def test_named_artist_is_served_directly_by_audius_as_the_primary_retriever(
 
     session = db_session.query(DJSession).filter_by(id=body["id"]).one()
     # AUDIUS_RETRIEVER defaults to "multi_query" (VIBE_RECOMMENDATION_DESIGN.md
-    # section 8), so the primary retriever's name is "audius_multi_query", not
+    # section 8), so the fallback retriever's name is "audius_multi_query", not
     # the older single-query retriever's plain "audius".
     assert session.retriever_name == "audius_multi_query"
     assert session.pipeline_trace_json["candidate_retriever"]["name"] == "audius_multi_query"
-    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
 
 
-def test_generic_vibe_prompt_with_no_artist_now_reaches_audius_first(
+def test_generic_vibe_prompt_with_a_weak_catalog_match_still_reaches_audius(
     client, monkeypatch, db_session
 ):
-    """The actual bug this priority swap fixes: a generic vibe/genre
-    request (no named artist) used to hit the small local catalog and never
-    reach Audius at all, because the catalog's no-artist path always
-    returns *something* (a mood-bucket row, or any row as a last resort).
-    Audius must now be tried first for this case too."""
+    """The bug a naive catalog-primary flip would reintroduce: a generic
+    vibe/genre request (no named artist) matching only the catalog's coarse
+    mood_bucket heuristic -- real signal only for the 4 curated seed rows,
+    see catalog_retriever.is_strong_catalog_match -- must not be treated as
+    a confident match that skips Audius entirely. Audius must still get a
+    real look whenever the catalog's own top match isn't backed by a
+    genre or artist signal."""
 
     _patch_audius(monkeypatch, _wassouf_tracks())
     response = client.post(
@@ -600,14 +616,18 @@ def test_generic_vibe_prompt_with_no_artist_now_reaches_audius_first(
 
     session = db_session.query(DJSession).filter_by(id=body["id"]).one()
     assert session.retriever_name == "audius_multi_query"
-    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
 
 
-def test_when_audius_finds_nothing_catalog_serves_as_the_fallback(client, db_session):
+def test_when_audius_also_finds_nothing_the_catalogs_own_weak_match_still_serves(
+    client, db_session
+):
     """The other half of the same priority: Audius defaults to no results
-    via the autouse fixture above, so this exercises the fallback
-    direction -- catalog only serves because Audius, tried first, came back
-    empty, not because it was tried first."""
+    via the autouse fixture above. The catalog's own weak (mood_bucket-only)
+    match for "hard gym workout" isn't strong enough to skip Audius, but
+    once Audius also comes back empty, that weak-but-real catalog match is
+    still preferred over an unrelated last-resort pick -- and since it's
+    still the *primary* retriever's own result, fell_back reads False."""
 
     response = client.post("/sessions/start", json={"prompt": "hard gym workout"})
     assert response.status_code == 200
@@ -617,7 +637,7 @@ def test_when_audius_finds_nothing_catalog_serves_as_the_fallback(client, db_ses
     session = db_session.query(DJSession).filter_by(id=body["id"]).one()
     assert session.retriever_name == "catalog"
     assert session.pipeline_trace_json["candidate_retriever"]["name"] == "catalog"
-    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
+    assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 
 def test_advance_continues_without_input_and_rotates_through_candidates(client, monkeypatch):
@@ -1245,17 +1265,18 @@ def test_feedback_keeps_using_audius_on_every_re_resolution(client, monkeypatch)
     assert feedback.json()["nowPlaying"]["artist"] == "George Wassouf"
 
 
-def test_feedback_self_heals_from_catalog_fallback_to_audius(client, monkeypatch, db_session):
-    """Requirement: the existing self-healing re-resolution still works with
-    the swapped order. A session that started via the catalog fallback
-    (Audius had nothing then) must pick Audius back up on the very next
-    feedback-triggered re-resolution once Audius starts returning results --
-    each resolution tries Audius fresh, nothing is pinned to how the session
-    started."""
+def test_feedback_self_heals_from_the_catalogs_own_weak_match_to_audius(client, monkeypatch, db_session):
+    """Requirement: self-healing re-resolution still works under the local
+    catalog's new primary role. A session that started on the catalog's own
+    weak (mood_bucket-only) match -- Audius had nothing then -- must pick
+    Audius back up on the very next feedback-triggered re-resolution once
+    Audius starts returning results, via the fallback tier: each resolution
+    tries the catalog fresh, and a weak catalog match always still gives
+    Audius a real look, nothing is pinned to how the session started."""
 
     session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
-    # Served by the catalog fallback (Audius defaults to no results via the
-    # autouse fixture above).
+    # Served by the catalog's own weak match (Audius defaults to no results
+    # via the autouse fixture above).
     assert session["vibeLabel"] == "Gym energy"
 
     _patch_audius(monkeypatch, _wassouf_tracks())
@@ -1267,7 +1288,7 @@ def test_feedback_self_heals_from_catalog_fallback_to_audius(client, monkeypatch
 
     healed = db_session.query(DJSession).filter_by(id=session["id"]).one()
     assert healed.retriever_name == "audius_multi_query"
-    assert healed.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
+    assert healed.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
 
 
 def test_reasoning_and_next_direction_reflect_feedback_history(client):

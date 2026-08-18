@@ -401,20 +401,24 @@ def _resolve_and_render(
     since understand() may or may not have been called this resolution
     (feedback re-resolves without a new LLM call).
 
-    `retriever` is tried first; `fallback_retriever` only runs when
-    `retriever` plainly finds nothing (e.g. Audius is unreachable, or its
-    search for a named artist comes back empty) -- never a substitute for
-    "found something, but the user already heard it". `exclude_track_keys`
-    skips already-played candidates within whichever retriever's results
-    actually came back, so a session can advance through a real candidate
-    pool instead of replaying the same top match; if every candidate is
-    excluded, the top match plays again rather than raising, since "loop
-    indefinitely" is the point once a
-    session's pool is exhausted. `recent_artists` is a softer signal than
+    `retriever` (the local catalog) is tried first; `fallback_retriever`
+    (Audius) only runs when `retriever` plainly finds nothing, or its own
+    top match is too weak to trust (see
+    orchestrator.retrieve_candidates_with_fallback /
+    catalog_retriever.CATALOG_MATCH_THRESHOLD) -- never a substitute for
+    "found something, but the user already heard it". If both come back
+    empty, retrieve_candidates_with_fallback's own last-resort tier (any
+    visible catalog row) still tries before this raises NoMatchingCandidate
+    -- see that function's docstring for the full three-tier shape.
+    `exclude_track_keys` skips already-played candidates within whichever
+    retriever's results actually came back, so a session can advance
+    through a real candidate pool instead of replaying the same top match;
+    if every candidate is excluded, the top match plays again rather than
+    raising, since "loop indefinitely" is the point once a session's pool
+    is exhausted. `recent_artists` is a softer signal than
     exclude_track_keys -- a ranking-capable retriever penalizes (doesn't
     filter) a candidate whose artist is in it, so it can still surface as a
-    fallback rather than disappearing outright. Raises NoMatchingCandidate
-    only when both retrievers come back empty.
+    fallback rather than disappearing outright.
 
     Before running a real retrieval, checks session_candidate_pool for a
     pool already ranked under `intent`'s current fingerprint. A hit is only
@@ -435,12 +439,16 @@ def _resolve_and_render(
     AUDIO_RENDER_RETRY_LIMIT: rather than accepting the first candidate's
     failed pass-through, up to that many ranked candidates are tried before
     giving up and keeping the last attempt. If every one of those genuinely
-    fails and `fallback_retriever` hasn't already been consulted, its own
-    candidates get one honest rescue attempt too (see
+    fails, whichever of {retriever, fallback_retriever} *didn't* serve this
+    resolution gets one honest rescue attempt too (see
     _try_render_ranked_candidates) before this settles for a dead
     pass-through -- e.g. a named-artist search whose only Audius matches are
     all unavailable still lands on a real, playable (if less-matched)
-    catalog track rather than silently "playing" nothing.
+    catalog track rather than silently "playing" nothing, and symmetrically
+    a catalog track that somehow fails to render gets one Audius rescue
+    attempt. No further rescue is attempted when the resolution already
+    landed on the retrieval fallback chain's last-resort tier (there's
+    nothing left to try).
     """
 
     fingerprint = session_candidate_pool.fingerprint_for(intent)
@@ -456,9 +464,15 @@ def _resolve_and_render(
             # the ranked tracks) -- reconstructed from which source the
             # cached tracks actually carry, so `fell_back`/`name`/
             # `implementation` below stay accurate rather than assuming the
-            # primary retriever served a pool that was really the catalog
-            # fallback's.
-            served_by = fallback_retriever if candidates[0].source == "catalog" else retriever
+            # primary retriever served a pool that was really the Audius
+            # fallback's. A catalog-sourced cached pool is assumed to be
+            # `retriever` (the primary) even though a fresh resolution of
+            # the same intent might have landed on
+            # orchestrator.LAST_RESORT_CATALOG_RETRIEVER instead -- both are
+            # catalog-sourced, and this reconstruction (like the rest of
+            # this best-effort debug path) can't distinguish them from the
+            # cached track alone.
+            served_by = retriever if candidates[0].source == "catalog" else fallback_retriever
             candidate_pool_reused = True
 
     if not candidate_pool_reused:
@@ -490,25 +504,37 @@ def _resolve_and_render(
 
     # served_by's own candidates are all genuinely broken (not just
     # excluded/known-broken with nothing left to try) -- if there's a
-    # different retriever we haven't consulted this resolution, give it one
-    # honest shot before settling for a dead pass-through. A catalog track
-    # (a local file -- see catalog_retriever.py -- never a remote fetch) can
-    # turn a session that would otherwise land on unplayable audio into one
-    # with a real, if less-matched, track. Never attempted when served_by
-    # already *is* fallback_retriever (nothing left to fall through to).
+    # *different* retriever we haven't consulted this resolution, give it
+    # one honest shot before settling for a dead pass-through. A catalog
+    # track (a local file -- see catalog_retriever.py -- never a remote
+    # fetch) can turn a session that would otherwise land on unplayable
+    # audio into one with a real, if less-matched, track -- and
+    # symmetrically, if the catalog's own weak match was what served (and
+    # somehow failed to render -- a corrupted local file), Audius gets the
+    # same one honest shot. rescue_source is the one of {retriever,
+    # fallback_retriever} that *didn't* serve; None when served_by is
+    # neither (orchestrator.LAST_RESORT_CATALOG_RETRIEVER, already the
+    # bottom of the retrieval fallback chain -- nothing left to try).
     # This rescue candidate list is never written to session_candidate_pool --
     # that cache's fingerprint/served_by-reconstruction semantics are for
     # the primary retrieval only, not a one-off audio-failure rescue. Skipped
     # entirely once render_deadline has already passed -- no budget left to
     # spend on a rescue attempt either.
+    if served_by is retriever:
+        rescue_source = fallback_retriever
+    elif served_by is fallback_retriever:
+        rescue_source = retriever
+    else:
+        rescue_source = None
+
     if (
-        rendered.is_pass_through
-        and served_by is not fallback_retriever
+        rescue_source is not None
+        and rendered.is_pass_through
         and time.monotonic() < render_deadline
     ):
         try:
             rescue_candidates = retrieve_candidates(
-                db, intent, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
+                db, intent, rescue_source, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
                 viewer_id=viewer_id,
             )
         except NoMatchingCandidate:
@@ -535,7 +561,7 @@ def _resolve_and_render(
                 track, segment, transition, rendered = (
                     rescue_track, rescue_segment, rescue_transition, rescue_rendered,
                 )
-                served_by = fallback_retriever
+                served_by = rescue_source
 
     now_playing = {
         "title": track.title,

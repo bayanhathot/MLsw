@@ -107,13 +107,15 @@ def clean_database(tmp_path, monkeypatch):
     # its own session (there's no per-request Depends(get_db) there); point
     # it at the same in-memory test database instead of the real one.
     monkeypatch.setattr("app.database.database.SessionLocal", TestingSessionLocal)
-    # Sessions (like Mixes) try Audius first now, so every test that hits
-    # POST /sessions/start would otherwise make a real network call. Default
-    # it to "nothing found" so the local-catalog fallback path -- what most
-    # session tests actually exercise -- is reached deterministically and
-    # offline, same as before this priority swap. Tests that specifically
-    # want an Audius result override this with their own later
-    # monkeypatch.setattr call on the same target, which wins for that test.
+    # Sessions and Mixes both primary-retrieve from the local catalog now,
+    # but any test whose prompt doesn't land on a strong catalog match
+    # (catalog_retriever.is_strong_catalog_match) would otherwise still
+    # consult Audius and make a real network call. Default it to "nothing
+    # found" so the catalog's own result -- what most session/mix tests
+    # actually exercise -- is reached deterministically and offline. Tests
+    # that specifically want an Audius result override this with their own
+    # later monkeypatch.setattr call on the same target, which wins for
+    # that test.
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
     )

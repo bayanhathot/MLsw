@@ -2,8 +2,10 @@
 
 Routed through the same pipeline sessions use (VibeUnderstander ->
 CandidateRetriever -> SegmentSelector -> TransitionPlanner -> AudioRenderer);
-mixes default to the Audius retriever with the local catalog as a safety net,
-matching this surface's existing behavior (old local_demo_track() fallback).
+mixes primary-retrieve from the local catalog with Audius as the fallback,
+matching sessions' priority (dependencies.py,
+ai-dj-segment-metadata-architecture.md §12) via the same shared
+orchestrator.retrieve_candidates_with_fallback both surfaces route through.
 """
 
 from uuid import uuid4
@@ -21,6 +23,8 @@ from app.services.pipeline.interfaces import (
     TransitionPlanner,
     VibeUnderstander,
 )
+from app.services.pipeline.catalog_retriever import last_resort_tracks
+from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 
 MAX_MIX_TRACKS = 5
 
@@ -29,24 +33,28 @@ def _retrieve_with_fallback(
     db: Session,
     intent: PromptIntent,
     retriever: CandidateRetriever,
-    catalog_fallback: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
     *,
     limit: int,
 ) -> list[Track]:
     """Mixes must never hard-fail the way a session can plainly report "no
-    match": this mirrors the old local_demo_track() safety net, just backed
-    by the real catalog instead of one hardcoded dict."""
+    match": retrieve_candidates_with_fallback's own last-resort tier (any
+    visible catalog row) already covers a generic no-artist request the
+    same way it does for a session, but it deliberately reports a named
+    artist absent everywhere plainly (NoMatchingCandidate) instead of
+    silently substituting an unrelated track -- correct for a session, not
+    for a mix. So this catches that specific case and drops down to the
+    same intent-blind "any row" query directly, one absolute last resort
+    beyond what a session gets, mirroring the old neutral_intent trick this
+    replaced."""
 
-    tracks = retriever.retrieve(db, intent, limit=limit)
-    if tracks:
+    try:
+        tracks, _ = retrieve_candidates_with_fallback(
+            db, intent, retriever, fallback_retriever, limit=limit
+        )
         return tracks
-    tracks = catalog_fallback.retrieve(db, intent, limit=1)
-    if tracks:
-        return tracks
-    # Absolute last resort: drop any artist filter so an unmatched named
-    # artist still resolves to *something* playable for a mix.
-    neutral_intent = intent.model_copy(update={"artist": None})
-    return catalog_fallback.retrieve(db, neutral_intent, limit=1)
+    except NoMatchingCandidate:
+        return last_resort_tracks(db, limit=limit)
 
 
 def _plan_transitions(
@@ -65,14 +73,14 @@ def create_mix(
     *,
     vibe: VibeUnderstander,
     retriever: CandidateRetriever,
-    catalog_fallback: CandidateRetriever,
+    fallback_retriever: CandidateRetriever,
     selector: SegmentSelector,
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> Mix:
     intent = vibe.understand(prompt)
     tracks = _retrieve_with_fallback(
-        db, intent, retriever, catalog_fallback, limit=MAX_MIX_TRACKS
+        db, intent, retriever, fallback_retriever, limit=MAX_MIX_TRACKS
     )
 
     segments = [selector.select(db, track) for track in tracks]

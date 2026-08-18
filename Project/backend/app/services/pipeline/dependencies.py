@@ -2,15 +2,17 @@
 
 Swapping a stage's implementation later is a one-line change to the provider
 function it's bound to here -- nothing that calls Depends(get_x) needs to
-change. Sessions and mixes both primary-retrieve from Audius and fall back
-to the local catalog only when Audius finds nothing (session_manager.py /
-mix_service.py): the local catalog is a tiny seed/upload set, a poor primary
-source for a generic vibe/genre request (most requests never name an
-artist), so Audius -- which can actually answer what was asked -- goes
-first for both surfaces. get_session_candidate_retriever() and
-get_mix_candidate_retriever() happen to return the same Audius singleton
-today; each is free to diverge to a different implementation later without
-the other, or the caller, changing.
+change. Sessions and mixes both primary-retrieve from the local catalog and
+fall back to Audius only when the catalog finds nothing or its own top match
+is too weak to trust (see orchestrator.retrieve_candidates_with_fallback /
+catalog_retriever.CATALOG_MATCH_THRESHOLD): the local catalog is now meant
+to be the primary, full DJ source -- real per-track BPM/key/segment data
+only exists for catalog tracks, never Audius ones -- with Audius as the
+breadth-of-catalog safety net for whatever the local catalog doesn't have a
+good answer for yet (ai-dj-segment-metadata-architecture.md §12).
+get_session_candidate_retriever() and get_mix_candidate_retriever() happen
+to return the same catalog singleton today; each is free to diverge to a
+different implementation later without the other, or the caller, changing.
 """
 
 import logging
@@ -99,25 +101,24 @@ def get_vibe_understander() -> VibeUnderstander:
 
 
 def get_session_candidate_retriever() -> CandidateRetriever:
-    """Sessions' primary retriever. Audius, not the local catalog: a
-    session most often names no artist at all (a generic vibe/genre
-    request), and the local catalog is a handful of seed/upload rows, not a
-    real answer to that -- see get_catalog_candidate_retriever() for the
-    fallback this surface falls through to when Audius comes back empty."""
+    """Sessions' primary retriever: the local catalog -- see
+    get_audius_candidate_retriever() for the fallback this surface falls
+    through to when the catalog comes back empty or too weak to trust
+    (retrieve_candidates_with_fallback / CATALOG_MATCH_THRESHOLD)."""
 
-    return _audius_retriever
+    return _catalog_retriever
 
 
 def get_mix_candidate_retriever() -> CandidateRetriever:
-    return _audius_retriever
-
-
-def get_catalog_candidate_retriever() -> CandidateRetriever:
-    """Direct access to the catalog retriever, used as both sessions' and
-    mixes' safety-net fallback when the primary (Audius) retriever comes
-    back empty."""
-
     return _catalog_retriever
+
+
+def get_audius_candidate_retriever() -> CandidateRetriever:
+    """Direct access to the Audius retriever, used as both sessions' and
+    mixes' fallback when the primary (local catalog) retriever comes back
+    empty or weak."""
+
+    return _audius_retriever
 
 
 def get_segment_selector() -> SegmentSelector:

@@ -3,16 +3,18 @@ indirectly: fuzzy artist matching, segment selection, and transition
 planning."""
 
 import os
+import threading
 import time
 from pathlib import Path
 
 import pytest
+from conftest import TestingSessionLocal
 
 from app.core.security import hash_password
 from app.database.models.catalog import CatalogTrack
 from app.database.models.user import User
 from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
-from app.services.pipeline import audio_renderer, audius_retriever
+from app.services.pipeline import audio_renderer, audius_retriever, catalog_retriever
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
 from app.services.pipeline.audius_retriever import (
     MIN_POOL_SIZE,
@@ -22,10 +24,14 @@ from app.services.pipeline.audius_retriever import (
 )
 from app.services.pipeline.catalog_retriever import (
     ARTIST_MATCH_THRESHOLD,
+    LAST_RESORT_CATALOG_RETRIEVER,
     CatalogTrackRetriever,
+    is_strong_catalog_match,
+    last_resort_tracks,
     _trigram_similarity,
 )
 from app.services.pipeline.dependencies import _build_vibe_understander
+from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 from app.services.pipeline.query_planner import build_queries
 from app.services.pipeline.segment_selector import LibrosaSegmentSelector
 from app.services.pipeline.transition_planner import DeterministicTransitionPlanner
@@ -37,6 +43,37 @@ def _intent(**overrides) -> PromptIntent:
     base = dict(mood="balanced", energy="medium", vocals="neutral", genres=[], search_query="x")
     base.update(overrides)
     return PromptIntent(**base)
+
+
+def _fake_track(source="catalog", id_="1", title="T") -> Track:
+    return Track(
+        source=source, source_track_id=id_, title=title, artist="A",
+        audio_url="https://example.test/a", duration_seconds=100,
+    )
+
+
+class _FakeRetriever:
+    """A minimal CandidateRetriever stand-in for orchestrator-level tests --
+    returns a fixed track list and a fixed score breakdown via
+    retrieve_with_scores, the same call-scoped shape
+    CatalogTrackRetriever.retrieve_with_scores returns (see
+    orchestrator._retrieve_primary_with_breakdown, which duck-types on this
+    method rather than reading a retriever's instance state)."""
+
+    def __init__(self, name, tracks, last_candidate_scores=None):
+        self.name = name
+        self._tracks = tracks
+        # Also exposed as instance state, matching
+        # CatalogTrackRetriever.last_candidate_scores' shape, for tests that
+        # exercise the debug-trace path specifically -- not read by
+        # retrieve_with_scores itself.
+        self.last_candidate_scores = last_candidate_scores or {}
+
+    def retrieve(self, db, intent, *, limit=5, recent_artists=frozenset(), viewer_id=None):
+        return self._tracks
+
+    def retrieve_with_scores(self, db, intent, *, limit=5, recent_artists=frozenset(), viewer_id=None):
+        return self._tracks, self.last_candidate_scores
 
 
 def test_trigram_similarity_is_symmetric_and_bounded():
@@ -66,6 +103,62 @@ def test_catalog_retriever_finds_close_but_imperfect_artist_spelling(db_session)
     tracks = retriever.retrieve(db_session, _intent(artist="Cuemix AI D"), limit=5)
     assert tracks
     assert tracks[0].artist == "Cuemix AI DJ"
+
+
+def test_catalog_retriever_genre_match_outranks_non_match(db_session):
+    db_session.add_all([
+        CatalogTrack(
+            title="Jazz Pick", artist="Scoring Test Artist", genre="jazz",
+            storage_name="x.wav", content_type="audio/wav", visibility="public",
+        ),
+        CatalogTrack(
+            title="House Pick", artist="Scoring Test Artist", genre="house",
+            storage_name="x.wav", content_type="audio/wav", visibility="public",
+        ),
+    ])
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session, _intent(artist="Scoring Test Artist", genres=["house"]), limit=5
+    )
+    assert tracks[0].title == "House Pick"
+
+
+def test_catalog_retriever_missing_signals_are_excluded_not_penalized(db_session):
+    db_session.add(
+        CatalogTrack(
+            title="No Genre Track", artist="Scoring Gap Artist", genre=None,
+            storage_name="x.wav", content_type="audio/wav", visibility="public",
+        )
+    )
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    # Intent asks for a genre this row has no data for at all.
+    tracks = retriever.retrieve(
+        db_session, _intent(artist="Scoring Gap Artist", genres=["house"]), limit=5
+    )
+    assert tracks
+    breakdown = retriever.last_candidate_scores[f"catalog:{tracks[0].catalog_track_id}"]
+    assert breakdown["genre"] is None
+    assert breakdown["mood"] is None
+    assert breakdown["total"] is not None
+
+
+def test_catalog_retriever_artist_threshold_not_bypassed_by_genre_match(db_session):
+    db_session.add(
+        CatalogTrack(
+            title="Great Genre Bad Artist", artist="Xylophone Frequency Beats", genre="house",
+            storage_name="x.wav", content_type="audio/wav", visibility="public",
+        )
+    )
+    db_session.commit()
+    retriever = CatalogTrackRetriever()
+    tracks = retriever.retrieve(
+        db_session,
+        _intent(artist="Completely Unrelated Name", genres=["house"]),
+        limit=5,
+    )
+    assert tracks == []
 
 
 def _make_user(db_session, username):
@@ -141,6 +234,204 @@ def test_catalog_retriever_includes_a_public_track_for_a_guest_session(db_sessio
     )
     assert len(tracks) == 1
     assert tracks[0].title == "Shared Track"
+
+
+def test_is_strong_catalog_match_requires_genre_or_artist_not_mood_alone():
+    # A mood_bucket-only match can reach total=1.0 (weighted average of
+    # only the available signals -- see _score_rows), but mood_bucket is a
+    # coarse 4-bucket keyword heuristic populated only on curated seed
+    # rows; treating it alone as "strong" would mean every no-artist,
+    # no-genre prompt skips Audius entirely.
+    assert is_strong_catalog_match(
+        {"genre": None, "mood": 1.0, "artist_match": None, "total": 1.0}
+    ) is False
+    assert is_strong_catalog_match(
+        {"genre": 1.0, "mood": None, "artist_match": None, "total": 1.0}
+    ) is True
+    assert is_strong_catalog_match(
+        {"genre": None, "mood": None, "artist_match": 0.9, "total": 0.9}
+    ) is True
+    # A genre signal is present but total still falls below the threshold.
+    assert is_strong_catalog_match(
+        {"genre": 1.0, "mood": None, "artist_match": None, "total": 0.1}
+    ) is False
+    assert is_strong_catalog_match(None) is False
+
+
+def test_last_resort_tracks_returns_any_visible_row_ignoring_intent(db_session):
+    tracks = last_resort_tracks(db_session, limit=5)
+    assert tracks
+    assert all(track.source == "catalog" for track in tracks)
+
+
+def test_orchestrator_strong_catalog_match_never_consults_fallback(db_session):
+    catalog_track = _fake_track(id_="1", title="Strong Catalog Match")
+    primary = _FakeRetriever(
+        "catalog", [catalog_track],
+        last_candidate_scores={"catalog:1": {"genre": 1.0, "mood": None, "artist_match": None, "total": 1.0}},
+    )
+    fallback_calls: list[int] = []
+
+    class _SpyFallback(_FakeRetriever):
+        def retrieve(self, *args, **kwargs):
+            fallback_calls.append(1)
+            return super().retrieve(*args, **kwargs)
+
+    fallback = _SpyFallback("audius", [_fake_track(source="audius", id_="2")])
+    candidates, served_by = retrieve_candidates_with_fallback(db_session, _intent(), primary, fallback)
+    assert candidates == [catalog_track]
+    assert served_by is primary
+    assert fallback_calls == []
+
+
+def test_orchestrator_weak_catalog_match_still_consults_fallback(db_session):
+    catalog_track = _fake_track(id_="1", title="Weak Catalog Match")
+    primary = _FakeRetriever(
+        "catalog", [catalog_track],
+        last_candidate_scores={"catalog:1": {"genre": None, "mood": 1.0, "artist_match": None, "total": 1.0}},
+    )
+    audius_track = _fake_track(source="audius", id_="2", title="Audius Match")
+    fallback = _FakeRetriever("audius", [audius_track])
+    candidates, served_by = retrieve_candidates_with_fallback(db_session, _intent(), primary, fallback)
+    assert candidates == [audius_track]
+    assert served_by is fallback
+
+
+def test_orchestrator_prefers_primarys_weak_match_over_last_resort_when_fallback_empty(db_session):
+    catalog_track = _fake_track(id_="1", title="Weak But Real Match")
+    primary = _FakeRetriever(
+        "catalog", [catalog_track],
+        last_candidate_scores={"catalog:1": {"genre": None, "mood": 1.0, "artist_match": None, "total": 1.0}},
+    )
+    fallback = _FakeRetriever("audius", [])
+    candidates, served_by = retrieve_candidates_with_fallback(db_session, _intent(), primary, fallback)
+    assert candidates == [catalog_track]
+    assert served_by is primary
+
+
+def test_orchestrator_falls_through_to_last_resort_when_primary_and_fallback_are_both_empty(db_session):
+    primary = _FakeRetriever("catalog", [])
+    fallback = _FakeRetriever("audius", [])
+    candidates, served_by = retrieve_candidates_with_fallback(db_session, _intent(), primary, fallback)
+    assert candidates
+    assert served_by is LAST_RESORT_CATALOG_RETRIEVER
+
+
+def test_orchestrator_named_artist_miss_is_reported_plainly_not_last_resort(db_session):
+    # A named artist absent everywhere is never silently replaced by an
+    # unrelated last-resort track -- same "report plainly" contract
+    # CandidateRetriever.retrieve()'s docstring already states.
+    primary = _FakeRetriever("catalog", [])
+    fallback = _FakeRetriever("audius", [])
+    with pytest.raises(NoMatchingCandidate):
+        retrieve_candidates_with_fallback(
+            db_session, _intent(artist="Nonexistent Artist"), primary, fallback
+        )
+
+
+def test_catalog_retriever_concurrent_calls_do_not_corrupt_each_others_strong_weak_decision(
+    monkeypatch,
+):
+    """CatalogTrackRetriever.last_candidate_scores is instance state on a
+    shared singleton (dependencies.py's _catalog_retriever, bound to every
+    session/mix request) -- before retrieve_with_scores existed,
+    orchestrator._primary_is_strong read this back off the retriever
+    *after* retrieve() returned, so a concurrent request's retrieve() call
+    could overwrite it in between, silently corrupting this request's
+    strong/weak decision. retrieve_with_scores returns the breakdown scoped
+    to its own call instead, so retrieve_candidates_with_fallback's
+    decision can't be corrupted this way anymore -- verified here by
+    deliberately clobbering the shared attribute mid-flight (a real
+    concurrent call, via a second thread) and confirming the in-flight
+    call's own decision is unaffected."""
+
+    catalog = CatalogTrackRetriever()
+    db_strong = TestingSessionLocal()
+    db_weak = TestingSessionLocal()
+    try:
+        # A real, specific-signal (artist) match -- strong -- and a
+        # mood_bucket-only match -- weak, see is_strong_catalog_match.
+        db_strong.add(CatalogTrack(
+            title="Strong Match", artist="Zzq Race Artist", genre="house",
+            storage_name="x.wav", content_type="audio/wav", visibility="public",
+        ))
+        db_strong.add(CatalogTrack(
+            title="Weak Match", artist="Cuemix AI DJ", mood_bucket="energy",
+            vibe_label="Gym energy",
+            storage_name="x.wav", content_type="audio/wav", visibility="public",
+        ))
+        db_strong.commit()
+
+        strong_intent = _intent(artist="Zzq Race Artist", genres=["house"])
+        weak_intent = _intent(energy="high")  # -> mood bucket "energy"
+
+        strong_call_scoring = threading.Event()
+        weak_call_done = threading.Event()
+        original_score_rows = catalog_retriever._score_rows
+
+        def paused_score_rows(rows, intent):
+            breakdown = original_score_rows(rows, intent)
+            if intent is strong_intent:
+                # Let a concurrent call run to completion -- and clobber
+                # catalog.last_candidate_scores -- while this call is still
+                # "in flight", between scoring and returning.
+                strong_call_scoring.set()
+                assert weak_call_done.wait(timeout=2), "concurrent weak call never completed"
+            return breakdown
+
+        monkeypatch.setattr(catalog_retriever, "_score_rows", paused_score_rows)
+
+        no_op_fallback = _FakeRetriever("audius", [])  # a strong match must never need this
+
+        results: dict[str, tuple[list[Track], object]] = {}
+
+        def run_strong():
+            results["strong"] = retrieve_candidates_with_fallback(
+                db_strong, strong_intent, catalog, no_op_fallback, limit=5
+            )
+
+        def run_weak():
+            assert strong_call_scoring.wait(timeout=2), "strong call never started scoring"
+            # Simulates a second, fully independent concurrent request
+            # hitting the same shared singleton.
+            catalog.retrieve(db_weak, weak_intent, limit=5)
+            # Snapshot right here, at the moment the clobber actually
+            # happens -- retrieve_candidates_with_fallback also writes its
+            # own result back onto catalog.last_candidate_scores once the
+            # strong call resumes below (for session_manager.py's debug
+            # trace, see orchestrator.py), so checking this only after both
+            # threads finish would see that later write instead and miss
+            # the clobber entirely.
+            results["clobbered_scores"] = dict(catalog.last_candidate_scores)
+            weak_call_done.set()
+
+        strong_thread = threading.Thread(target=run_strong)
+        weak_thread = threading.Thread(target=run_weak)
+        strong_thread.start()
+        weak_thread.start()
+        strong_thread.join(timeout=5)
+        weak_thread.join(timeout=5)
+
+        # While the strong call was still in flight, the shared instance
+        # attribute held the *weak* call's data -- proof the underlying
+        # race is real.
+        clobbered_scores = results["clobbered_scores"]
+        assert clobbered_scores
+        assert all(
+            entry.get("genre") is None and entry.get("artist_match") is None
+            for entry in clobbered_scores.values()
+        )
+
+        # But the strong call's own result is unaffected by that clobber:
+        # it was served directly, never consulting no_op_fallback, because
+        # its decision used its own call-scoped breakdown, not the
+        # (at that moment overwritten) shared attribute.
+        strong_candidates, strong_served_by = results["strong"]
+        assert strong_served_by is catalog
+        assert strong_candidates[0].artist == "Zzq Race Artist"
+    finally:
+        db_strong.close()
+        db_weak.close()
 
 
 def test_deterministic_artist_extraction_handles_common_phrasings():

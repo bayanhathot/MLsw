@@ -23,7 +23,7 @@ from app.services import forum_service, mix_service, social_service
 from app.services.channel_hub import channel_hub
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
-    get_catalog_candidate_retriever,
+    get_audius_candidate_retriever,
     get_mix_candidate_retriever,
     get_segment_selector,
     get_transition_planner,
@@ -65,12 +65,12 @@ def start_mix(
     db: Session = Depends(get_db),
     vibe: VibeUnderstander = Depends(get_vibe_understander),
     retriever: CandidateRetriever = Depends(get_mix_candidate_retriever),
-    catalog_fallback: CandidateRetriever = Depends(get_catalog_candidate_retriever),
+    fallback_retriever: CandidateRetriever = Depends(get_audius_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
 ):
-    """Create a persisted mix; provider failures fall back to the catalog."""
+    """Create a persisted mix; a weak/empty catalog match falls back to Audius."""
 
     return mix_service.create_mix(
         db,
@@ -78,7 +78,7 @@ def start_mix(
         current_user.id if current_user else None,
         vibe=vibe,
         retriever=retriever,
-        catalog_fallback=catalog_fallback,
+        fallback_retriever=fallback_retriever,
         selector=selector,
         planner=planner,
         renderer=renderer,

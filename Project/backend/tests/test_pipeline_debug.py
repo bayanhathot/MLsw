@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketDisconnect
 from conftest import register_and_login
 
 from app.core.config import pipeline_debug_enabled
+from app.database.models.catalog import CatalogTrack
 from app.services import prompt_parser
 from app.services.pipeline.ollama_health import check_ollama_health
 
@@ -166,6 +167,46 @@ def test_pipeline_debug_endpoint_reports_stage_traces_for_recent_sessions(client
     assert entry_after["trace"]["vibe_understander"]["invoked"] is False
     # apply_feedback's intent mutation explicitly invalidates a prepared item.
     assert entry_after["has_prepared_next"] is False
+
+
+def test_pipeline_debug_score_breakdown_reflects_a_strong_catalog_match(
+    client, monkeypatch, db_session
+):
+    """orchestrator.retrieve_candidates_with_fallback's tier-1 (strong
+    catalog match) path calls CatalogTrackRetriever.retrieve_with_scores
+    directly rather than retrieve() -- deliberately, so the strong/weak
+    decision itself never reads back the shared last_candidate_scores
+    instance attribute (see catalog_retriever.CatalogTrackRetriever's
+    docstring for the concurrency reason). But the debug trace still reads
+    that same attribute after the fact, so retrieve_candidates_with_fallback
+    must still write this call's own breakdown onto it when a strong match
+    serves directly -- otherwise the debug trace would show stale or empty
+    data for exactly the case this test exercises."""
+
+    monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
+    db_session.add(CatalogTrack(
+        title="Debug Trace Match", artist="Zzq Debug Artist", genre="house",
+        visibility="public", storage_name="x.wav", content_type="audio/wav",
+    ))
+    db_session.commit()
+
+    started = client.post(
+        "/sessions/start",
+        json={"prompt": "play something by Zzq Debug Artist, house music"},
+    )
+    assert started.status_code == 200
+    session_id = started.json()["id"]
+    assert started.json()["nowPlaying"]["title"] == "Debug Trace Match"
+
+    payload = client.get("/debug/pipeline").json()
+    entry = next(item for item in payload["sessions"] if item["session_id"] == session_id)
+    trace = entry["trace"]
+    assert trace["candidate_retriever"]["name"] == "catalog"
+    assert trace["candidate_retriever"]["fell_back"] is False
+    breakdown = trace["candidate_retriever"]["score_breakdown"]
+    assert breakdown is not None
+    assert breakdown["genre"] == 1.0
+    assert breakdown["total"] == 1.0
 
 
 def test_pipeline_debug_websocket_rejects_untrusted_origin(client):
