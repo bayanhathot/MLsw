@@ -45,6 +45,7 @@ from app.routers.uploads import router as uploads_router
 from app.routers.social import router as social_router
 from app.routers.debug import router as debug_router
 from app.routers.realtime import router as realtime_router
+from app.services.audio_analysis import requeue_pending_analysis
 from app.services.channel_hub import channel_hub
 
 # ---------------------------------------------------------
@@ -61,6 +62,15 @@ from app.services.channel_hub import channel_hub
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     await channel_hub.start_listener()
+    # Re-dispatches analysis for any catalog track stranded at
+    # analysis_status="pending" by a previous crash/restart -- see
+    # requeue_pending_analysis's own docstring for why a plain "was it
+    # still pending" check is sufficient here. Synchronous DB work, but
+    # small/infrequent (only ever non-empty right after an unclean
+    # shutdown) and startup-blocking is the right trade-off: the
+    # alternative (fire-and-forget in the background) risks a request
+    # racing a still-in-progress requeue.
+    requeue_pending_analysis()
     yield
     await channel_hub.stop_listener()
 

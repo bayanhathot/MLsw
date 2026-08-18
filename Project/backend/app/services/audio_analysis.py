@@ -17,6 +17,7 @@ Both are deterministic signal-processing, not a trained model.
 """
 
 import logging
+from queue import Full
 
 import numpy as np
 
@@ -192,3 +193,54 @@ def analyze_catalog_track(catalog_track_id: int) -> None:
         row.analysis_version = ANALYSIS_VERSION
         row.analyzed_at = utc_now()
         db.commit()
+
+
+def requeue_pending_analysis() -> int:
+    """Called once at app startup (see main.py's lifespan): re-dispatches
+    analysis for every catalog_tracks row still analysis_status='pending'.
+
+    UploadQueue's own job durability (see upload_queue.py's module
+    docstring) covers the upload/storage step, but the *analysis* dispatch
+    that follows it -- submit_analysis's queue entry -- is a plain
+    in-process PriorityQueue with no persistence of its own. If the process
+    crashes or restarts between "analysis job queued" and "job completed,"
+    that queued work simply disappears and the row is stranded at
+    "pending" with nothing left to ever finish it.
+
+    Safe to requeue unconditionally, no "is this actually still running
+    somewhere" check needed: analysis_status is written exactly twice in
+    this whole codebase, both in analyze_catalog_track's own two terminal
+    branches (a single "failed" commit on exception, a single "completed"
+    commit at the very end of a successful run) -- there is no
+    intermediate "processing"/"analyzing" status a crash could have left a
+    row in. "pending" always means "never finished," never "might be
+    mid-flight elsewhere."
+    """
+
+    with db_module.SessionLocal() as db:
+        pending_ids = [
+            row_id
+            for (row_id,) in db.query(CatalogTrack.id)
+            .filter(CatalogTrack.analysis_status == "pending")
+            .all()
+        ]
+
+    requeued = 0
+    for track_id in pending_ids:
+        try:
+            upload_queue.upload_queue.submit_analysis(track_id)
+        except Full:
+            logger.warning(
+                "audio_analysis: queue full while requeuing pending catalog track %s at startup; "
+                "stays pending",
+                track_id,
+            )
+            continue
+        requeued += 1
+
+    if requeued:
+        logger.warning(
+            "audio_analysis: requeued %d catalog track(s) still analysis_status='pending' at startup",
+            requeued,
+        )
+    return requeued

@@ -71,6 +71,16 @@ def _drain_upload_queue(timeout=15.0):
     and non-fatal on timeout (logs to stderr rather than raising) so a
     genuinely stuck job degrades to the pre-existing flaky behavior instead
     of turning into a second hang.
+
+    Note: this only sees real upload jobs, not submit_analysis's bare
+    "analyze:<track_id>" queue entries (which are never represented in
+    UploadQueue._jobs at all -- see upload_queue.py's _ANALYZE_PREFIX
+    comment). That's fine here: app.main's requeue_pending_analysis(),
+    the only thing that would submit one of those outside an actual
+    upload's own flow, is neutralized for the whole test session below
+    (a plain TestClient(app) with no `with` block, e.g. test_catalog.py's
+    anonymous() helper, never runs the ASGI lifespan at all, so it was
+    never actually a source of these either).
     """
 
     deadline = time.monotonic() + timeout
@@ -107,6 +117,22 @@ def clean_database(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
     )
+    # app.main's lifespan calls requeue_pending_analysis() on every startup,
+    # which fires for every `with TestClient(app) as ...` (see the client/
+    # second_client/third_client fixtures below) -- i.e. potentially several
+    # times per test, and via a *different* TestClient than whichever one a
+    # given test is actually asserting against. That's a real production
+    # feature (recovering a stranded row after a crash) with no place in a
+    # suite that boots/tears down the app dozens of times per run for
+    # unrelated reasons -- letting it run for real here only risks a stray
+    # background analysis (reading whichever test's UPLOAD_DIR happens to be
+    # monkeypatched *at the moment the worker thread gets to it*, not
+    # necessarily the test that owns the row) racing some other test's own
+    # assertions, for zero test value. tests/test_audio_analysis.py calls
+    # audio_analysis.requeue_pending_analysis() directly (not through
+    # app.main), so it's unaffected by this and still exercises the real
+    # function.
+    monkeypatch.setattr("app.main.requeue_pending_analysis", lambda: 0)
     # audius_service.search_tracks (the real one, wrapped separately from
     # the retriever-level monkeypatch above) caches results in module-level
     # state keyed only on (query, limit) -- tests that call it directly
