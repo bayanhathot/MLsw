@@ -45,6 +45,13 @@ jobs:
   backend-tests:
     name: Backend tests
     runs-on: ubuntu-latest
+    # Without this, a hang (asyncio/thread deadlock, a stuck network call)
+    # falls back to GitHub's default 6-hour job timeout and silently burns
+    # CI minutes for hours before anyone notices -- see channel_hub.py's
+    # stop_listener()/pubsub.close() fix for a real one this caught. The
+    # suite normally finishes in under 10 minutes; 15 leaves headroom
+    # without masking a real hang for long.
+    timeout-minutes: 15
     # A manual run dispatched to perform a rollback (rollback_sha set) or a
     # backup/restore drill (run_backup_drill true) only needs its own job
     # below -- skip the normal test/build/publish chain rather than running

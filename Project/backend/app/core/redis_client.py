@@ -29,29 +29,42 @@ _HEALTH_TIMEOUT_SECONDS = 2.0
 # silent deadlock.
 _SOCKET_TIMEOUT_SECONDS = 5.0
 
-_client: redis.Redis | None = None
+# Keyed by event loop, not a single shared instance: an asyncio socket/
+# transport is bound to the loop it was created on, and reusing one from a
+# *different* loop is undefined behavior in asyncio generally -- in practice
+# on this stack it manifested as ProactorEventLoop.close() hanging forever
+# on Windows (a stale, cross-loop connection leaves a dangling low-level I/O
+# registration that the new loop's shutdown waits on and never resolves).
+# Production only ever has one loop for the process's whole lifetime
+# (BACKEND_WORKERS=1), so this is a no-op change there; the test suite is
+# what actually creates a new loop per TestClient and would otherwise reuse
+# a client across them. Mirrors channel_hub.py's _listener_tasks fix for the
+# identical underlying problem.
+_clients: dict[asyncio.AbstractEventLoop, redis.Redis] = {}
 _sync_client: sync_redis.Redis | None = None
 
 
 def get_redis_client() -> redis.Redis | None:
-    """Return the shared, lazily-created async Redis client.
+    """Return this event loop's lazily-created async Redis client.
 
     Returns None when REDIS_URL is not configured -- callers should treat
     that the same as an unreachable Redis rather than special-casing it.
     """
 
-    global _client
     redis_url = os.getenv("REDIS_URL", "").strip()
     if not redis_url:
         return None
-    if _client is None:
-        _client = redis.from_url(
+    loop = asyncio.get_running_loop()
+    client = _clients.get(loop)
+    if client is None:
+        client = redis.from_url(
             redis_url,
             decode_responses=True,
             socket_timeout=_SOCKET_TIMEOUT_SECONDS,
             socket_connect_timeout=_SOCKET_TIMEOUT_SECONDS,
         )
-    return _client
+        _clients[loop] = client
+    return client
 
 
 def get_sync_redis_client() -> sync_redis.Redis | None:

@@ -25,6 +25,9 @@ from app.core.redis_client import get_redis_client, get_sync_redis_client
 logger = logging.getLogger("cuemix.channel_hub")
 
 _REDIS_CHANNEL = "cuemix:channel_hub"
+# See stop_listener()'s own comment: bounds how long app shutdown will ever
+# wait on the listener task's cleanup before giving up on it.
+_LISTENER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def sync_publish(channel: str, event_type: str, data: dict) -> None:
@@ -121,9 +124,20 @@ class ChannelHub:
             return
         task.cancel()
         try:
-            await task
+            # Bounded, not just cancel()-and-await: a cancelled task's own
+            # cleanup (pubsub.close(), specifically) can still hang past the
+            # cancellation if the underlying socket has a pending OS-level
+            # read that never completes -- observed in practice on Windows,
+            # where the ProactorEventLoop won't finish closing until that
+            # settles, wedging the whole app lifespan shutdown (and, in
+            # tests, every fixture torn down after it) indefinitely. This
+            # timeout is what makes shutdown itself fail open the same way
+            # every other Redis touchpoint here already does.
+            await asyncio.wait_for(task, timeout=_LISTENER_SHUTDOWN_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             pass
+        except asyncio.TimeoutError:
+            logger.warning("channel_hub listener did not stop within %ss; abandoning it", _LISTENER_SHUTDOWN_TIMEOUT_SECONDS)
 
     async def _listen(self, client) -> None:
         while True:
@@ -144,8 +158,22 @@ class ChannelHub:
                 logger.warning("channel_hub listener error, retrying", exc_info=True)
                 await asyncio.sleep(1)
             finally:
+                # Bounded for the same reason stop_listener() bounds its own
+                # wait: pubsub.close() can hang past a CancelledError if the
+                # underlying socket has a pending OS-level read that never
+                # completes, which is the actual operation observed stuck on
+                # Windows -- cancelling *this* coroutine doesn't reach down
+                # into that. asyncio.CancelledError is deliberately excluded
+                # from the catch-all here (unlike stop_listener's own except)
+                # so a real cancellation still propagates and this loop
+                # actually exits, rather than swallowing it and looping
+                # again after the caller thinks it already stopped.
                 try:
-                    await pubsub.close()
+                    await asyncio.wait_for(
+                        asyncio.shield(pubsub.close()), timeout=_LISTENER_SHUTDOWN_TIMEOUT_SECONDS
+                    )
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     pass
 
