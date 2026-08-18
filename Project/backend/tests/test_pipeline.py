@@ -297,6 +297,21 @@ def test_orchestrator_weak_catalog_match_still_consults_fallback(db_session):
     assert served_by is fallback
 
 
+def test_orchestrator_empty_primary_consults_fallback(db_session):
+    """The other trigger, distinct from a weak-but-nonempty primary match
+    (test_orchestrator_weak_catalog_match_still_consults_fallback above):
+    `primary` finding literally nothing at all (e.g. a named artist absent
+    from the catalog) must also reach fallback, not just a below-threshold
+    match."""
+
+    primary = _FakeRetriever("catalog", [])
+    audius_track = _fake_track(source="audius", id_="2", title="Audius Match")
+    fallback = _FakeRetriever("audius", [audius_track])
+    candidates, served_by = retrieve_candidates_with_fallback(db_session, _intent(), primary, fallback)
+    assert candidates == [audius_track]
+    assert served_by is fallback
+
+
 def test_orchestrator_prefers_primarys_weak_match_over_last_resort_when_fallback_empty(db_session):
     catalog_track = _fake_track(id_="1", title="Weak But Real Match")
     primary = _FakeRetriever(

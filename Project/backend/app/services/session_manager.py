@@ -34,6 +34,7 @@ from app.services import (
     upload_queue,
 )
 from app.services.pipeline import audio_renderer
+from app.services.pipeline.catalog_retriever import LAST_RESORT_CATALOG_RETRIEVER
 from app.services.pipeline.dependencies import get_vibe_understander
 from app.services.pipeline.interfaces import (
     AudioRenderer,
@@ -591,11 +592,29 @@ def _resolve_and_render(
         else getattr(served_by, "last_candidate_scores", {}).get(_track_key(track))
     )
     cache_hit = None if candidate_pool_reused else getattr(served_by, "last_cache_hit", None)
+    # "primary"/"fallback" alone (via fell_back) can't tell a weak-but-real
+    # primary match (orchestrator.retrieve_candidates_with_fallback's tier 3)
+    # apart from the last-resort "any row" tier (tier 4) -- both report
+    # fell_back=False *or* True inconsistently depending on which of
+    # {retriever, fallback_retriever, LAST_RESORT_CATALOG_RETRIEVER} actually
+    # served, since the last-resort marker is a distinct object from
+    # `retriever` specifically so fell_back reads True for it (see
+    # catalog_retriever.LAST_RESORT_CATALOG_RETRIEVER's docstring). This is
+    # the one three-way distinction (primary/fallback/last_resort) that
+    # existing pipeline_trace fields don't already answer on their own --
+    # added for §12's own "did the flip actually work" measurement, not a
+    # new observability system.
+    retriever_tier = (
+        "last_resort" if served_by is LAST_RESORT_CATALOG_RETRIEVER
+        else "fallback" if served_by is not retriever
+        else "primary"
+    )
     pipeline_trace = {
         "candidate_retriever": {
             "implementation": type(served_by).__name__,
             "name": served_by.name,
             "fell_back": served_by is not retriever,
+            "tier": retriever_tier,
             "candidate_count": len(candidates),
             "candidate_pool_reused": candidate_pool_reused,
             "selected_track": {

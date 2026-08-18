@@ -209,6 +209,42 @@ def test_pipeline_debug_score_breakdown_reflects_a_strong_catalog_match(
     assert breakdown["total"] == 1.0
 
 
+def test_pipeline_debug_tier_distinguishes_last_resort_from_a_weak_primary_match(
+    client, monkeypatch, db_session
+):
+    """fell_back alone can't tell orchestrator.retrieve_candidates_with_fallback's
+    tier 3 (a weak-but-real primary match) apart from tier 4 (the
+    intent-blind last-resort tier) -- both are catalog-sourced and both can
+    read fell_back either way depending on which object actually served.
+    The new "tier" field (session_manager.py) is the one thing this test
+    suite didn't already have a way to check end-to-end."""
+
+    monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
+    # Prevents catalog_retriever._ensure_seed_catalog's self-heal (it only
+    # fires on a genuinely empty table), so the "focus" mood bucket this
+    # prompt resolves to stays genuinely empty -- forcing tier 4
+    # (last-resort) rather than tier 3 (a weak-but-real primary match).
+    db_session.add(CatalogTrack(
+        title="Unrelated Smooth Row", artist="Cuemix AI DJ", mood_bucket="smooth",
+        visibility="public", storage_name="x.wav", content_type="audio/wav",
+    ))
+    db_session.commit()
+
+    started = client.post("/sessions/start", json={"prompt": "smooth focus music work"})
+    assert started.status_code == 200
+    session_id = started.json()["id"]
+
+    payload = client.get("/debug/pipeline").json()
+    entry = next(item for item in payload["sessions"] if item["session_id"] == session_id)
+    trace = entry["trace"]["candidate_retriever"]
+    assert trace["tier"] == "last_resort"
+    assert trace["name"] == "catalog"
+    assert trace["fell_back"] is True
+
+
 def test_pipeline_debug_websocket_rejects_untrusted_origin(client):
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect("/debug/ws", headers={"Origin": "https://evil.example"}):
