@@ -36,6 +36,7 @@ def _retrieve_with_fallback(
     fallback_retriever: CandidateRetriever,
     *,
     limit: int,
+    viewer_id: int | None,
 ) -> list[Track]:
     """Mixes must never hard-fail the way a session can plainly report "no
     match": retrieve_candidates_with_fallback's own last-resort tier (any
@@ -46,15 +47,23 @@ def _retrieve_with_fallback(
     for a mix. So this catches that specific case and drops down to the
     same intent-blind "any row" query directly, one absolute last resort
     beyond what a session gets, mirroring the old neutral_intent trick this
-    replaced."""
+    replaced.
+
+    `viewer_id` -- the mix's own owner_id, mirroring session_manager.py's
+    identical viewer_id=user_id threading -- so a signed-in user's own
+    private catalog tracks are eligible for their own mix, same as they
+    already are for their own session. Without it, both calls below
+    default to viewer_id=None, which fails safe (a guest-visible,
+    public-only result), but that's stricter than it needs to be for a
+    mix a signed-in owner is generating for themselves."""
 
     try:
         tracks, _ = retrieve_candidates_with_fallback(
-            db, intent, retriever, fallback_retriever, limit=limit
+            db, intent, retriever, fallback_retriever, limit=limit, viewer_id=viewer_id
         )
         return tracks
     except NoMatchingCandidate:
-        return last_resort_tracks(db, limit=limit)
+        return last_resort_tracks(db, viewer_id=viewer_id, limit=limit)
 
 
 def _plan_transitions(
@@ -80,7 +89,7 @@ def create_mix(
 ) -> Mix:
     intent = vibe.understand(prompt)
     tracks = _retrieve_with_fallback(
-        db, intent, retriever, fallback_retriever, limit=MAX_MIX_TRACKS
+        db, intent, retriever, fallback_retriever, limit=MAX_MIX_TRACKS, viewer_id=owner_id
     )
 
     segments = [selector.select(db, track) for track in tracks]

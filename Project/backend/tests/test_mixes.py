@@ -2,6 +2,10 @@ from pathlib import Path
 
 from conftest import register_and_login
 
+from app.database.models.catalog import CatalogTrack
+from app.services import upload_queue
+from app.services.pipeline.catalog_retriever import _ensure_seed_catalog
+
 _DEMO_WAV_BYTES = (
     Path(__file__).resolve().parents[1] / "app" / "static" / "audio" / "cuemix-demo.wav"
 ).read_bytes()
@@ -159,3 +163,65 @@ def test_named_artist_with_no_audius_or_catalog_match_still_falls_back_safely(cl
     )
     assert response.status_code == 200
     assert response.json()["segments"]
+
+
+def test_mix_can_use_the_owners_own_private_catalog_track(client, monkeypatch, db_session):
+    """create_mix() threads owner_id into viewer_id (mirroring
+    session_manager.py's identical viewer_id=user_id pattern), so a
+    signed-in owner's own private catalog upload is eligible for their own
+    mix -- not just public tracks, same as it already is for their own
+    session."""
+
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
+    user = register_and_login(client, "priv_mix_owner", "priv_mix_owner@example.com")
+
+    storage_name = "owner-private-mix-track.wav"
+    catalog_dir = upload_queue.UPLOAD_DIR / "catalog"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / storage_name).write_bytes(_DEMO_WAV_BYTES)
+    db_session.add(CatalogTrack(
+        owner_id=user["id"], title="Owner Private Mix Track", artist="Zzq Mix Private Artist",
+        visibility="private", storage_name=storage_name, content_type="audio/wav",
+    ))
+    db_session.commit()
+
+    mix = client.post(
+        "/mixes/start", json={"prompt": "play something by Zzq Mix Private Artist"}
+    ).json()
+    assert mix["segments"]
+    assert mix["segments"][0]["title"] == "Owner Private Mix Track"
+
+
+def test_mix_excludes_another_users_private_catalog_track(
+    client, second_client, monkeypatch, db_session
+):
+    """The other half of the same fix: viewer_id must scope to *this*
+    mix's own owner, never let a different user's private upload leak in."""
+
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+    )
+    owner = register_and_login(client, "priv_mix_owner2", "priv_mix_owner2@example.com")
+    register_and_login(second_client, "other_mix_viewer", "other_mix_viewer@example.com")
+    # Seed the public demo catalog *before* adding the private row below --
+    # _ensure_seed_catalog only self-heals an empty table, and this test
+    # needs a real public fallback for the last-resort tier to land on
+    # once the private track (correctly) isn't a candidate for this viewer.
+    _ensure_seed_catalog(db_session)
+    db_session.add(CatalogTrack(
+        owner_id=owner["id"], title="Owner Private Mix Track Two",
+        artist="Zzq Mix Private Artist Two", visibility="private",
+        storage_name="x.wav", content_type="audio/wav",
+    ))
+    db_session.commit()
+
+    # Never hard-fails (mixes' own guarantee, see the "not even the catalog
+    # or Audius" test above) -- but the private track must never be the one
+    # used for a session that isn't its owner's.
+    mix = second_client.post(
+        "/mixes/start", json={"prompt": "play something by Zzq Mix Private Artist Two"}
+    ).json()
+    assert mix["segments"]
+    assert mix["segments"][0]["title"] != "Owner Private Mix Track Two"
