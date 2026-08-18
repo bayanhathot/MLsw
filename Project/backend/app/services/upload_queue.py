@@ -68,22 +68,36 @@ async def read_limited_stream(chunks: AsyncIterable[bytes], maximum_bytes: int) 
 # lets _run_analysis mark that job "completed" once analysis finishes.
 _ANALYZE_PREFIX = "analyze:"
 
+# Compressed formats (mp3/ogg) vs. lossless (wav/flac) genuinely need
+# different ceilings for the same clip length -- a 3-minute uncompressed WAV
+# is already ~31 MB (44,100 samples/sec x 16 bits x 2 channels / 8 x 180
+# sec), so one flat cap across all four audio types either rejects a
+# perfectly ordinary WAV/FLAC clip or is needlessly loose for MP3/OGG. This
+# is the generic-attachment (forum/message clip) tier, used by ALLOWED_TYPES
+# below; routers/catalog.py's full-length track uploads are a different use
+# case with their own, separately-configured ceiling -- see
+# CATALOG_AUDIO_MAX_BYTES further down, which overrides these via
+# validate_upload's max_size_override and is untouched by this pair. Both
+# env-configurable, matching UPLOAD_WORKERS/UPLOAD_QUEUE_CAPACITY's own style.
+_ATTACHMENT_AUDIO_MAX_MB_COMPRESSED = max(
+    1, min(200, int(os.getenv("ATTACHMENT_AUDIO_MAX_MB_COMPRESSED", "10")))
+)
+_ATTACHMENT_AUDIO_MAX_MB_LOSSLESS = max(
+    1, min(500, int(os.getenv("ATTACHMENT_AUDIO_MAX_MB_LOSSLESS", "100")))
+)
+
 ALLOWED_TYPES = {
     "image/jpeg": ("image", ".jpg", 8 * 1024 * 1024),
     "image/png": ("image", ".png", 8 * 1024 * 1024),
     "image/webp": ("image", ".webp", 8 * 1024 * 1024),
     "image/gif": ("image", ".gif", 8 * 1024 * 1024),
-    # Kept at 10 MiB to match the reverse-proxy request body limit. Also the
-    # generic-attachment cap for audio (forum/message clips) -- deliberately
-    # NOT raised here; see CATALOG_AUDIO_MAX_BYTES below for full-length
-    # catalog track uploads, which are a different use case with a
-    # different reasonable ceiling.
+    # Kept at 10 MiB to match the reverse-proxy request body limit.
     "video/mp4": ("video", ".mp4", 10 * 1024 * 1024),
     "video/webm": ("video", ".webm", 10 * 1024 * 1024),
-    "audio/mpeg": ("audio", ".mp3", 10 * 1024 * 1024),
-    "audio/ogg": ("audio", ".ogg", 10 * 1024 * 1024),
-    "audio/wav": ("audio", ".wav", 10 * 1024 * 1024),
-    "audio/flac": ("audio", ".flac", 10 * 1024 * 1024),
+    "audio/mpeg": ("audio", ".mp3", _ATTACHMENT_AUDIO_MAX_MB_COMPRESSED * 1024 * 1024),
+    "audio/ogg": ("audio", ".ogg", _ATTACHMENT_AUDIO_MAX_MB_COMPRESSED * 1024 * 1024),
+    "audio/wav": ("audio", ".wav", _ATTACHMENT_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024),
+    "audio/flac": ("audio", ".flac", _ATTACHMENT_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024),
 }
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / "uploads"))
 # Where submit() durably parks raw bytes before a worker has even looked at
@@ -91,15 +105,13 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / 
 # own subdirectory so pending files are never mistaken for finished ones.
 _PENDING_SUBDIR = "_pending"
 
-# Compressed formats (mp3/ogg) vs. lossless (wav/flac) genuinely need
-# different ceilings for the same song length -- a 3-minute uncompressed WAV
-# is already ~31 MB, so ALLOWED_TYPES' flat 10 MiB cap rejects perfectly
-# ordinary catalog uploads (see ai-dj-segment-metadata-architecture.md §3).
-# Scoped to catalog uploads only (routers/catalog.py) via validate_upload's
-# max_size_override, not applied to ALLOWED_TYPES itself, which the generic
-# attachment pipeline (forum/message clips) also reads and should keep its
-# own smaller ceiling for. Both env-configurable, matching
-# UPLOAD_WORKERS/UPLOAD_QUEUE_CAPACITY.
+# routers/catalog.py's full-length track upload ceiling -- see this pair's
+# generic-attachment counterpart above (_ATTACHMENT_AUDIO_MAX_MB_*) for why
+# compressed and lossless formats need different tiers in the first place.
+# A full song is a much larger, but much rarer, upload than a short
+# forum/message clip, hence its own higher, separately-configured ceiling
+# rather than sharing ALLOWED_TYPES' -- applied via validate_upload's
+# max_size_override, never touching ALLOWED_TYPES itself.
 _CATALOG_AUDIO_MAX_MB_COMPRESSED = max(
     1, min(500, int(os.getenv("CATALOG_AUDIO_MAX_MB_COMPRESSED", "30")))
 )
@@ -213,7 +225,8 @@ def validate_upload(
     if not data:
         raise ValueError("File is empty.")
     if len(data) > max_size:
-        raise ValueError(f"File exceeds the {max_size // (1024 * 1024)} MiB limit.")
+        format_name = extension.lstrip(".").upper()
+        raise ValueError(f"File exceeds the {max_size // (1024 * 1024)} MiB cap for {format_name}.")
     if not _matches_signature(content_type, data):
         raise ValueError("File signature does not match its declared media type.")
     if not Path(filename).name or filename in {".", ".."}:

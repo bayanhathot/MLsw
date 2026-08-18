@@ -16,7 +16,7 @@ from app.core.rate_limit import RateLimiter
 from app.core.config import cors_origins, public_api_url
 from app import cleanup_uploads
 from app.routers.uploads import _decode_filename, _read_limited_body
-from app.services.upload_queue import UploadQueue
+from app.services.upload_queue import UploadQueue, validate_upload
 
 
 def test_upload_magic_validation_and_private_serving(client, second_client):
@@ -82,6 +82,37 @@ def test_upload_declared_size_and_queue_backpressure(client):
         pass
     else:
         raise AssertionError("Bounded queue accepted work beyond its capacity")
+
+
+def test_wav_attachment_around_30mb_is_accepted():
+    # Compressed (mp3/ogg) and lossless (wav/flac) formats need different
+    # ceilings for the same clip length -- a 3-minute uncompressed WAV is
+    # already ~31 MB, comfortably over the old flat 10 MiB cap but well
+    # under the new 100 MiB lossless default (ATTACHMENT_AUDIO_MAX_MB_LOSSLESS,
+    # read at module import so not env-overridable from inside a test).
+    # Signature-valid bytes only (not real decodable audio): the generic
+    # attachment path never runs deep audio validation, only the cheap
+    # signature/size check this exercises.
+    data = b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * (30 * 1024 * 1024)
+    kind, extension, max_size = validate_upload("clip.wav", "audio/wav", data)
+    assert kind == "audio"
+    assert extension == ".wav"
+    assert max_size == 100 * 1024 * 1024
+
+
+def test_wav_attachment_over_its_cap_is_rejected_with_a_per_format_message():
+    data = b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * (101 * 1024 * 1024)
+    with pytest.raises(ValueError, match=r"exceeds the 100 MiB cap for WAV"):
+        validate_upload("clip.wav", "audio/wav", data)
+
+
+def test_mp3_attachment_over_its_smaller_cap_is_still_rejected():
+    # MP3/OGG keep the old, much lower ceiling -- a file that would fit
+    # comfortably under WAV/FLAC's new 100 MiB cap must still be rejected
+    # here, with a message naming *this* format's own cap, not WAV's.
+    data = b"ID3" + b"\x00" * (11 * 1024 * 1024)
+    with pytest.raises(ValueError, match=r"exceeds the 10 MiB cap for MP3"):
+        validate_upload("clip.mp3", "audio/mpeg", data)
 
 
 def test_streaming_upload_reader_stops_at_limit():
