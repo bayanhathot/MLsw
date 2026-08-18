@@ -28,6 +28,20 @@ system, per the architecture doc's ingest rules):
 
 This is separate from POST /uploads/jobs (forum/message attachments): those
 don't carry track metadata and aren't part of the AI-DJ catalog.
+
+Dedup policy (see _find_duplicate_by_checksum/_build_catalog_track for the
+implementation): every upload always gets its own CatalogTrack row --
+never silently merged or rejected because the audio happens to already
+exist, since a shared master can legitimately back several distinct
+catalog entries (a remix, a different official release, two users who
+both happened to upload the same royalty-free track). What's shared when
+upload_queue's worker-computed sha256 matches an existing, already-
+analyzed row is purely the *audio-derived* side: the physical file
+(the redundant just-stored copy is deleted once the new row points at the
+original) and the analysis fields (bpm/key/segment) -- both copied, never
+recomputed. A match whose own analysis is still "pending" is not reused,
+since that match's own fields could still change or fail out from under
+the copy.
 """
 
 import logging
@@ -172,6 +186,24 @@ def _clean_metadata_fields(
     }
 
 
+def _find_duplicate_by_checksum(db: Session, sha256: str) -> CatalogTrack | None:
+    """Dedup policy (see the module docstring's "audio-derived vs. catalog
+    metadata" split for the short version): a prior upload of byte-
+    identical audio is a candidate for reuse only once *its own* analysis
+    has reached a terminal state (never a still-"pending" match -- that
+    match's own bpm/key/segment could still change, or fail, and a second
+    row copied from it now would silently go stale). Ties broken by lowest
+    id purely for determinism; any matching row has identical audio-derived
+    data by definition, so which one wins doesn't otherwise matter."""
+
+    return (
+        db.query(CatalogTrack)
+        .filter(CatalogTrack.checksum_sha256 == sha256, CatalogTrack.analysis_status != "pending")
+        .order_by(CatalogTrack.id.asc())
+        .first()
+    )
+
+
 def _build_catalog_track(
     *,
     owner_id: int,
@@ -180,8 +212,24 @@ def _build_catalog_track(
     sha256: str,
     duration_seconds: int,
     fields: dict,
+    duplicate: CatalogTrack | None = None,
 ) -> CatalogTrack:
-    return CatalogTrack(
+    """Builds one upload's own row. title/artist/album/genre/lyrics/
+    visibility/cover always come from *this* uploader's own form fields,
+    even when `duplicate` is given -- a shared master (or a legitimate
+    remix/different release sharing the same audio) still gets its own
+    catalog identity. What `duplicate`, when given, overrides is purely the
+    audio-derived side: storage_name/content_type/duration_seconds and the
+    analysis fields are copied from it wholesale instead of the freshly-
+    probed/pending values, so the new row is never re-stored or re-analyzed
+    for content that's already proven identical.
+    """
+
+    if duplicate is not None:
+        content_type = duplicate.content_type
+        storage_name = duplicate.storage_name
+        duration_seconds = duplicate.duration_seconds
+    row = CatalogTrack(
         owner_id=owner_id,
         title=fields["title"][:255],
         artist=fields["artist"],
@@ -193,9 +241,16 @@ def _build_catalog_track(
         cover_storage_name=fields.get("cover_storage_name"),
         content_type=content_type,
         duration_seconds=duration_seconds,
-        analysis_status="pending",
+        analysis_status="pending" if duplicate is None else duplicate.analysis_status,
         checksum_sha256=sha256,
     )
+    if duplicate is not None:
+        row.bpm = duplicate.bpm
+        row.musical_key = duplicate.musical_key
+        row.segment_start_second = duplicate.segment_start_second
+        row.segment_end_second = duplicate.segment_end_second
+        row.segment_method = duplicate.segment_method
+    return row
 
 
 def _dispatch_analysis(track_id: int, upload_job_id: str | None = None) -> None:
@@ -249,32 +304,65 @@ def _job_to_read(job: dict) -> CatalogUploadJobRead:
 
 def _on_catalog_file_stored(job_id: str) -> None:
     """Runs on a worker thread right after a batch-upload job's bytes finish
-    storing. Creates the CatalogTrack row and dispatches analysis; raising
-    here makes the worker mark the job "failed" instead of silently losing
-    the file."""
+    storing. Creates the CatalogTrack row and dispatches analysis (or, for a
+    checksum-duplicate, reuses the match's analysis instead -- see
+    _find_duplicate_by_checksum's docstring for the policy); raising here
+    makes the worker mark the job "failed" instead of silently losing the
+    file."""
 
     job = uq.upload_queue.public(job_id)
     if job is None:
         raise RuntimeError(f"Catalog upload job {job_id} vanished before materialization.")
     result = job["result"]
     fields = job["metadata"] or {}
-    storage_path = uq.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / result["storage_name"]
-    duration_seconds = _probe_duration_seconds(storage_path)
-    row = _build_catalog_track(
-        owner_id=job["owner_id"],
-        content_type=job["content_type"],
-        storage_name=result["storage_name"],
-        sha256=result["sha256"],
-        duration_seconds=duration_seconds,
-        fields=fields,
-    )
+    stray_storage_name: str | None = None
+
     with db_module.SessionLocal() as db:
+        duplicate = _find_duplicate_by_checksum(db, result["sha256"])
+        if duplicate is not None:
+            row = _build_catalog_track(
+                owner_id=job["owner_id"],
+                content_type=job["content_type"],
+                storage_name=result["storage_name"],
+                sha256=result["sha256"],
+                duration_seconds=0,
+                fields=fields,
+                duplicate=duplicate,
+            )
+            # The bytes just stored under result["storage_name"] are a
+            # redundant copy of duplicate's own file -- the row above
+            # already points at the original instead, so drop the stray
+            # copy once it's committed, keeping "reuse the physical file"
+            # true of the file system's actual end state too.
+            stray_storage_name = result["storage_name"]
+        else:
+            storage_path = uq.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / result["storage_name"]
+            duration_seconds = _probe_duration_seconds(storage_path)
+            row = _build_catalog_track(
+                owner_id=job["owner_id"],
+                content_type=job["content_type"],
+                storage_name=result["storage_name"],
+                sha256=result["sha256"],
+                duration_seconds=duration_seconds,
+                fields=fields,
+            )
         db.add(row)
         db.commit()
         db.refresh(row)
         track_id = row.id
+
+    if stray_storage_name is not None:
+        (uq.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / stray_storage_name).unlink(missing_ok=True)
+
     uq.upload_queue.set_catalog_track(job_id, track_id)
-    _dispatch_analysis(track_id, upload_job_id=job_id)
+    if duplicate is not None:
+        uq.upload_queue.mark_completed(job_id)
+        # No analysis was dispatched -- fire the same "ready in your
+        # catalog" notification analysis completion normally triggers,
+        # since nothing else will.
+        _on_catalog_analysis_complete(job_id, track_id)
+    else:
+        _dispatch_analysis(track_id, upload_job_id=job_id)
 
 
 def _on_catalog_analysis_complete(job_id: str, catalog_track_id: int | None) -> None:
@@ -397,27 +485,46 @@ async def upload_catalog_track(
         raise HTTPException(status_code=422, detail=job["error"] or "Upload failed validation.")
 
     result = job["result"]
-    storage_path = uq.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / result["storage_name"]
-    duration_seconds = _probe_duration_seconds(storage_path)
-
-    row = _build_catalog_track(
-        owner_id=current_user.id,
-        content_type=content_type,
-        storage_name=result["storage_name"],
-        sha256=result["sha256"],
-        duration_seconds=duration_seconds,
-        fields=fields,
-    )
+    duplicate = _find_duplicate_by_checksum(db, result["sha256"])
+    if duplicate is not None:
+        row = _build_catalog_track(
+            owner_id=current_user.id,
+            content_type=content_type,
+            storage_name=result["storage_name"],
+            sha256=result["sha256"],
+            duration_seconds=0,
+            fields=fields,
+            duplicate=duplicate,
+        )
+    else:
+        storage_path = uq.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / result["storage_name"]
+        duration_seconds = _probe_duration_seconds(storage_path)
+        row = _build_catalog_track(
+            owner_id=current_user.id,
+            content_type=content_type,
+            storage_name=result["storage_name"],
+            sha256=result["sha256"],
+            duration_seconds=duration_seconds,
+            fields=fields,
+        )
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    if duplicate is not None:
+        # See _on_catalog_file_stored's identical cleanup: the bytes just
+        # stored under result["storage_name"] are a redundant copy of
+        # duplicate's own file now that the row above points at the
+        # original instead.
+        (uq.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / result["storage_name"]).unlink(missing_ok=True)
 
     # Marks the job "claimed" (see UploadQueue._is_claimed) so _prune()'s
     # unclaimed-file TTL cleanup -- built for a generic attachment nobody
     # ever attached to a post -- never deletes this CatalogTrack's audio out
     # from under it once that TTL elapses.
     uq.upload_queue.set_catalog_track(job["job_id"], row.id)
-    _dispatch_analysis(row.id)
+    if duplicate is None:
+        _dispatch_analysis(row.id)
 
     return _to_read(row)
 

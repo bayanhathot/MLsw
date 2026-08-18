@@ -58,6 +58,18 @@ def test_upload_requires_title_album_and_artist_but_not_lyrics(client):
     assert response.status_code == 201, response.text
     assert response.json()["lyrics"] is None
 
+    # Distinct from the blank-string case above: the lyrics *field itself*
+    # never present in the multipart body at all, matching what a real
+    # instrumental-track upload sends when the UI's lyrics textarea is left
+    # untouched and never appended to FormData.
+    omitted = client.post(
+        "/catalog/tracks",
+        data={"title": "No Lyrics Field", "album": "Test Album", "artist": "The Testers"},
+        files={"file": ("track.wav", _DEMO_WAV_BYTES, "audio/wav")},
+    )
+    assert omitted.status_code == 201, omitted.text
+    assert omitted.json()["lyrics"] is None
+
 
 def test_upload_rejects_signature_mismatch(client):
     register_and_login(client)
@@ -93,6 +105,75 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     assert row.musical_key is not None
     assert row.segment_start_second is not None
     assert row.segment_end_second > row.segment_start_second
+
+
+def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client, db_session, monkeypatch):
+    # Same bytes, same metadata: the second upload must reuse the first's
+    # already-computed analysis and physical file rather than re-running
+    # analyze_catalog_track (a real, non-trivial librosa job) a second time
+    # for content already proven identical.
+    import app.services.upload_queue as uq_module
+
+    register_and_login(client)
+    first = _upload(client, title="Same Song", artist="Same Artist", album="Same Album")
+    assert first.status_code == 201, first.text
+    first_row = _wait_for_analysis(db_session, first.json()["id"])
+    assert first_row.analysis_status == "completed"
+    assert first_row.bpm is not None
+    assert first_row.checksum_sha256 is not None
+
+    analysis_calls = []
+    original_submit_analysis = uq_module.upload_queue.submit_analysis
+
+    def counting_submit_analysis(*args, **kwargs):
+        analysis_calls.append((args, kwargs))
+        return original_submit_analysis(*args, **kwargs)
+
+    monkeypatch.setattr(uq_module.upload_queue, "submit_analysis", counting_submit_analysis)
+
+    second = _upload(client, title="Same Song", artist="Same Artist", album="Same Album")
+    assert second.status_code == 201, second.text
+    second_body = second.json()
+
+    assert analysis_calls == []  # no new analysis was ever dispatched
+    assert second_body["id"] != first_row.id
+    assert second_body["analysis_status"] == "completed"  # populated immediately, never "pending"
+
+    second_row = db_session.query(CatalogTrack).filter_by(id=second_body["id"]).first()
+    assert second_row.checksum_sha256 == first_row.checksum_sha256
+    assert second_row.bpm == first_row.bpm
+    assert second_row.musical_key == first_row.musical_key
+    assert second_row.segment_start_second == first_row.segment_start_second
+    assert second_row.segment_end_second == first_row.segment_end_second
+    assert second_row.storage_name == first_row.storage_name  # reused physical file
+
+
+def test_duplicate_upload_with_different_metadata_still_creates_its_own_row(client, db_session):
+    # Same audio, but a different title/artist -- a legitimate remix or a
+    # different official release sharing the same master must still get
+    # its own catalog row, never merged or rejected just because the bytes
+    # already exist.
+    register_and_login(client)
+    original = _upload(client, title="Original Mix", artist="Artist A", album="Album A")
+    assert original.status_code == 201, original.text
+    original_row = _wait_for_analysis(db_session, original.json()["id"])
+    assert original_row.analysis_status == "completed"
+
+    remix = _upload(client, title="Remix Version", artist="Artist B", album="Album B")
+    assert remix.status_code == 201, remix.text
+    remix_body = remix.json()
+
+    assert remix_body["id"] != original_row.id
+    assert remix_body["title"] == "Remix Version"
+    assert remix_body["artist"] == "Artist B"
+    assert remix_body["album"] == "Album B"
+    assert remix_body["analysis_status"] == "completed"
+
+    remix_row = db_session.query(CatalogTrack).filter_by(id=remix_body["id"]).first()
+    assert remix_row.checksum_sha256 == original_row.checksum_sha256
+    assert remix_row.bpm == original_row.bpm
+    assert remix_row.musical_key == original_row.musical_key
+    assert remix_row.storage_name == original_row.storage_name
 
 
 def test_single_upload_survives_the_unclaimed_file_ttl_prune(client):

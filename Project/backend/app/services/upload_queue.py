@@ -737,6 +737,15 @@ class UploadQueue:
         _notify_status_listeners(snapshot)
         return True
 
+    def mark_completed(self, job_id: str) -> None:
+        """Lets an on_stored_callback declare its job fully done without
+        going through submit_analysis -- e.g. routers/catalog.py's
+        checksum-dedup path, where an upload reuses an existing track's
+        already-computed analysis and has no more async work left to do.
+        A no-op if the job doesn't exist (already pruned, unknown id)."""
+
+        self._set_status(job_id, "completed", completed=True)
+
     def materialization_lock(self, job_id: str) -> Lock:
         """Serialize Attachment/CatalogTrack row creation for concurrent
         status polls."""
