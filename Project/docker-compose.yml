@@ -12,8 +12,12 @@ x-backend-environment: &backend-environment
   ROOT_PATH: ${ROOT_PATH:-/api}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
   TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
-  # Not yet used by any app code -- purely additive infrastructure, see
-  # app/core/redis_client.py.
+  # Backs upload_queue.py's durable job store and channel_hub.py's
+  # real-time WebSocket fan-out (chat/notifications/live feed/media) --
+  # see app/core/redis_client.py. Both fail open (degrade silently rather
+  # than crash) when this is unreachable, which is exactly what let a real
+  # production outage go unnoticed -- see docker-compose.prod.yml's own
+  # comment on backend's redis dependency.
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
   # "none" here keeps local dev zero-friction (no LLM call made, even
   # though the ollama container below now starts by default); the app
@@ -121,6 +125,14 @@ services:
         condition: service_completed_successfully
       uploads-init:
         condition: service_completed_successfully
+      # Same missing dependency the production compose file had (fixed
+      # there for a real outage -- see docker-compose.prod.yml's own
+      # comment on this line): redis had no dependents anywhere in this
+      # file either, so a plain `docker compose up` with no service filter
+      # is fine, but `docker compose up backend` (or any subset that
+      # doesn't happen to also name redis) would never create it.
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD

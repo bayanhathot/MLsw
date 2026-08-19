@@ -118,8 +118,54 @@ jobs:
       # compressed catalog uploads. ubuntu-latest ships it already; installed
       # explicitly so this doesn't silently start failing on a runner-image change.
       - name: Ensure ffmpeg is available
+        id: ffmpeg-check
         run: |
-          command -v ffmpeg >/dev/null || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg already present (runner image default)"
+            echo "needed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "needed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Compute today's date for the apt cache key
+        if: steps.ffmpeg-check.outputs.needed == 'true'
+        id: apt-cache-date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "${GITHUB_OUTPUT}"
+
+      # A real run of this job was found cancelled mid-`apt-get update`
+      # (run 32158078794) -- confirmed from its own annotation ("Canceling
+      # since a higher priority waiting request... exists") that this was
+      # this workflow's own cancel-in-progress concurrency policy
+      # superseding it on a rapid follow-up push, working exactly as
+      # designed (see that policy's own comment above), not a bug or a real
+      # ffmpeg failure. Separately, but from the same run's log: apt-get
+      # update itself was independently slow/flaky, visibly retrying for
+      # several seconds against azure.archive.ubuntu.com (a documented
+      # quirk of GitHub's Azure-hosted runners) before falling back to
+      # archive.ubuntu.com. Caching both the downloaded .deb archives and
+      # the package index itself means a same-day run skips apt-get update
+      # entirely -- the actual slow/flaky part -- shrinking the window a
+      # coincidental supersede can land in, without touching the
+      # concurrency policy itself. A day-keyed (not permanent) cache still
+      # refreshes the index at least once every 24h.
+      - name: Cache apt package lists and archives for ffmpeg
+        if: steps.ffmpeg-check.outputs.needed == 'true'
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives/*.deb
+            /var/lib/apt/lists
+          key: apt-ffmpeg-${{ runner.os }}-${{ steps.apt-cache-date.outputs.date }}
+
+      - name: Install ffmpeg
+        if: steps.ffmpeg-check.outputs.needed == 'true'
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo apt-get update
+          fi
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
 
       - name: Install backend dependencies
         run: python -m pip install --requirement requirements-dev.txt
@@ -143,6 +189,15 @@ jobs:
   frontend-checks:
     name: Frontend checks
     runs-on: ubuntu-latest
+    # Same reasoning as backend-tests' own timeout-minutes (see its
+    # comment) -- this job had NONE until a real run of `npx playwright
+    # install --with-deps chromium` genuinely hung (not just slow-retried:
+    # zero log output for 50+ minutes) against apt-get's own dependency
+    # install, only noticed and stopped by a human watching it live rather
+    # than any automated guard. Without this, that silently burns CI
+    # minutes for up to GitHub's default 6-hour job timeout. The suite
+    # normally finishes in under 10 minutes.
+    timeout-minutes: 15
     if: >-
       github.event_name != 'workflow_dispatch' ||
       (inputs.rollback_sha == '' && inputs.run_backup_drill != true)
@@ -178,8 +233,34 @@ jobs:
       - name: Build production frontend
         run: npm run build
 
+      - name: Compute today's date for the apt cache key
+        id: apt-cache-date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "${GITHUB_OUTPUT}"
+
+      # `playwright install --with-deps` bundles its own `apt-get update` +
+      # `apt-get install` for Chromium's OS-level dependencies -- this was
+      # the actual step observed hanging for 50+ minutes with zero log
+      # output (see frontend-checks' own timeout-minutes comment), the
+      # same underlying apt/mirror class of issue as backend-tests'
+      # Ensure-ffmpeg step (see that job's own comment for the confirmed
+      # root cause there). Split into install-deps (apt) + install (browser
+      # binary) so the apt portion can share that same day-keyed cache.
+      - name: Cache apt package lists and archives for Chromium's dependencies
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives/*.deb
+            /var/lib/apt/lists
+          key: apt-playwright-chromium-${{ runner.os }}-${{ steps.apt-cache-date.outputs.date }}
+
       - name: Install the Chromium test browser
-        run: npx playwright install --with-deps chromium
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo apt-get update
+          fi
+          npx playwright install-deps chromium
+          npx playwright install chromium
 
       - name: Run production browser smoke tests
         run: npm run test:e2e
@@ -193,9 +274,194 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Real-time delivery, against a REAL backend+Postgres+Redis -- added
+  # after a real production incident (see docker-compose.prod.yml's own
+  # comment on backend's redis dependency) that every existing e2e test
+  # would have missed, since they all mock the WebSocket/API boundary
+  # (frontend-checks' smoke.spec.js). See
+  # frontend/e2e/realtime-integration.spec.js's own module docstring for
+  # exactly why a mocked WS test structurally cannot catch this class of
+  # bug: it proves the Svelte code applies an incoming frame correctly,
+  # never that the backend actually published one over real Redis.
+  #
+  # Deliberately NOT a dependency of container-builds/publish-images/
+  # deploy-production: it adds real wall-clock (a second Postgres+Redis
+  # bring-up, a second frontend build with a different PUBLIC_API_BASE_URL,
+  # two extra Playwright browser contexts per test) on top of an already
+  # substantial pipeline, and introduces its own new sources of
+  # environmental flakiness (a live multi-worker backend, real Redis pub/
+  # sub timing) that the deploy gate itself doesn't need to depend on --
+  # the actual deployed app's health is already verified for real by
+  # deploy-production's own db-health check. Runs on every push so it's
+  # real CI signal, not a local-only script nobody re-runs, but if its
+  # added time/flakiness becomes a real problem in practice, moving it to
+  # a nightly schedule (or a pre-deploy manual gate) rather than every push
+  # is the natural next step -- flagged here, not decided unilaterally.
+  realtime-e2e:
+    name: Real-time delivery E2E (real backend, 2 browsers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (inputs.rollback_sha == '' && inputs.run_backup_drill != true)
+    services:
+      postgres:
+        image: postgres:16.9-alpine
+        env:
+          POSTGRES_DB: cuemix_realtime_e2e
+          POSTGRES_USER: cuemix_ci
+          POSTGRES_PASSWORD: cuemix_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cuemix_ci -d cuemix_realtime_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+psycopg2://cuemix_ci:cuemix_ci_password@localhost:5432/cuemix_realtime_e2e
+      DATABASE_URL_LOCAL: postgresql+psycopg2://cuemix_ci:cuemix_ci_password@localhost:5432/cuemix_realtime_e2e
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-only-secret-with-at-least-thirty-two-characters
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: "lax"
+      BACKEND_PUBLIC_URL: ""
+      ROOT_PATH: ""
+      CORS_ORIGINS: http://127.0.0.1:4173
+      ENABLE_COLD_SEED: "false"
+      VIBE_LLM_PROVIDER: "none"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            Project/backend/requirements.txt
+            Project/backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        working-directory: Project/backend
+        run: python -m pip install --requirement requirements-dev.txt
+
+      - name: Apply database migrations
+        working-directory: Project/backend
+        run: python -m alembic upgrade head
+
+      # --workers 2: real production runs a single worker (see
+      # redis_client.py's own comment), but channel_hub.py never takes an
+      # in-process shortcut regardless of worker count ("Redis is the
+      # single source of truth for delivery, even within one process") --
+      # 2 workers is a strictly stronger, still-realistic test of that
+      # claim (genuine cross-process delivery via Redis pub/sub, not just
+      # same-process), closer to what a scaled-up deployment would run.
+      - name: Start the real backend
+        working-directory: Project/backend
+        run: |
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 5000 --workers 2 \
+            > "${RUNNER_TEMP}/backend.log" 2>&1 &
+          for _attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:5000/db-health >/dev/null 2>&1; then
+              echo "Backend is up."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Backend never became healthy -- log follows:" >&2
+          cat "${RUNNER_TEMP}/backend.log" >&2
+          exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: Project/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: Project/frontend
+        run: npm ci
+
+      # A separate build from frontend-checks' own (which deliberately
+      # builds against the default same-origin /api proxy, since its tests
+      # mock that boundary) -- PUBLIC_API_BASE_URL is a Vite build-time
+      # constant (import.meta.env), not a runtime setting, so pointing the
+      # real backend requires its own build, not just a different `preview`
+      # invocation.
+      - name: Build frontend against the real backend
+        working-directory: Project/frontend
+        env:
+          PUBLIC_API_BASE_URL: http://127.0.0.1:5000
+        run: npm run build
+
+      - name: Compute today's date for the apt cache key
+        id: apt-cache-date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "${GITHUB_OUTPUT}"
+
+      # Same fix, same reasoning, as frontend-checks' own identical step --
+      # `--with-deps` was observed hanging for real (see that job's own
+      # comment); split + day-cached so a hang there is both less likely
+      # and, regardless, bounded by this job's own timeout-minutes.
+      - name: Cache apt package lists and archives for Chromium's dependencies
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives/*.deb
+            /var/lib/apt/lists
+          key: apt-playwright-chromium-${{ runner.os }}-${{ steps.apt-cache-date.outputs.date }}
+
+      - name: Install the Chromium test browser
+        working-directory: Project/frontend
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo apt-get update
+          fi
+          npx playwright install-deps chromium
+          npx playwright install chromium
+
+      - name: Run real-time delivery E2E tests
+        working-directory: Project/frontend
+        env:
+          PLAYWRIGHT_BACKEND_URL: http://127.0.0.1:5000
+        run: npx playwright test e2e/realtime-integration.spec.js
+
+      - name: Show backend log on failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/backend.log" || true
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realtime-e2e-failures
+          path: Project/frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   container-builds:
     name: Container builds
     runs-on: ubuntu-latest
+    # Every job in this workflow gets an explicit timeout now (see
+    # frontend-checks' own comment for the real hang that exposed this gap
+    # across the board, not just there) -- a full Docker build of both
+    # images, even cold-cache, comfortably fits well inside this.
+    timeout-minutes: 20
     needs: [backend-tests, frontend-checks]
     steps:
       - name: Check out repository
@@ -236,6 +502,7 @@ jobs:
   publish-images:
     name: Publish immutable images
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [container-builds]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     permissions:
@@ -287,6 +554,10 @@ jobs:
   deploy-production:
     name: Deploy to Azure VM
     runs-on: ubuntu-latest
+    # Generous relative to the others: includes an Ollama model pull/warm-up
+    # over SSH on the VM (remote-deploy.sh's own bounded wait/retry loops),
+    # not just this runner's own work.
+    timeout-minutes: 25
     needs: [publish-images]
     # Separate from DEPLOY_ENABLED (which only gates publishing images to
     # GHCR): this VM belongs to the course, not the team, and the one-time
@@ -380,6 +651,7 @@ jobs:
   rollback-production:
     name: Roll back Azure VM to a prior SHA
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Manual only: redeploys images that were already published for
     # `rollback_sha` (no rebuild) -- see deploy/README.md's Operations
     # section for the drill this was verified with. Independent of
@@ -476,6 +748,9 @@ jobs:
   backup-restore-drill:
     name: Backup/restore drill against production
     runs-on: ubuntu-latest
+    # Generous: a real pg_dump/restore against production-scale data, not a
+    # cheap operation -- see this job's own step for real timing to tune.
+    timeout-minutes: 30
     # Manual only, and mutually exclusive with rollback (each is its own
     # deliberate dispatch, not something to combine into one run -- if both
     # inputs are somehow set at once, rollback_sha wins and this is
