@@ -48,6 +48,18 @@ from app.routers.realtime import router as realtime_router
 from app.services.audio_analysis import requeue_pending_analysis
 from app.services.channel_hub import channel_hub
 
+# No logging.basicConfig/dictConfig existed anywhere in this backend before
+# this line -- every logger.info(...) call in app/ (including this file's
+# own access_logger below) was silently swallowed: Python's root logger
+# defaults to WARNING with no handler attached, and uvicorn's own default
+# LOGGING_CONFIG only touches the uvicorn/uvicorn.access/uvicorn.error
+# loggers, never the root or any app.*/cuemix.* logger. Only .warning/
+# .error/.exception calls were ever actually visible (via logging's
+# lastResort fallback handler). LOG_LEVEL is env-overridable so INFO-level
+# per-stage latency logging (session_manager.py) can be dialed down in a
+# noisy environment without a code change.
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+
 # ---------------------------------------------------------
 # Create FastAPI app
 # ---------------------------------------------------------

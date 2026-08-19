@@ -9,6 +9,7 @@ against whichever CandidateRetriever originally served this session -- so it
 works the same whether that retriever is the local catalog or Audius.
 """
 
+import json
 import logging
 import os
 import time
@@ -123,6 +124,20 @@ AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SEC
 # clamp, no crossfade it would ever pick exceeds this, so the reservation
 # is non-binding unless tuned independently.
 RESERVED_TRANSITION_MS = int(os.getenv("RESERVED_TRANSITION_MS", str(MAX_CROSSFADE_MS)))
+
+# §8 observability (measurement only -- see _log_stage_latency/prepare_next's
+# own deadline-check log): the two real numbers prepare_next()'s own
+# duration is worth comparing against, mirrored from the frontend rather
+# than invented here. DJPlayerCard.svelte's maybePrepareNext() fires at
+# Math.max(10, segmentLengthSeconds * 0.1) seconds of remaining playback --
+# 10s is the worst-case (shortest) budget it would ever give this call
+# (a longer segment gets more; the backend has no visibility into the
+# frontend's actual playback position, so this is a conservative proxy,
+# not an exact one). sessionApi.js's own client-side abort timeout for
+# this call is the harder ceiling: past it, the frontend has already given
+# up regardless of whether the backend eventually finishes.
+_PREPARE_NEXT_MIN_FRONTEND_DEADLINE_MS = 10_000
+_PREPARE_NEXT_CLIENT_TIMEOUT_MS = 20_000
 
 COVER_URL = "/brand/cuemix-logo.svg"
 
@@ -278,6 +293,39 @@ def _reserved_ms_for(segment: SelectedSegment) -> int:
     return min(RESERVED_TRANSITION_MS, duration_ms // 2)
 
 
+def _log_stage_latency(
+    stage: str, session_id: str, started: float, pipeline_trace: dict | None
+) -> None:
+    """One structured INFO log line per create_session/apply_feedback/
+    advance_session call -- §8 observability, measurement only (no
+    alerting/dashboard here). Mirrors main.py's request_context
+    middleware's own perf_counter() + json.dumps(...) idiom, the one
+    existing "log how long X took" precedent in this codebase, rather
+    than inventing a new one or adding a metrics dependency.
+
+    `pipeline_trace` is whatever _resolve_and_render returned this call
+    (already carries a `_timing` sub-dict: retrieval_ms/
+    segment_selector_ms/transition_planner_ms/audio_renderer_ms/total_ms
+    for that one resolution -- see that function) -- None whenever this
+    call took a fast path (a bridge/reserved-tail promotion, a
+    still-valid prepared item, feedback that didn't mutate the intent)
+    and never actually called _resolve_and_render, in which case only
+    this call's own total_ms/resolved=False are logged; there's no
+    per-stage breakdown to report for work that didn't happen."""
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    entry = {
+        "event": "session_stage_latency",
+        "stage": stage,
+        "session_id": session_id,
+        "total_ms": duration_ms,
+        "resolved": pipeline_trace is not None,
+    }
+    if pipeline_trace is not None:
+        entry["resolution"] = pipeline_trace.get("_timing", {})
+    logger.info(json.dumps(entry))
+
+
 def _staged_pass_through(rendered: object) -> tuple[bool, str | None]:
     """Reads (is_pass_through, fallback_reason) off whichever staged-render
     shape `rendered` actually is -- StagedTrackRender (a plain body render)
@@ -389,7 +437,7 @@ def _try_render_ranked_candidates(
     deadline: float,
     resume_offset_ms: int = 0,
     bridge_from: StagedRender | None = None,
-) -> tuple[Track, SelectedSegment, object, object, list[dict]]:
+) -> tuple[Track, SelectedSegment, object, object, list[dict], dict]:
     """Filters `candidates` down to ones not already known-broken (recording
     the rest as skipped -- see known_broken_tracks.py), then tries what's
     left, in ranked order, until one renders for real, AUDIO_RENDER_RETRY_LIMIT
@@ -401,6 +449,13 @@ def _try_render_ranked_candidates(
     persisted via known_broken_tracks.mark_broken so a later resolution --
     this session's or another's -- can skip it outright. `candidates` must
     be non-empty.
+
+    Also returns stage_timings -- {"segment_selector_ms",
+    "transition_planner_ms", "audio_renderer_ms"} -- summed across every
+    attempt this call actually made (§8 observability): a retry that
+    renders 3 candidates before one finally succeeds pays for all 3
+    selector/planner/renderer calls, and that's real latency worth
+    counting in full, not just the winning attempt's own cost.
 
     `bridge_from`, when given, means each candidate is tried as the *next*
     track of a live crossfade bridge out of an already-rendered reserved
@@ -438,10 +493,14 @@ def _try_render_ranked_candidates(
         # each one's known-broken record either way.
         renderable_candidates = candidates
 
+    stage_timings = {"segment_selector_ms": 0.0, "transition_planner_ms": 0.0, "audio_renderer_ms": 0.0}
     attempts = renderable_candidates[:AUDIO_RENDER_RETRY_LIMIT]
     for index, candidate in enumerate(attempts):
         track = candidate
+        selector_started = time.perf_counter()
         segment = selector.select(db, track)
+        stage_timings["segment_selector_ms"] += (time.perf_counter() - selector_started) * 1000
+
         # bridge_from.duration_ms is the previous track's already-rendered
         # reserved tail length -- a hard physical ceiling on how much audio
         # render_bridge can actually blend, applied here (not just inside
@@ -450,10 +509,14 @@ def _try_render_ranked_candidates(
         # path passes no cap -- its `transition` here is purely descriptive
         # (render_track_transition never blends), matching today's behavior.
         max_crossfade_ms = bridge_from.duration_ms if bridge_from is not None else None
+        planner_started = time.perf_counter()
         transition = planner.plan(
             previous_segment, segment, prefers_smoother=prefers_smoother,
             max_crossfade_ms=max_crossfade_ms,
         )
+        stage_timings["transition_planner_ms"] += (time.perf_counter() - planner_started) * 1000
+
+        renderer_started = time.perf_counter()
         if bridge_from is None:
             rendered = renderer.render_track_transition(
                 segment, resume_offset_ms=resume_offset_ms, reserved_ms=_reserved_ms_for(segment),
@@ -463,6 +526,8 @@ def _try_render_ranked_candidates(
                 bridge_from, segment, crossfade_ms=transition.crossfade_ms,
                 reserved_ms=_reserved_ms_for(segment),
             )
+        stage_timings["audio_renderer_ms"] += (time.perf_counter() - renderer_started) * 1000
+
         is_pass_through, fallback_reason = _staged_pass_through(rendered)
         if fallback_reason:
             # The failure itself is what's informative here, not which
@@ -487,7 +552,8 @@ def _try_render_ranked_candidates(
             "title": track.title,
             "fallback_reason": fallback_reason,
         })
-    return track, segment, transition, rendered, skipped_tracks
+    stage_timings = {key: round(value, 2) for key, value in stage_timings.items()}
+    return track, segment, transition, rendered, skipped_tracks, stage_timings
 
 
 def _resolve_and_render(
@@ -578,8 +644,17 @@ def _resolve_and_render(
     attempt. No further rescue is attempted when the resolution already
     landed on the retrieval fallback chain's last-resort tier (there's
     nothing left to try).
+
+    §8 observability (measurement only): pipeline_trace["_timing"] records
+    how long each stage of *this* resolution actually took --
+    retrieval_ms (the cache check, and any real retrieval it triggered),
+    segment_selector_ms/transition_planner_ms/audio_renderer_ms (summed
+    across every candidate attempt, primary plus any rescue -- see
+    _try_render_ranked_candidates), and total_ms for the whole call.
     """
 
+    resolve_started = time.perf_counter()
+    retrieval_started = time.perf_counter()
     fingerprint = session_candidate_pool.fingerprint_for(intent)
     cached_candidates = session_candidate_pool.get(session_id, fingerprint)
     candidate_pool_reused = False
@@ -613,6 +688,7 @@ def _resolve_and_render(
     fresh_candidates = [
         candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys
     ] or candidates
+    retrieval_ms = round((time.perf_counter() - retrieval_started) * 1000, 2)
 
     # Try candidates in ranked order until one actually renders, rather than
     # settling for the first candidate's pass-through if its audio couldn't
@@ -625,7 +701,7 @@ def _resolve_and_render(
     # (see AUDIO_RENDER_TIME_BUDGET_SECONDS) -- one shared budget for the
     # whole resolution's render attempts, not one per phase.
     render_deadline = time.monotonic() + AUDIO_RENDER_TIME_BUDGET_SECONDS
-    track, segment, transition, rendered, skipped_tracks = _try_render_ranked_candidates(
+    track, segment, transition, rendered, skipped_tracks, stage_timings = _try_render_ranked_candidates(
         db, fresh_candidates, selector, planner, renderer,
         previous_segment=previous_segment, prefers_smoother=prefers_smoother,
         deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
@@ -662,6 +738,7 @@ def _resolve_and_render(
         and rendered_is_pass_through
         and time.monotonic() < render_deadline
     ):
+        rescue_retrieval_started = time.perf_counter()
         try:
             rescue_candidates = retrieve_candidates(
                 db, intent, rescue_source, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
@@ -669,17 +746,21 @@ def _resolve_and_render(
             )
         except NoMatchingCandidate:
             rescue_candidates = []
+        retrieval_ms += round((time.perf_counter() - rescue_retrieval_started) * 1000, 2)
         fresh_rescue_candidates = [
             candidate for candidate in rescue_candidates if _track_key(candidate) not in exclude_track_keys
         ]
         if fresh_rescue_candidates:
             (
                 rescue_track, rescue_segment, rescue_transition, rescue_rendered, rescue_skipped,
+                rescue_stage_timings,
             ) = _try_render_ranked_candidates(
                 db, fresh_rescue_candidates, selector, planner, renderer,
                 previous_segment=previous_segment, prefers_smoother=prefers_smoother,
                 deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
             )
+            for key, value in rescue_stage_timings.items():
+                stage_timings[key] = round(stage_timings[key] + value, 2)
             rescue_is_pass_through, _rescue_fallback_reason = _staged_pass_through(rescue_rendered)
             if not rescue_is_pass_through:
                 skipped_tracks.append({
@@ -829,6 +910,13 @@ def _resolve_and_render(
             # AUDIO_RENDER_RETRY_LIMIT.
             "skipped_tracks": skipped_tracks,
         },
+        # §8 observability, measurement only -- see this function's own
+        # docstring for what each field covers.
+        "_timing": {
+            "retrieval_ms": retrieval_ms,
+            **stage_timings,
+            "total_ms": round((time.perf_counter() - resolve_started) * 1000, 2),
+        },
         "resolved_at": utc_now().isoformat(),
     }
     return track, segment, now_playing, reasoning, pipeline_trace, served_by
@@ -898,6 +986,7 @@ def create_session(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> SessionRead:
+    started = time.perf_counter()
     intent, raw_intent = _initial_intent(prompt, db, user_id, vibe)
     # Generated up front (not left to the DJSession constructor below) so
     # _resolve_and_render can key session_candidate_pool by this session's
@@ -942,6 +1031,7 @@ def create_session(
     db.commit()
     db.refresh(session)
     notify_pipeline_debug_change()
+    _log_stage_latency("create_session", session_id, started, pipeline_trace)
     return serialize_session(session)
 
 
@@ -960,6 +1050,8 @@ def apply_feedback(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
 ) -> SessionRead:
+    started = time.perf_counter()
+    resolved_pipeline_trace: dict | None = None
     current_intent = PromptIntent.model_validate(session.intent_json)
     normalized = _normalize_feedback(feedback)
     session.selected_feedback = feedback
@@ -1031,6 +1123,7 @@ def apply_feedback(
                 track_key=_track_key(track), artist=track.artist,
             )
             resolved_again = True
+            resolved_pipeline_trace = pipeline_trace
         except NoMatchingCandidate:
             # Nothing matched the mutated intent closely enough; keep the
             # session on its current track rather than erroring out a live
@@ -1066,6 +1159,7 @@ def apply_feedback(
     db.refresh(session)
     if resolved_again:
         notify_pipeline_debug_change()
+    _log_stage_latency("apply_feedback", session.id, started, resolved_pipeline_trace)
     return serialize_session(session)
 
 
@@ -1135,6 +1229,7 @@ def advance_session(
       through to a genuinely fresh resolution, exactly like this function's
       only behavior before live crossfades existed."""
 
+    started = time.perf_counter()
     intent = PromptIntent.model_validate(session.intent_json)
     now_playing = session.now_playing_json
     stage = now_playing.get("stage")
@@ -1159,6 +1254,7 @@ def advance_session(
         db.commit()
         db.refresh(session)
         notify_pipeline_debug_change()
+        _log_stage_latency("advance_session", session.id, started, None)
         return serialize_session(session)
 
     if stage == "body":
@@ -1187,6 +1283,7 @@ def advance_session(
             db.commit()
             db.refresh(session)
             notify_pipeline_debug_change()
+            _log_stage_latency("advance_session", session.id, started, None)
             return serialize_session(session)
 
         reserved_ms = now_playing.get("reserved_ms", 0)
@@ -1211,6 +1308,7 @@ def advance_session(
             db.commit()
             db.refresh(session)
             notify_pipeline_debug_change()
+            _log_stage_latency("advance_session", session.id, started, None)
             return serialize_session(session)
         # reserved_ms == 0 (nothing was reserved for this segment -- see
         # _reserved_ms_for) -- falls through to a fresh resolution below,
@@ -1232,6 +1330,7 @@ def advance_session(
     except NoMatchingCandidate:
         # Nothing to advance to (e.g. Audius briefly unreachable); leave the
         # session on its current track rather than ending it outright.
+        _log_stage_latency("advance_session", session.id, started, None)
         return serialize_session(session)
     except Exception:
         # Same "never a hard stop" guarantee for anything genuinely
@@ -1240,6 +1339,7 @@ def advance_session(
         # the underlying bug stays visible; the session just keeps playing
         # its current track instead of surfacing a 500 that ends playback.
         logger.exception("advance_session: unexpected error resolving session %s", session.id)
+        _log_stage_latency("advance_session", session.id, started, None)
         return serialize_session(session)
 
     pipeline_trace["vibe_understander"] = {
@@ -1261,6 +1361,7 @@ def advance_session(
     db.commit()
     db.refresh(session)
     notify_pipeline_debug_change()
+    _log_stage_latency("advance_session", session.id, started, pipeline_trace)
     return serialize_session(session)
 
 
@@ -1311,110 +1412,140 @@ def prepare_next(
     bridge, the next track's own body, and its own new reserved tail) is
     deleted too (_delete_rendered_file) rather than left as a permanent
     orphan on disk. This is a normal, expected outcome of the race, not an
-    error."""
+    error.
 
-    if session.status != "playing":
-        return
+    §8 observability (measurement only): logs exactly once per call,
+    regardless of which return point above actually fires, via the outer
+    try/finally below -- see _PREPARE_NEXT_MIN_FRONTEND_DEADLINE_MS/
+    _PREPARE_NEXT_CLIENT_TIMEOUT_MS's own comment for what this call's
+    duration is compared against, and why those two numbers (not an exact
+    deadline) are the honest comparison a backend-only measurement can
+    make."""
 
-    lock = _prepare_lock_for(session.id)
-    if not lock.acquire(blocking=False):
-        # Another prepare_next() call for this session is already doing the
-        # real work; its result (or lack of one) is what matters, not a
-        # second redundant attempt.
-        return
+    started = time.perf_counter()
+    resolved_pipeline_trace: dict | None = None
     try:
-        if session.now_playing_json.get("stage") != "body":
-            # A bridge or a reserved tail is already staged or playing --
-            # advance_session already knows what comes next without this.
+        if session.status != "playing":
             return
 
-        intent = PromptIntent.model_validate(session.intent_json)
-        fingerprint = session_candidate_pool.fingerprint_for(intent)
-        if _prepared_is_valid(session.prepared_next_json, fingerprint):
+        lock = _prepare_lock_for(session.id)
+        if not lock.acquire(blocking=False):
+            # Another prepare_next() call for this session is already doing
+            # the real work; its result (or lack of one) is what matters,
+            # not a second redundant attempt.
             return
-
-        origin_now_playing = session.now_playing_json
-        origin_tail_audio_url = origin_now_playing.get("tail_audio_url")
-        origin_reserved_ms = origin_now_playing.get("reserved_ms", 0)
-        if not origin_tail_audio_url or origin_reserved_ms <= 0:
-            # Nothing was reserved for the current segment (a very short
-            # one -- see _reserved_ms_for) -- advance_session falls
-            # straight through to a fresh resolution once it ends; there's
-            # nothing to bridge from ahead of time.
-            return
-        bridge_from = StagedRender(audio_url=origin_tail_audio_url, duration_ms=origin_reserved_ms)
-
-        previous_segment = SelectedSegment.model_validate(origin_now_playing["segment"])
-        exclude = frozenset(session.played_track_keys_json or [])
-        recent_artists = frozenset(session.played_artists_json or [])
         try:
-            track, _, now_playing, reasoning, pipeline_trace, _served_by = _resolve_and_render(
-                db, intent, retriever, fallback_retriever, selector, planner, renderer,
-                session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
-                exclude_track_keys=exclude, recent_artists=recent_artists,
-                viewer_id=session.user_id, bridge_from=bridge_from,
+            if session.now_playing_json.get("stage") != "body":
+                # A bridge or a reserved tail is already staged or playing --
+                # advance_session already knows what comes next without this.
+                return
+
+            intent = PromptIntent.model_validate(session.intent_json)
+            fingerprint = session_candidate_pool.fingerprint_for(intent)
+            if _prepared_is_valid(session.prepared_next_json, fingerprint):
+                return
+
+            origin_now_playing = session.now_playing_json
+            origin_tail_audio_url = origin_now_playing.get("tail_audio_url")
+            origin_reserved_ms = origin_now_playing.get("reserved_ms", 0)
+            if not origin_tail_audio_url or origin_reserved_ms <= 0:
+                # Nothing was reserved for the current segment (a very short
+                # one -- see _reserved_ms_for) -- advance_session falls
+                # straight through to a fresh resolution once it ends; there's
+                # nothing to bridge from ahead of time.
+                return
+            bridge_from = StagedRender(
+                audio_url=origin_tail_audio_url, duration_ms=origin_reserved_ms
             )
-        except NoMatchingCandidate:
-            # Nothing to bridge into ahead of time; advance_session falls
-            # back to its own real resolution (the reserved tail playing
-            # out plain, then a fresh one) when it's actually needed, same
-            # as it always has.
-            return
-        except Exception:
-            # This is already a best-effort prefetch (see this function's
-            # docstring); an unanticipated error here must be even less
-            # visible than a NoMatchingCandidate, not more -- log it and
-            # let advance_session() do its own (now equally resilient)
-            # real resolution when it's actually needed.
-            logger.exception("prepare_next: unexpected error resolving session %s", session.id)
-            return
 
-        # Re-fetch and re-validate right before writing: stop_session(),
-        # apply_feedback(), or advance_session() itself may have committed
-        # while the retrieval/render work above was in flight. db.refresh()
-        # picks up whatever is actually committed now, not whatever this
-        # function saw when it started -- a plain re-check of the in-memory
-        # `session` object wouldn't catch a change made through a different
-        # Session/request.
-        db.refresh(session)
-        current_intent = PromptIntent.model_validate(session.intent_json)
-        current_fingerprint = session_candidate_pool.fingerprint_for(current_intent)
-        current_now_playing = session.now_playing_json
-        if (
-            session.status != "playing"
-            or current_fingerprint != fingerprint
-            or current_now_playing.get("stage") != "body"
-            or current_now_playing.get("tail_audio_url") != origin_tail_audio_url
-        ):
-            # The DB record is correctly never written on this path, but
-            # the audio files _resolve_and_render already rendered to disk
-            # above are now unused and would otherwise sit there as
-            # permanent orphans (see _delete_rendered_file) until the next
-            # _export() call's TTL sweep happens to catch them.
-            for stale_url in (
-                now_playing.get("audio_url"),
-                now_playing.get("next_body_audio_url"),
-                now_playing.get("tail_audio_url"),
+            previous_segment = SelectedSegment.model_validate(origin_now_playing["segment"])
+            exclude = frozenset(session.played_track_keys_json or [])
+            recent_artists = frozenset(session.played_artists_json or [])
+            try:
+                track, _, now_playing, reasoning, pipeline_trace, _served_by = _resolve_and_render(
+                    db, intent, retriever, fallback_retriever, selector, planner, renderer,
+                    session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
+                    exclude_track_keys=exclude, recent_artists=recent_artists,
+                    viewer_id=session.user_id, bridge_from=bridge_from,
+                )
+            except NoMatchingCandidate:
+                # Nothing to bridge into ahead of time; advance_session falls
+                # back to its own real resolution (the reserved tail playing
+                # out plain, then a fresh one) when it's actually needed, same
+                # as it always has.
+                return
+            except Exception:
+                # This is already a best-effort prefetch (see this function's
+                # docstring); an unanticipated error here must be even less
+                # visible than a NoMatchingCandidate, not more -- log it and
+                # let advance_session() do its own (now equally resilient)
+                # real resolution when it's actually needed.
+                logger.exception("prepare_next: unexpected error resolving session %s", session.id)
+                return
+
+            resolved_pipeline_trace = pipeline_trace
+
+            # Re-fetch and re-validate right before writing: stop_session(),
+            # apply_feedback(), or advance_session() itself may have committed
+            # while the retrieval/render work above was in flight. db.refresh()
+            # picks up whatever is actually committed now, not whatever this
+            # function saw when it started -- a plain re-check of the in-memory
+            # `session` object wouldn't catch a change made through a different
+            # Session/request.
+            db.refresh(session)
+            current_intent = PromptIntent.model_validate(session.intent_json)
+            current_fingerprint = session_candidate_pool.fingerprint_for(current_intent)
+            current_now_playing = session.now_playing_json
+            if (
+                session.status != "playing"
+                or current_fingerprint != fingerprint
+                or current_now_playing.get("stage") != "body"
+                or current_now_playing.get("tail_audio_url") != origin_tail_audio_url
             ):
-                if stale_url:
-                    _delete_rendered_file(stale_url)
-            return
+                # The DB record is correctly never written on this path, but
+                # the audio files _resolve_and_render already rendered to disk
+                # above are now unused and would otherwise sit there as
+                # permanent orphans (see _delete_rendered_file) until the next
+                # _export() call's TTL sweep happens to catch them.
+                for stale_url in (
+                    now_playing.get("audio_url"),
+                    now_playing.get("next_body_audio_url"),
+                    now_playing.get("tail_audio_url"),
+                ):
+                    if stale_url:
+                        _delete_rendered_file(stale_url)
+                return
 
-        session.prepared_next_json = {
-            "track_key": _track_key(track),
-            "artist": track.artist,
-            "now_playing": now_playing,
-            "reasoning": reasoning,
-            # vibe_understander is deliberately absent here -- advance_session
-            # fills it in at consume time, exactly like every other caller of
-            # _resolve_and_render already does with its own pipeline_trace.
-            "pipeline_trace": pipeline_trace,
-            "fingerprint": _fingerprint_as_json(fingerprint),
-            "prepared_at": time.monotonic(),
-        }
-        db.commit()
+            session.prepared_next_json = {
+                "track_key": _track_key(track),
+                "artist": track.artist,
+                "now_playing": now_playing,
+                "reasoning": reasoning,
+                # vibe_understander is deliberately absent here -- advance_session
+                # fills it in at consume time, exactly like every other caller of
+                # _resolve_and_render already does with its own pipeline_trace.
+                "pipeline_trace": pipeline_trace,
+                "fingerprint": _fingerprint_as_json(fingerprint),
+                "prepared_at": time.monotonic(),
+            }
+            db.commit()
+        finally:
+            lock.release()
     finally:
-        lock.release()
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        entry = {
+            "event": "prepare_next_latency",
+            "session_id": session.id,
+            "total_ms": duration_ms,
+            "resolved": resolved_pipeline_trace is not None,
+        }
+        if resolved_pipeline_trace is not None:
+            entry["resolution"] = resolved_pipeline_trace.get("_timing", {})
+            # Conservative proxies, not exact deadlines -- see this
+            # function's own docstring and the two constants' comments.
+            entry["beat_min_frontend_deadline"] = duration_ms <= _PREPARE_NEXT_MIN_FRONTEND_DEADLINE_MS
+            entry["beat_client_timeout"] = duration_ms <= _PREPARE_NEXT_CLIENT_TIMEOUT_MS
+        logger.info(json.dumps(entry))
 
 
 def stop_session(db: Session, session: DJSession) -> dict:
