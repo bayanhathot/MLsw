@@ -67,6 +67,16 @@ async def read_limited_stream(chunks: AsyncIterable[bytes], maximum_bytes: int) 
 # poll directly; an associated upload job_id (see submit_analysis) is what
 # lets _run_analysis mark that job "completed" once analysis finishes.
 _ANALYZE_PREFIX = "analyze:"
+# Same idea, for external_tracks (Prompt 3's persistent Audius analysis
+# cache) -- a first-time Audius encounter has no upload job of its own to
+# associate with (nothing was ever uploaded), so this prefix carries just
+# the external_track_id, nothing else. Shares this same bounded worker
+# pool/queue rather than a second one specifically so external-track
+# analysis dispatch is automatically capped at this process's existing
+# `workers` concurrency -- Audius documents no explicit rate limit this
+# codebase is aware of, so that shared bound is the only concurrency cap
+# in effect (see pipeline/external_track_cache.py's own module docstring).
+_ANALYZE_EXTERNAL_PREFIX = "analyze_external:"
 
 # Compressed formats (mp3/ogg) vs. lossless (wav/flac) genuinely need
 # different ceilings for the same clip length -- a 3-minute uncompressed WAV
@@ -608,6 +618,20 @@ class UploadQueue:
             )
         )
 
+    def submit_external_analysis(self, external_track_id: int, priority: int = 5) -> None:
+        """Queue a first-time (or retry) Audius analysis task on the same
+        worker pool as everything else in this module -- see
+        _ANALYZE_EXTERNAL_PREFIX's own comment. Fire-and-forget: the caller
+        (pipeline/external_track_cache.py) already holds the
+        external_track_id it just created/is retrying and can read that
+        row's analysis_status directly for the result; there is no
+        associated upload job to notify the way submit_analysis's
+        upload_job_id can."""
+
+        self._queue.put_nowait(
+            (-priority, next(self._sequence), f"{_ANALYZE_EXTERNAL_PREFIX}{external_track_id}")
+        )
+
     def submit_many(self, items: list[tuple[int, str, str, bytes, int]]) -> list[dict]:
         """Atomically accept a batch or enqueue none of it."""
 
@@ -769,6 +793,12 @@ class UploadQueue:
     def _worker(self) -> None:
         while True:
             _, _, job_id = self._queue.get()
+            if job_id.startswith(_ANALYZE_EXTERNAL_PREFIX):
+                external_track_id_text = job_id[len(_ANALYZE_EXTERNAL_PREFIX):]
+                self._run_external_analysis(external_track_id_text)
+                self._queue.task_done()
+                continue
+
             if job_id.startswith(_ANALYZE_PREFIX):
                 payload = job_id[len(_ANALYZE_PREFIX):]
                 track_id_text, _, upload_job_id = payload.partition("::")
@@ -848,6 +878,20 @@ class UploadQueue:
             else:
                 self._set_status(job_id, "completed", completed=True)
             self._queue.task_done()
+
+    def _run_external_analysis(self, external_track_id_text: str) -> None:
+        try:
+            external_track_id = int(external_track_id_text)
+            # Imported lazily, same reasoning as _run_analysis's own
+            # librosa-adjacent import below: keep this module's own import
+            # cheap for callers that never trigger an analysis job.
+            from app.services.audio_analysis import analyze_external_track
+
+            analyze_external_track(external_track_id)
+        except Exception:
+            logger.exception(
+                "External track analysis job failed for id=%s", external_track_id_text
+            )
 
     def _run_analysis(self, catalog_track_id_text: str, upload_job_id: str | None) -> None:
         catalog_track_id: int | None = None

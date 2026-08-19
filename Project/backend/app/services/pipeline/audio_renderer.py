@@ -13,6 +13,7 @@ instead of fabricating a crossfade that never happened.
 """
 
 import concurrent.futures
+import hashlib
 import logging
 import os
 import time
@@ -188,10 +189,17 @@ def _apply_loudness_gain(clip: AudioSegment, segment: SelectedSegment) -> AudioS
     return clip.apply_gain(gain_db)
 
 
-def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None]:
-    """Returns (clip, None) on success, or (None, reason) on failure -- see
-    _download's docstring for why the reason is threaded through rather than
-    just logged.
+def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None, str | None]:
+    """Returns (clip, None, audio_sha256) on success, or (None, reason,
+    None) on failure -- see _download's docstring for why the reason is
+    threaded through rather than just logged.
+
+    audio_sha256 is the SHA-256 of the complete remote bytes fetched for a
+    non-local_path (Audius) track -- always None for a local_path load (no
+    remote fetch happened, nothing to verify) or on failure. Computed here,
+    not by a caller re-reading the bytes, so pipeline.external_track_cache.
+    verify_fingerprint (Prompt 4) never needs a second fetch purely to hash
+    what this function already downloaded.
 
     The decode step (an ffmpeg subprocess for anything but a real .wav
     file) is bounded to LOCAL_AUDIO_OP_TIMEOUT_SECONDS for the same reason
@@ -199,6 +207,7 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
     ffmpeg process previously had no timeout at all."""
 
     track = segment.track
+    audio_sha256: str | None = None
     try:
         if track.local_path:
             # A real filename lets pydub sniff .wav and use its pure-Python
@@ -210,7 +219,8 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
         else:
             data, reason = _download(track.audio_url)
             if data is None:
-                return None, reason
+                return None, reason, None
+            audio_sha256 = hashlib.sha256(data).hexdigest()
             # A BytesIO buffer has no filename to sniff from, so pydub would
             # always shell out to ffmpeg here even for plain WAV bytes;
             # checking the signature directly avoids that for the one format
@@ -231,16 +241,16 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
             "AudioRenderer: decode exceeded %.1fs for %s",
             LOCAL_AUDIO_OP_TIMEOUT_SECONDS, track.source_track_id,
         )
-        return None, "decode_timed_out"
+        return None, "decode_timed_out", None
     except (CouldntDecodeError, OSError, IndexError) as exc:
         logger.warning("AudioRenderer could not decode %s: %s", track.source_track_id, exc)
-        return None, f"decode_failed_{type(exc).__name__}"
+        return None, f"decode_failed_{type(exc).__name__}", None
 
     start_ms = max(0, segment.start_second * 1000)
     end_ms = segment.end_second * 1000
     clip = audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
     clip = _apply_loudness_gain(clip, segment)
-    return clip, None
+    return clip, None, audio_sha256
 
 
 def _local_render_path(audio_url: str) -> Path | None:
@@ -371,7 +381,7 @@ class PydubAudioRenderer(AudioRenderer):
         return self._render_composite(segments, transitions)
 
     def _render_single(self, segment: SelectedSegment) -> RenderedAudio:
-        clip, reason = _load_clip(segment)
+        clip, reason, _audio_sha256 = _load_clip(segment)
         if clip is None:
             duration = max(0, segment.end_second - segment.start_second)
             return RenderedAudio(
@@ -385,11 +395,23 @@ class PydubAudioRenderer(AudioRenderer):
     def _render_composite(
         self, segments: list[SelectedSegment], transitions: list[TransitionPlan]
     ) -> RenderedAudio:
+        # render() (this composite path, and _render_single above) is the
+        # mix-rendering path (mix_service.py) -- an offline, whole-mix
+        # render, not the live session playback path Prompt 4's fingerprint
+        # verification targets (session_manager._try_render_ranked_candidates,
+        # via render_track_transition/render_bridge below). A composite's
+        # per-segment audio_sha256 values are deliberately discarded here:
+        # a Mix's single RenderedAudio result doesn't cleanly attribute one
+        # hash to one input the way StagedRender does, and mixes render
+        # once at save time rather than continuously the way a live session
+        # does -- explicit scope boundary, not an oversight (see this
+        # module's own render_track_transition/render_bridge for where the
+        # hash actually gets used).
         loaded = [_load_clip(segment) for segment in segments]
-        clips = [clip for clip, _reason in loaded]
+        clips = [clip for clip, _reason, _sha256 in loaded]
         if all(clip is None for clip in clips):
             offsets = [(0, max(0, segment.end_second - segment.start_second)) for segment in segments]
-            first_reason = next((reason for _clip, reason in loaded if reason), None)
+            first_reason = next((reason for _clip, reason, _sha256 in loaded if reason), None)
             return RenderedAudio(
                 audio_url=segments[0].track.audio_url, offsets=offsets,
                 is_pass_through=True, fallback_reason=first_reason,
@@ -423,7 +445,7 @@ class PydubAudioRenderer(AudioRenderer):
     def render_track_transition(
         self, segment: SelectedSegment, *, resume_offset_ms: int, reserved_ms: int
     ) -> StagedTrackRender:
-        clip, reason = _load_clip(segment)
+        clip, reason, audio_sha256 = _load_clip(segment)
         if clip is None:
             duration_ms = max(
                 0, (segment.end_second - segment.start_second) * 1000 - resume_offset_ms
@@ -438,7 +460,9 @@ class PydubAudioRenderer(AudioRenderer):
         body_clip, tail_clip = _slice_body_and_tail(
             clip, resume_offset_ms=resume_offset_ms, reserved_ms=reserved_ms
         )
-        body = StagedRender(audio_url=_export(body_clip), duration_ms=len(body_clip))
+        body = StagedRender(
+            audio_url=_export(body_clip), duration_ms=len(body_clip), audio_sha256=audio_sha256
+        )
         reserved_tail = None
         if reserved_ms > 0:
             reserved_tail = StagedRender(audio_url=_export(tail_clip), duration_ms=len(tail_clip))
@@ -453,7 +477,7 @@ class PydubAudioRenderer(AudioRenderer):
         reserved_ms: int,
     ) -> BridgeRender:
         tail_clip = _local_clip(tail.audio_url)
-        next_clip, reason = _load_clip(next_segment)
+        next_clip, reason, next_audio_sha256 = _load_clip(next_segment)
         if tail_clip is None or next_clip is None:
             failure = StagedRender(
                 audio_url=next_segment.track.audio_url,
@@ -489,7 +513,8 @@ class PydubAudioRenderer(AudioRenderer):
             next_clip, resume_offset_ms=crossfade_ms, reserved_ms=reserved_ms
         )
         next_body = StagedRender(
-            audio_url=_export(next_body_clip), duration_ms=len(next_body_clip)
+            audio_url=_export(next_body_clip), duration_ms=len(next_body_clip),
+            audio_sha256=next_audio_sha256,
         )
         next_reserved_tail = None
         if reserved_ms > 0:

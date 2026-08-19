@@ -268,6 +268,45 @@ def test_create_session_skips_a_candidate_whose_audio_cannot_be_rendered(client,
     assert audio_trace["skipped_tracks"][0]["fallback_reason"] == "download_failed_http_403"
 
 
+def test_create_session_enriches_and_dispatches_analysis_for_a_new_audius_candidate(
+    client, monkeypatch, db_session
+):
+    # Prompt 3 step 4's own requirement: verify this actually runs from a
+    # real fresh-resolution call, not just from a direct unit test of
+    # enrich_and_dispatch. create_session/apply_feedback/advance_session/
+    # prepare_next all funnel through _resolve_and_render's one shared
+    # call site (verified by reading the code, not assumed) -- this test
+    # exercises that through the real HTTP path.
+    from app.database.models.external_track import ExternalTrack
+    from app.services.pipeline import external_track_cache
+
+    monkeypatch.setattr(external_track_cache, "AUDIUS_ANALYSIS_CACHE_ENABLED", True)
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [
+            {
+                "title": "Never Seen Before", "artist": "Someone New",
+                "audio_url": "https://audio.example/unseen-1", "source_track_id": "unseen-1",
+                "duration": 100, "source": "audius",
+            },
+        ],
+    )
+    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None))
+    dispatched = []
+    monkeypatch.setattr(
+        "app.services.upload_queue.upload_queue.submit_external_analysis",
+        lambda track_id: dispatched.append(track_id),
+    )
+
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    assert session["nowPlaying"]["title"] == "Never Seen Before"
+
+    row = db_session.query(ExternalTrack).filter_by(source="audius", external_id="unseen-1").first()
+    assert row is not None
+    assert row.analysis_status == "pending"
+    assert dispatched == [row.id]
+
+
 def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_candidate_fails(
     client, monkeypatch, db_session
 ):

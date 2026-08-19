@@ -36,7 +36,7 @@ from app.services import (
     session_candidate_pool,
     upload_queue,
 )
-from app.services.pipeline import audio_renderer
+from app.services.pipeline import audio_renderer, external_track_cache
 from app.services.pipeline.catalog_retriever import LAST_RESORT_CATALOG_RETRIEVER
 from app.services.pipeline.dependencies import get_vibe_understander
 from app.services.pipeline.interfaces import (
@@ -602,6 +602,18 @@ def _try_render_ranked_candidates(
             "fallback_reason": fallback_reason,
         })
     stage_timings = {key: round(value, 2) for key, value in stage_timings.items()}
+
+    # Prompt 4: verify the winning attempt's fetched audio against its
+    # cached external_tracks fingerprint, if any -- only ever using bytes
+    # this same render already fetched (see StagedRender.audio_sha256's own
+    # docstring), never a second network request. A no-op whenever `track`
+    # was never cached (external_track_id unset) or nothing was actually
+    # fetched (audio_sha256 unset -- a local_path load, or a pass-through).
+    fetched_audio_sha256 = (
+        rendered.body.audio_sha256 if bridge_from is None else rendered.next_body.audio_sha256
+    )
+    external_track_cache.verify_fingerprint(db, track, fetched_audio_sha256)
+
     return track, segment, transition, rendered, skipped_tracks, stage_timings
 
 
@@ -734,6 +746,17 @@ def _resolve_and_render(
             viewer_id=viewer_id,
         )
         session_candidate_pool.put(session_id, fingerprint, candidates)
+    # Prompt 3: batched external_tracks cache lookup/dispatch for every
+    # Audius candidate in `candidates` -- run on both the cache-hit and the
+    # fresh-retrieval branch (idempotent either way: an already-enriched
+    # Track just gets its external_track_id re-confirmed and last_seen_at
+    # refreshed) so a cache-pool-reused resolution doesn't quietly skip
+    # enrichment. Included inside this call's own retrieval_ms window (see
+    # this function's own §8 observability docstring) so Prompt 6's
+    # measurement honestly reflects this cost, not an artificially
+    # excluded one. A first-line no-op when AUDIUS_ANALYSIS_CACHE_ENABLED
+    # is False (see external_track_cache.py's own module docstring).
+    external_track_cache.enrich_and_dispatch(db, candidates)
     fresh_candidates = [
         candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys
     ] or candidates

@@ -569,6 +569,16 @@ class Track(BaseModel):
     vibe_label: str | None = None
     tags: str | None = None
     catalog_track_id: int | None = None
+    # Mirrors catalog_track_id's own role, one level removed: set by
+    # pipeline.external_track_cache.enrich_and_dispatch when this Audius
+    # candidate has a known external_tracks row (any analysis_status --
+    # SegmentSelector itself decides whether to trust it, the same way it
+    # already gates on CatalogTrack.analysis_status). None for a catalog
+    # track, or an Audius track never yet seen/cached. The two are mutually
+    # exclusive in practice (a Track is never both a catalog upload and an
+    # Audius candidate), but nothing enforces that at the type level, same
+    # as catalog_track_id/local_path's own relationship.
+    external_track_id: int | None = None
     local_path: str | None = None
 
 
@@ -642,6 +652,14 @@ class StagedRender(BaseModel):
     duration_ms: int = Field(ge=0)
     is_pass_through: bool = False
     fallback_reason: str | None = None
+    # SHA-256 of the complete remote bytes _load_clip fetched to build this
+    # clip -- set only when a real remote download happened (never for a
+    # local_path load, and never on failure). Lets
+    # pipeline.external_track_cache.verify_fingerprint (Prompt 4) compare
+    # against a cached external_tracks row's stored audio_sha256 using
+    # bytes already fetched for playback, with no second network request
+    # purely for hashing.
+    audio_sha256: str | None = None
 
 
 class StagedTrackRender(BaseModel):

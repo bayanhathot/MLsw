@@ -1485,8 +1485,8 @@ def test_load_clip_normalizes_differently_loud_segments_toward_the_same_measured
         }
     )
 
-    quiet_clip, quiet_reason = audio_renderer._load_clip(quiet_segment)
-    loud_clip, loud_reason = audio_renderer._load_clip(loud_segment)
+    quiet_clip, quiet_reason, _quiet_sha256 = audio_renderer._load_clip(quiet_segment)
+    loud_clip, loud_reason, _loud_sha256 = audio_renderer._load_clip(loud_segment)
     assert quiet_reason is None
     assert loud_reason is None
 
@@ -1562,7 +1562,7 @@ def test_load_clip_decode_is_bounded_even_when_ffmpeg_hangs(monkeypatch):
 
     monkeypatch.setattr(audio_renderer.AudioSegment, "from_file", staticmethod(hanging_from_file))
     started = time.perf_counter()
-    clip, reason = audio_renderer._load_clip(_local_file_segment_long())
+    clip, reason, _sha256 = audio_renderer._load_clip(_local_file_segment_long())
     elapsed = time.perf_counter() - started
     assert clip is None
     assert reason == "decode_timed_out"
