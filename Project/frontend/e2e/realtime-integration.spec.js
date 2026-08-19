@@ -34,7 +34,7 @@
  */
 
 const BACKEND_URL = (process.env.PLAYWRIGHT_BACKEND_URL || '').replace(/\/+$/, '');
-test.skip(!BACKEND_URL, 'PLAYWRIGHT_BACKEND_URL not set -- see this file\'s own module docstring.');
+test.skip(!BACKEND_URL, "PLAYWRIGHT_BACKEND_URL not set -- see this file's own module docstring.");
 
 const DELIVERY_TIMEOUT_MS = 8_000;
 const RUN_ID = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -66,9 +66,10 @@ async function becomeFriends(fromRequest, toRequest, fromUsername, toUsername) {
 	expect(sent.ok(), `send friend request: ${sent.status()} ${await sent.text()}`).toBe(true);
 	const { id: requestId } = await sent.json();
 	const accepted = await toRequest.post(`${BACKEND_URL}/friends/requests/${requestId}/accept`);
-	expect(accepted.ok(), `accept friend request: ${accepted.status()} ${await accepted.text()}`).toBe(
-		true
-	);
+	expect(
+		accepted.ok(),
+		`accept friend request: ${accepted.status()} ${await accepted.text()}`
+	).toBe(true);
 }
 
 /**
@@ -137,7 +138,7 @@ test('live feed: browser A posts, browser B sees it appear with no reload', asyn
 	}
 });
 
-test('notifications: browser A comments on browser B\'s post, browser B gets a live notification', async ({
+test("notifications: browser A comments on browser B's post, browser B gets a live notification", async ({
 	browser
 }) => {
 	const { requestA, requestB, pageB, cleanup } = await twoAuthenticatedUsers(browser);
@@ -176,9 +177,8 @@ test('notifications: browser A comments on browser B\'s post, browser B gets a l
 });
 
 test('chat: browser A sends a DM, browser B receives it live', async ({ browser }) => {
-	const { requestA, requestB, usernameA, usernameB, pageB, cleanup } = await twoAuthenticatedUsers(
-		browser
-	);
+	const { requestA, requestB, usernameA, usernameB, pageB, cleanup } =
+		await twoAuthenticatedUsers(browser);
 	try {
 		await becomeFriends(requestA, requestB, usernameA, usernameB);
 
@@ -207,7 +207,9 @@ test('chat: browser A sends a DM, browser B receives it live', async ({ browser 
 	}
 });
 
-test('media: browser A uploads an attachment, browser B sees it render live', async ({ browser }) => {
+test('media: browser A uploads an attachment, browser B sees it render live', async ({
+	browser
+}) => {
 	const { requestA, pageB, cleanup } = await twoAuthenticatedUsers(browser);
 	try {
 		await pageB.goto('/community');
@@ -255,9 +257,10 @@ test('media: browser A uploads an attachment, browser B sees it render live', as
 				attachment_ids: [job.attachment.id]
 			}
 		});
-		expect(created.ok(), `create post with attachment: ${created.status()} ${await created.text()}`).toBe(
-			true
-		);
+		expect(
+			created.ok(),
+			`create post with attachment: ${created.status()} ${await created.text()}`
+		).toBe(true);
 
 		await expect(pageB.getByText(title)).toBeVisible({ timeout: DELIVERY_TIMEOUT_MS });
 		await expect(pageB.getByAltText(filename)).toBeVisible();
