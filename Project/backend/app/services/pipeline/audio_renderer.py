@@ -12,6 +12,7 @@ preview), that segment is left as an honestly-labelled pass-through/cut
 instead of fabricating a crossfade that never happened.
 """
 
+import concurrent.futures
 import logging
 import os
 import time
@@ -39,7 +40,16 @@ logger = logging.getLogger(__name__)
 
 RENDER_SUBDIR = "renders"
 _MAX_REMOTE_BYTES = 15 * 1024 * 1024
-_REMOTE_TIMEOUT_SECONDS = 8.0
+# Public (no leading underscore): session_manager._try_render_ranked_candidates
+# reads these to decide whether the shared render-retry budget can plausibly
+# fit another attempt before starting one -- see this module's _bounded and
+# session_manager._MAX_SINGLE_ATTEMPT_SECONDS.
+REMOTE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_TIMEOUT_SECONDS", "8.0"))
+# Bounds any single local pydub/ffmpeg operation this module runs directly --
+# decoding an already-fetched clip (_load_clip/_local_clip) or exporting a
+# rendered one (_export) -- not just decoding despite the name; both are the
+# same class of blocking local call _bounded exists to bound.
+LOCAL_AUDIO_OP_TIMEOUT_SECONDS = float(os.getenv("LOCAL_AUDIO_OP_TIMEOUT_SECONDS", "8.0"))
 
 # Unlike every other cache in this codebase (audius_service.py's search
 # cache, session_candidate_pool.py's pool cache), rendered files had no
@@ -65,15 +75,77 @@ def _render_dir() -> Path:
     return directory
 
 
+def _bounded(func, *, timeout_seconds: float):
+    """Runs a blocking call (a network fetch, or an ffmpeg decode/export
+    subprocess pydub shells out to) with an overall wall-clock ceiling.
+
+    §8's own batch measurement (scripts/measure_session_latency.py) found
+    none of these were actually bounded end-to-end in practice: httpx's own
+    Timeout only bounds one hop at a time, so a multi-hop redirect chain
+    (observed for real against Audius: a discoveryprovider search result's
+    stream URL redirecting to a content node's cidstream endpoint,
+    sometimes redirecting again to backing storage) could take a multiple
+    of REMOTE_TIMEOUT_SECONDS rather than being capped by it -- and decode/
+    export had no timeout at all, so a stuck ffmpeg subprocess could hang
+    indefinitely. A single slow candidate could silently consume the whole
+    shared render-retry budget (session_manager.AUDIO_RENDER_TIME_BUDGET_
+    SECONDS) by itself, since that budget was only ever checked *between*
+    attempts, never enforced *within* one.
+
+    Python can't forcibly cancel a running blocking call, so this runs it
+    in a worker thread and simply stops waiting after `timeout_seconds` --
+    the worker itself may keep running in the background past that point
+    (a leaked thread, and for a subprocess, a leaked ffmpeg process). That
+    is an accepted tradeoff: protecting the render retry loop's own
+    wall-clock matters more here than guaranteeing the stuck operation
+    itself stops immediately, and every caller already degrades to an
+    honest pass-through/skip on any failure of the operation being bounded,
+    the same as it already does for a clean failure.
+
+    Raises concurrent.futures.TimeoutError on expiry -- callers translate
+    that into the same StagedRender/RenderedAudio pass-through contract a
+    genuine decode/download failure already uses, never a silent retry
+    loop stall."""
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func)
+    try:
+        return future.result(timeout=timeout_seconds)
+    finally:
+        # wait=False: don't block here waiting for a worker that's already
+        # over its budget -- see this function's own docstring.
+        executor.shutdown(wait=False)
+
+
 def _download(url: str) -> tuple[bytes | None, str | None]:
     """Returns (bytes, None) on success, or (None, reason) on failure -- the
     reason is a short machine-readable string surfaced all the way up into
     the pipeline debug trace (RenderedAudio.fallback_reason), so a
     pass-through is diagnosable from the live panel instead of only from
-    backend logs."""
+    backend logs.
+
+    Bounded to REMOTE_TIMEOUT_SECONDS as a single ceiling covering the
+    *entire* fetch, every redirect hop combined -- not
+    REMOTE_TIMEOUT_SECONDS per hop, which is all _download_once's own
+    httpx.Timeout can guarantee on its own (see _bounded's docstring for
+    why this outer wrapper exists)."""
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(_REMOTE_TIMEOUT_SECONDS), follow_redirects=True) as client:
+        return _bounded(lambda: _download_once(url), timeout_seconds=REMOTE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "AudioRenderer: remote fetch exceeded %.1fs across all redirect hops.",
+            REMOTE_TIMEOUT_SECONDS,
+        )
+        return None, "download_timed_out"
+
+
+def _download_once(url: str) -> tuple[bytes | None, str | None]:
+    """The actual HTTP fetch, redirects included -- see _download's own
+    docstring for why this alone doesn't bound the *overall* operation."""
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(REMOTE_TIMEOUT_SECONDS), follow_redirects=True) as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
                 body = bytearray()
@@ -119,14 +191,22 @@ def _apply_loudness_gain(clip: AudioSegment, segment: SelectedSegment) -> AudioS
 def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None]:
     """Returns (clip, None) on success, or (None, reason) on failure -- see
     _download's docstring for why the reason is threaded through rather than
-    just logged."""
+    just logged.
+
+    The decode step (an ffmpeg subprocess for anything but a real .wav
+    file) is bounded to LOCAL_AUDIO_OP_TIMEOUT_SECONDS for the same reason
+    _download() bounds the fetch -- see _bounded's own docstring; a stuck
+    ffmpeg process previously had no timeout at all."""
 
     track = segment.track
     try:
         if track.local_path:
             # A real filename lets pydub sniff .wav and use its pure-Python
             # path; anything else (mp3/ogg/flac) shells out to ffmpeg.
-            audio = AudioSegment.from_file(track.local_path)
+            audio = _bounded(
+                lambda: AudioSegment.from_file(track.local_path),
+                timeout_seconds=LOCAL_AUDIO_OP_TIMEOUT_SECONDS,
+            )
         else:
             data, reason = _download(track.audio_url)
             if data is None:
@@ -135,9 +215,23 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
             # always shell out to ffmpeg here even for plain WAV bytes;
             # checking the signature directly avoids that for the one format
             # it can always read without ffmpeg.
-            audio = AudioSegment.from_file(
-                BytesIO(data), format="wav" if _looks_like_wav(data) else None
+            audio = _bounded(
+                lambda: AudioSegment.from_file(
+                    BytesIO(data), format="wav" if _looks_like_wav(data) else None
+                ),
+                timeout_seconds=LOCAL_AUDIO_OP_TIMEOUT_SECONDS,
             )
+    except concurrent.futures.TimeoutError:
+        # Must be checked before (CouldntDecodeError, OSError, IndexError)
+        # below, not after: concurrent.futures.TimeoutError is an alias for
+        # the builtin TimeoutError, which *is* an OSError subclass -- the
+        # broader except below would otherwise silently swallow this one
+        # first and this clause would be dead code.
+        logger.warning(
+            "AudioRenderer: decode exceeded %.1fs for %s",
+            LOCAL_AUDIO_OP_TIMEOUT_SECONDS, track.source_track_id,
+        )
+        return None, "decode_timed_out"
     except (CouldntDecodeError, OSError, IndexError) as exc:
         logger.warning("AudioRenderer could not decode %s: %s", track.source_track_id, exc)
         return None, f"decode_failed_{type(exc).__name__}"
@@ -176,13 +270,25 @@ def _local_clip(audio_url: str) -> AudioSegment | None:
     call, so it can't fail the way a remote track's _load_clip can.
     render_bridge uses this to reload a reserved tail (rendered moments
     earlier by render_track_transition) rather than re-fetching the
-    original track's remote audio a second time."""
+    original track's remote audio a second time. Still bounded to
+    LOCAL_AUDIO_OP_TIMEOUT_SECONDS like every other local decode -- see
+    _bounded's own docstring."""
 
     path = _local_render_path(audio_url)
     if path is None or not path.is_file():
         return None
     try:
-        return AudioSegment.from_file(path)
+        return _bounded(
+            lambda: AudioSegment.from_file(path), timeout_seconds=LOCAL_AUDIO_OP_TIMEOUT_SECONDS
+        )
+    except concurrent.futures.TimeoutError:
+        # Must be checked before (CouldntDecodeError, OSError, IndexError)
+        # below -- see _load_clip's identical ordering comment.
+        logger.warning(
+            "AudioRenderer: reloading local render %s exceeded %.1fs",
+            path, LOCAL_AUDIO_OP_TIMEOUT_SECONDS,
+        )
+        return None
     except (CouldntDecodeError, OSError, IndexError) as exc:
         logger.warning("AudioRenderer could not reload local render %s: %s", path, exc)
         return None
@@ -240,7 +346,17 @@ def _export(audio: AudioSegment) -> str:
     directory = _render_dir()
     _sweep_stale_renders(directory)
     path = directory / f"{uuid4().hex}.wav"
-    audio.export(path, format="wav")
+    # Bounded like every other local audio operation (see _bounded's own
+    # docstring) -- pure disk I/O, so a hang here would mean something is
+    # genuinely wrong (e.g. a stalled disk), not ffmpeg. Deliberately left
+    # to propagate as a real concurrent.futures.TimeoutError rather than
+    # folded into a pass-through contract here: every caller of _export()
+    # already assumes it succeeds (none currently handle its failure), and
+    # this is rare/exceptional enough to fall through to the same "genuinely
+    # unexpected error" handling apply_feedback/advance_session/prepare_next
+    # already have around their own _resolve_and_render calls, not a new
+    # dedicated failure path.
+    _bounded(lambda: audio.export(path, format="wav"), timeout_seconds=LOCAL_AUDIO_OP_TIMEOUT_SECONDS)
     return public_api_url(f"/media/renders/{path.name}")
 
 

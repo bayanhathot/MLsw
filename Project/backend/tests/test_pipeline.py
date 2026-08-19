@@ -1529,6 +1529,46 @@ def test_render_track_transition_pass_through_on_load_failure(monkeypatch):
     assert result.reserved_tail is None
 
 
+# --- §8 follow-up: bounding a single operation's worst-case latency -------
+# (Prompt 16's batch measurement found a multi-hop redirect chain, or a
+# stuck decode, could silently consume the whole shared render-retry
+# budget -- see audio_renderer._bounded's own docstring.)
+
+def test_download_is_bounded_even_when_the_request_itself_hangs(monkeypatch):
+    # Simulates exactly the failure mode §8's measurement hit for real (a
+    # TLS handshake that never returns): _download_once itself hangs well
+    # past REMOTE_TIMEOUT_SECONDS, but _download's own outer _bounded
+    # wrapper must not wait for it.
+    monkeypatch.setattr(audio_renderer, "REMOTE_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(
+        audio_renderer, "_download_once", lambda url: time.sleep(2) or (b"unreachable", None)
+    )
+    started = time.perf_counter()
+    data, reason = audio_renderer._download("https://example.test/hangs-forever")
+    elapsed = time.perf_counter() - started
+    assert data is None
+    assert reason == "download_timed_out"
+    # Bounded near REMOTE_TIMEOUT_SECONDS (0.3s), nowhere near the
+    # simulated 2s hang -- the whole point of the wrapper.
+    assert elapsed < 1.5
+
+
+def test_load_clip_decode_is_bounded_even_when_ffmpeg_hangs(monkeypatch):
+    monkeypatch.setattr(audio_renderer, "LOCAL_AUDIO_OP_TIMEOUT_SECONDS", 0.3)
+
+    def hanging_from_file(*args, **kwargs):
+        time.sleep(2)
+        raise AssertionError("should never actually return")
+
+    monkeypatch.setattr(audio_renderer.AudioSegment, "from_file", staticmethod(hanging_from_file))
+    started = time.perf_counter()
+    clip, reason = audio_renderer._load_clip(_local_file_segment_long())
+    elapsed = time.perf_counter() - started
+    assert clip is None
+    assert reason == "decode_timed_out"
+    assert elapsed < 1.5
+
+
 def test_render_bridge_is_exactly_reserved_ms_long_and_covers_the_next_track_with_no_gap_or_overlap():
     renderer = PydubAudioRenderer()
     staged = renderer.render_track_transition(

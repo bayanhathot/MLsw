@@ -99,7 +99,9 @@ PREPARED_NEXT_TTL_SECONDS = float(os.getenv("PREPARED_NEXT_TTL_SECONDS", "300"))
 # safety cap in case
 # _CANDIDATE_LIMIT is ever raised well past what one request's latency
 # budget can absorb (each attempt costs up to
-# audio_renderer._REMOTE_TIMEOUT_SECONDS).
+# audio_renderer.REMOTE_TIMEOUT_SECONDS +
+# audio_renderer.LOCAL_AUDIO_OP_TIMEOUT_SECONDS -- see
+# _MAX_SINGLE_ATTEMPT_SECONDS below).
 AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDIDATE_LIMIT)))
 
 # A wall-clock ceiling on how long one resolution spends retrying render
@@ -112,7 +114,30 @@ AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDID
 # calls get (frontend/src/lib/services/sessionApi.js), alongside whatever
 # the VibeUnderstander/Ollama stage and retrieval already spent. Deliberately
 # well under that 45s ceiling, not equal to it.
+#
+# §8's own batch measurement (scripts/measure_session_latency.py) found this
+# budget wasn't actually being respected: it was only ever checked *between*
+# candidate attempts inside _try_render_ranked_candidates, never *before*
+# starting one, so a single slow attempt (an unbounded multi-hop redirect
+# chain, or a stuck ffmpeg decode -- both now bounded, see
+# audio_renderer._bounded) could blow past it by itself, and the loop would
+# still go on to start further attempts afterward. See
+# _MAX_SINGLE_ATTEMPT_SECONDS for the fix.
 AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SECONDS", "25"))
+
+# The plausible fetch+decode critical-path cost of one candidate attempt --
+# the two operations that must both complete, in sequence, before a
+# candidate is even known to be viable (export happens afterward, only once
+# a candidate already decoded successfully, and is fast/local -- not counted
+# here). Used by _try_render_ranked_candidates to decide, *before* starting
+# a new attempt, whether the shared deadline can plausibly still fit one --
+# not the absolute worst case of every bounded operation in an attempt
+# timing out simultaneously (render_bridge's own multiple export calls
+# included), which would be so conservative it'd effectively disable retries
+# under AUDIO_RENDER_TIME_BUDGET_SECONDS' own default.
+_MAX_SINGLE_ATTEMPT_SECONDS = (
+    audio_renderer.REMOTE_TIMEOUT_SECONDS + audio_renderer.LOCAL_AUDIO_OP_TIMEOUT_SECONDS
+)
 
 # How much of a selected segment's tail is carved off, blind, the instant
 # the segment is chosen -- before any transition into a next track is even
@@ -496,6 +521,28 @@ def _try_render_ranked_candidates(
     stage_timings = {"segment_selector_ms": 0.0, "transition_planner_ms": 0.0, "audio_renderer_ms": 0.0}
     attempts = renderable_candidates[:AUDIO_RENDER_RETRY_LIMIT]
     for index, candidate in enumerate(attempts):
+        if index > 0 and deadline - time.monotonic() < _MAX_SINGLE_ATTEMPT_SECONDS:
+            # §8's own batch measurement found the *only* existing deadline
+            # check (at the bottom of this loop, below) ran *after* an
+            # attempt already finished -- never stopped one from *starting*
+            # that plainly couldn't fit in what was left. Every operation an
+            # attempt can spend time on is now individually bounded (see
+            # audio_renderer._bounded), so this check is finally meaningful:
+            # not enough of the shared budget remains to plausibly get
+            # through another attempt's fetch+decode critical path, so stop
+            # here and let this resolution fall through to its existing
+            # rescue/last-resort tiers (_resolve_and_render) instead of
+            # starting an attempt destined to be abandoned anyway. The very
+            # first attempt (index == 0) always runs regardless -- this
+            # function must return *something* even if the deadline was
+            # already tight before it started.
+            skipped_tracks.append({
+                "source": candidate.source,
+                "source_track_id": candidate.source_track_id,
+                "title": candidate.title,
+                "fallback_reason": "insufficient_time_remaining",
+            })
+            break
         track = candidate
         selector_started = time.perf_counter()
         segment = selector.select(db, track)
@@ -539,8 +586,10 @@ def _try_render_ranked_candidates(
         # Stop -- and keep this attempt, whatever it is -- once it succeeds,
         # once the retry budget is spent, or once the shared time budget
         # runs out (most failures are fast HTTP errors, but a genuinely
-        # unreachable host can hang for the full
-        # audio_renderer._REMOTE_TIMEOUT_SECONDS on every attempt): the last
+        # unreachable host can still cost up to
+        # audio_renderer.REMOTE_TIMEOUT_SECONDS +
+        # audio_renderer.LOCAL_AUDIO_OP_TIMEOUT_SECONDS on one attempt, now
+        # that both are actually bounded -- see _bounded): the last
         # attempt is always the final result, even a failed one, never
         # itself recorded as "skipped" (that label is only for a candidate
         # discarded in favor of a different one that was tried next).

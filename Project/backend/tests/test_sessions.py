@@ -1363,6 +1363,88 @@ def test_reasoning_and_next_direction_reflect_feedback_history(client):
     assert "Smoother please" in feedback["reasoning"]["nextDirection"]
 
 
+# --- §8 follow-up: deadline-aware retry loop --------------------------------
+# (Prompt 16's own batch measurement found the render-retry budget was only
+# ever checked *between* candidate attempts, never *before* starting one --
+# see session_manager._MAX_SINGLE_ATTEMPT_SECONDS.)
+
+
+def _slow_candidates(count):
+    return [
+        Track(
+            source="audius", source_track_id=f"slow-{index}", title=f"Slow {index}", artist="Artist",
+            album=None, audio_url=f"https://audio.example/slow-{index}", cover_url=None,
+            duration_seconds=180, genre=None, vibe=None, vibe_label=None, tags=None,
+            catalog_track_id=None, local_path=None,
+        )
+        for index in range(count)
+    ]
+
+
+def test_try_render_ranked_candidates_stops_early_once_remaining_budget_cant_fit_another_attempt(
+    monkeypatch, db_session
+):
+    # Several candidates in a row are slow (now individually bounded --
+    # see audio_renderer._bounded) -- the retry loop must stop *starting*
+    # new attempts once the shared deadline can't plausibly fit another
+    # one, rather than trying every candidate regardless.
+    from app.schemas import StagedRender, StagedTrackRender
+    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+
+    monkeypatch.setattr(session_manager, "_MAX_SINGLE_ATTEMPT_SECONDS", 0.2)
+
+    class _SlowFailingRenderer:
+        def __init__(self, delay_seconds):
+            self.delay_seconds = delay_seconds
+            self.calls = 0
+
+        def render_track_transition(self, segment, *, resume_offset_ms, reserved_ms):
+            self.calls += 1
+            time.sleep(self.delay_seconds)
+            return StagedTrackRender(
+                body=StagedRender(
+                    audio_url=segment.track.audio_url, duration_ms=1000,
+                    is_pass_through=True, fallback_reason="simulated_slow_failure",
+                ),
+            )
+
+    renderer = _SlowFailingRenderer(delay_seconds=0.15)
+    deadline = time.monotonic() + 0.3  # only room for ~2 attempts at 0.15s each
+
+    track, segment, transition, rendered, skipped, timings = session_manager._try_render_ranked_candidates(
+        db_session, _slow_candidates(6), get_segment_selector(), get_transition_planner(), renderer,
+        previous_segment=None, prefers_smoother=False, deadline=deadline,
+    )
+
+    assert renderer.calls < 6  # did not try every candidate
+    assert any(entry["fallback_reason"] == "insufficient_time_remaining" for entry in skipped)
+
+
+def test_try_render_ranked_candidates_always_tries_at_least_the_first_candidate(monkeypatch, db_session):
+    # Even if the deadline has *already* passed before this function is
+    # even called, it must still try once -- it has to return something.
+    from app.schemas import StagedRender, StagedTrackRender
+    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+
+    monkeypatch.setattr(session_manager, "_MAX_SINGLE_ATTEMPT_SECONDS", 999)  # never "enough" remaining
+
+    class _InstantRenderer:
+        def render_track_transition(self, segment, *, resume_offset_ms, reserved_ms):
+            return StagedTrackRender(
+                body=StagedRender(
+                    audio_url=segment.track.audio_url, duration_ms=1000, is_pass_through=False,
+                ),
+            )
+
+    already_expired_deadline = time.monotonic() - 10
+    track, segment, transition, rendered, skipped, timings = session_manager._try_render_ranked_candidates(
+        db_session, _slow_candidates(1), get_segment_selector(), get_transition_planner(),
+        _InstantRenderer(), previous_segment=None, prefers_smoother=False,
+        deadline=already_expired_deadline,
+    )
+    assert track.source_track_id == "slow-0"
+
+
 # --- Phase 9: live in-session crossfades (reserved-region mechanism) ------
 
 
