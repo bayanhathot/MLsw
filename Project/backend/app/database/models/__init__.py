@@ -2,6 +2,7 @@
 
 from app.database.models.attachment import Attachment
 from app.database.models.catalog import CatalogTrack
+from app.database.models.external_track import ExternalTrack
 from app.database.models.forum import ForumComment, ForumCommentVote, ForumPost, ForumPostVote
 from app.database.models.messaging import DirectMessage, Notification
 from app.database.models.music_identity import ListeningEvent, UserMusicProfile
@@ -22,6 +23,7 @@ from app.database.models.user import User
 __all__ = [
     "User",
     "CatalogTrack",
+    "ExternalTrack",
     "DJSession",
     "SessionFeedback",
     "UserPreference",
