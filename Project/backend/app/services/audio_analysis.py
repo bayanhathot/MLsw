@@ -25,6 +25,10 @@ deterministic signal-processing, not a trained model.
 """
 
 import logging
+import os
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from queue import Full
 
 import numpy as np
@@ -32,10 +36,21 @@ import numpy as np
 from app.core.time import utc_now
 from app.database import database as db_module
 from app.database.models.catalog import CatalogTrack
+from app.database.models.external_track import ExternalTrack
 from app.services import upload_queue
 from app.services.pipeline.catalog_retriever import CATALOG_AUDIO_SUBDIR
 
 logger = logging.getLogger(__name__)
+
+# Prompt 1's own finding, not repeated here: no existing cap/backoff policy
+# exists to reuse for catalog_tracks (analyze_catalog_track never
+# auto-retries a *failed* row -- only requeue_pending_analysis's
+# still-"pending" rows get resubmitted, and only at startup). A small,
+# explicit cap is new for external_tracks specifically, matching this
+# codebase's general small-bounded-constant style (e.g.
+# session_manager.AUDIO_RENDER_RETRY_LIMIT) rather than an invented
+# *second* policy parallel to a real existing one.
+EXTERNAL_ANALYSIS_MAX_ATTEMPTS = int(os.getenv("EXTERNAL_ANALYSIS_MAX_ATTEMPTS", "3"))
 
 # Bump this whenever the analysis approach below changes (a different
 # chroma/beat-tracking method, a different segment-selection heuristic,
@@ -261,19 +276,22 @@ def _best_segment(
     return best_start, best_start + window, "chorus_detection"
 
 
-def _integrated_loudness_lufs(waveform: np.ndarray, sr: float, catalog_track_id: int) -> float | None:
+def _integrated_loudness_lufs(waveform: np.ndarray, sr: float, label: str) -> float | None:
     """ITU-R BS.1770 integrated loudness of the already-loaded waveform, via
     pyloudnorm -- measured once here over the whole (up to
     _MAX_ANALYSIS_SECONDS) analyzed clip, never re-measured per segment or
     per crossfade at render time (see CatalogTrack.integrated_loudness_lufs'
     own docstring for why; audio_renderer.py just applies a flat gain
     derived from this stored value instead). Kept in its own try/except,
-    separate from analyze_catalog_track's own -- a loudness-measurement
-    failure (e.g. BS.1770's gating finds no audio above the -70 LUFS
-    absolute threshold, on a near-silent clip) must not invalidate the
-    bpm/key/segment results that succeeded independently of it. None on any
+    separate from analyze_audio's own -- a loudness-measurement failure
+    (e.g. BS.1770's gating finds no audio above the -70 LUFS absolute
+    threshold, on a near-silent clip) must not invalidate the bpm/key/
+    segment results that succeeded independently of it. None on any
     failure or non-finite result, matching this pipeline's established
-    missing-signal handling (see this column's docstring)."""
+    missing-signal handling (see this column's docstring). `label` is a
+    free-form string for the warning log only (e.g. "catalog track 5" or
+    "external track 12") -- analyze_audio() is shared by both adapters and
+    has no opinion on which kind of row is being analyzed."""
 
     try:
         import pyloudnorm
@@ -281,57 +299,129 @@ def _integrated_loudness_lufs(waveform: np.ndarray, sr: float, catalog_track_id:
         meter = pyloudnorm.Meter(int(sr))
         loudness = meter.integrated_loudness(waveform)
     except Exception as exc:
-        logger.warning(
-            "Catalog track %s loudness measurement failed: %s", catalog_track_id, exc
-        )
+        logger.warning("Loudness measurement failed for %s: %s", label, exc)
         return None
     return round(loudness, 2) if np.isfinite(loudness) else None
 
 
-def analyze_catalog_track(catalog_track_id: int) -> None:
+@dataclass
+class AnalysisResult:
+    """Everything one run of analyze_audio() produces -- already rounded to
+    the exact precision each field was stored at before this refactor, so
+    both adapters (analyze_catalog_track/analyze_external_track) can just
+    assign these straight onto their own row without re-deriving anything."""
+
+    bpm: float
+    bpm_confidence: float
+    musical_key: str
+    key_mode: str
+    camelot: str | None
+    key_confidence: float
+    integrated_loudness_lufs: float | None
+    beat_grid: list[float]
+    downbeat_grid: list[float]
+    phrase_boundaries: list[float]
+    segment_start_second: int
+    segment_end_second: int
+    segment_method: str
+
+
+def analyze_audio(path: str, *, label: str) -> AnalysisResult:
+    """The one shared DSP core (Prompt 2) -- every one-time Cuemix audio
+    analysis, whether the source was a local catalog upload
+    (analyze_catalog_track) or a temporarily-fetched Audius track
+    (analyze_external_track), funnels through this single function. There
+    is exactly one DSP implementation; the two callers differ only in
+    where the audio file came from and which table's row they persist the
+    result onto.
+
+    Raises on any failure -- librosa/audioread/soundfile raise a wide,
+    backend-dependent exception surface for unreadable audio, and this
+    function has no row of its own to mark "failed"; each caller wraps
+    this call in its own try/except and decides what failure means for
+    its own table (catalog_tracks vs. external_tracks have different
+    retry/attempt-count bookkeeping -- see ExternalTrack.analysis_attempt_count's
+    own docstring for why they can't share one policy)."""
+
     # Imported lazily: librosa pulls in a heavy dependency tree (numpy/scipy/
     # numba/soundfile) that only the analysis job needs, not every process
     # that imports app.services.audio_analysis.
     import librosa
 
+    waveform, sr = librosa.load(path, sr=None, mono=True, duration=_MAX_ANALYSIS_SECONDS)
+    duration_seconds = librosa.get_duration(y=waveform, sr=sr)
+    # Computed explicitly (rather than passing y= straight to beat_track)
+    # only so _bpm_confidence can read the same onset-strength signal
+    # beat_track uses internally to choose its tempo -- otherwise
+    # identical to beat_track(y=waveform, sr=sr)'s own default behavior
+    # (aggregate=np.median, hop_length=512), so the tempo output itself is
+    # unchanged.
+    onset_envelope = librosa.onset.onset_strength(
+        y=waveform, sr=sr, hop_length=_BEAT_HOP_LENGTH, aggregate=np.median
+    )
+    tempo, beat_frames = librosa.beat.beat_track(
+        onset_envelope=onset_envelope, sr=sr, hop_length=_BEAT_HOP_LENGTH
+    )
+    tempo_bpm = float(np.atleast_1d(tempo)[0])
+    bpm_confidence_value = _bpm_confidence(librosa, onset_envelope, sr, _BEAT_HOP_LENGTH, tempo_bpm)
+    # beat_frames is the same beat grid beat_track derived tempo_bpm from --
+    # reused directly, not a second onset/beat-tracking pass.
+    beat_grid, downbeat_grid, phrase_boundaries = _beat_grids(librosa, beat_frames, sr, _BEAT_HOP_LENGTH)
+    chroma = librosa.feature.chroma_cqt(y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
+    frames_per_second = sr / _CHROMA_HOP_LENGTH
+    musical_key, key_mode, key_confidence_value = _estimate_key(chroma)
+    start_second, end_second, method = _best_segment(chroma, frames_per_second, duration_seconds)
+    loudness_lufs = _integrated_loudness_lufs(waveform, sr, label)
+
+    return AnalysisResult(
+        bpm=round(tempo_bpm, 2),
+        bpm_confidence=round(bpm_confidence_value, 4),
+        musical_key=musical_key,
+        key_mode=key_mode,
+        camelot=camelot_for(musical_key, key_mode),
+        key_confidence=round(key_confidence_value, 4),
+        integrated_loudness_lufs=loudness_lufs,
+        beat_grid=beat_grid,
+        downbeat_grid=downbeat_grid,
+        phrase_boundaries=phrase_boundaries,
+        segment_start_second=start_second,
+        segment_end_second=end_second,
+        segment_method=method,
+    )
+
+
+def _apply_result(row, result: AnalysisResult) -> None:
+    """Shared field assignment for both CatalogTrack and ExternalTrack rows
+    -- both carry identically-named/typed analysis columns (see
+    external_track.py's own docstring for why), so one function assigns
+    onto either. Does NOT touch analysis_status/analysis_version/
+    analyzed_at -- those differ slightly between the two callers (e.g.
+    ExternalTrack also clears is_stale), so each adapter sets those
+    itself right after calling this."""
+
+    row.bpm = result.bpm
+    row.bpm_confidence = result.bpm_confidence
+    row.musical_key = result.musical_key
+    row.key_mode = result.key_mode
+    row.camelot = result.camelot
+    row.key_confidence = result.key_confidence
+    row.integrated_loudness_lufs = result.integrated_loudness_lufs
+    row.beat_grid_json = result.beat_grid
+    row.downbeat_grid_json = result.downbeat_grid
+    row.phrase_boundaries_json = result.phrase_boundaries
+    row.segment_start_second = result.segment_start_second
+    row.segment_end_second = result.segment_end_second
+    row.segment_method = result.segment_method
+
+
+def analyze_catalog_track(catalog_track_id: int) -> None:
     with db_module.SessionLocal() as db:
         row = db.query(CatalogTrack).filter(CatalogTrack.id == catalog_track_id).first()
         if row is None:
             return
         path = upload_queue.UPLOAD_DIR / CATALOG_AUDIO_SUBDIR / row.storage_name
         try:
-            waveform, sr = librosa.load(
-                str(path), sr=None, mono=True, duration=_MAX_ANALYSIS_SECONDS
-            )
-            duration_seconds = librosa.get_duration(y=waveform, sr=sr)
-            # Computed explicitly (rather than passing y= straight to
-            # beat_track) only so _bpm_confidence can read the same
-            # onset-strength signal beat_track uses internally to choose
-            # its tempo -- otherwise identical to beat_track(y=waveform,
-            # sr=sr)'s own default behavior (aggregate=np.median,
-            # hop_length=512), so the tempo output itself is unchanged.
-            onset_envelope = librosa.onset.onset_strength(
-                y=waveform, sr=sr, hop_length=_BEAT_HOP_LENGTH, aggregate=np.median
-            )
-            tempo, beat_frames = librosa.beat.beat_track(
-                onset_envelope=onset_envelope, sr=sr, hop_length=_BEAT_HOP_LENGTH
-            )
-            tempo_bpm = float(np.atleast_1d(tempo)[0])
-            bpm_confidence_value = _bpm_confidence(
-                librosa, onset_envelope, sr, _BEAT_HOP_LENGTH, tempo_bpm
-            )
-            # beat_frames is the same beat grid beat_track derived tempo_bpm
-            # from -- reused directly, not a second onset/beat-tracking pass.
-            beat_grid, downbeat_grid, phrase_boundaries = _beat_grids(
-                librosa, beat_frames, sr, _BEAT_HOP_LENGTH
-            )
-            chroma = librosa.feature.chroma_cqt(y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
-            frames_per_second = sr / _CHROMA_HOP_LENGTH
-            musical_key, key_mode, key_confidence_value = _estimate_key(chroma)
-            start_second, end_second, method = _best_segment(
-                chroma, frames_per_second, duration_seconds
-            )
-            loudness_lufs = _integrated_loudness_lufs(waveform, sr, catalog_track_id)
+            result = analyze_audio(str(path), label=f"catalog track {catalog_track_id}")
         except Exception as exc:
             # librosa/audioread/soundfile raise a wide, backend-dependent
             # exception surface for unreadable audio; analysis degrading to
@@ -342,22 +432,106 @@ def analyze_catalog_track(catalog_track_id: int) -> None:
             db.commit()
             return
 
-        row.bpm = round(tempo_bpm, 2)
-        row.bpm_confidence = round(bpm_confidence_value, 4)
-        row.musical_key = musical_key
-        row.key_mode = key_mode
-        row.camelot = camelot_for(musical_key, key_mode)
-        row.key_confidence = round(key_confidence_value, 4)
-        row.integrated_loudness_lufs = loudness_lufs
-        row.beat_grid_json = beat_grid
-        row.downbeat_grid_json = downbeat_grid
-        row.phrase_boundaries_json = phrase_boundaries
-        row.segment_start_second = start_second
-        row.segment_end_second = end_second
-        row.segment_method = method
+        _apply_result(row, result)
         row.analysis_status = "completed"
         row.analysis_version = ANALYSIS_VERSION
         row.analyzed_at = utc_now()
+        db.commit()
+
+
+def analyze_external_track(external_track_id: int) -> None:
+    """Prompt 2's second adapter: temporarily fetches an Audius track's
+    full audio, runs it through the exact same analyze_audio() core
+    analyze_catalog_track uses, persists the result onto its
+    external_tracks row, and always deletes the temporary file -- on
+    success AND failure (see the try/finally below), so a failed analysis
+    never leaves audio sitting on disk.
+
+    No live retrieval/session path calls this directly (see
+    pipeline/external_track_cache.py, the only caller, gated behind
+    AUDIUS_ANALYSIS_CACHE_ENABLED) -- this function's only job is turning
+    an external_track_id into a completed-or-failed analysis, the same
+    narrow scope analyze_catalog_track has always had.
+    """
+
+    import hashlib
+
+    # Imported lazily, same reasoning as audio_renderer's own import site:
+    # this pulls in httpx/pydub-adjacent machinery only an actual analysis
+    # run needs, and importing audio_renderer here (rather than at module
+    # level) also avoids a session_manager/audio_renderer/audio_analysis
+    # import cycle, since audio_renderer never needs to import this module.
+    from app.services import audius_service
+    from app.services.pipeline import audio_renderer
+
+    with db_module.SessionLocal() as db:
+        row = db.query(ExternalTrack).filter(ExternalTrack.id == external_track_id).first()
+        if row is None:
+            return
+
+        if row.source != "audius":
+            # Only Audius exists as a source today (see this table's own
+            # docstring) -- reported plainly rather than silently guessing
+            # at a fetch strategy for a provider this codebase doesn't
+            # actually integrate with yet.
+            logger.warning(
+                "analyze_external_track: no fetch strategy for source=%r (id=%s)",
+                row.source, external_track_id,
+            )
+            row.analysis_status = "failed"
+            row.analysis_attempt_count += 1
+            row.analysis_last_failed_at = utc_now()
+            db.commit()
+            return
+
+        # Reuses audio_renderer._download -- the same bounded, multi-hop-
+        # redirect-safe fetch every live playback/render path already uses
+        # for Audius audio (see audio_renderer.py's own REMOTE_TIMEOUT_SECONDS/
+        # _bounded) -- rather than a second, parallel downloader.
+        url = audius_service.audius_stream_url(row.external_id)
+        data, reason = audio_renderer._download(url)
+        if data is None:
+            logger.warning(
+                "External track %s temporary fetch failed: %s", external_track_id, reason
+            )
+            row.analysis_status = "failed"
+            row.analysis_attempt_count += 1
+            row.analysis_last_failed_at = utc_now()
+            db.commit()
+            return
+
+        tmp_path: str | None = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+            with os.fdopen(fd, "wb") as tmp_file:
+                tmp_file.write(data)
+            result = analyze_audio(tmp_path, label=f"external track {external_track_id}")
+        except Exception as exc:
+            logger.warning("External track %s analysis failed: %s", external_track_id, exc)
+            row.analysis_status = "failed"
+            row.analysis_attempt_count += 1
+            row.analysis_last_failed_at = utc_now()
+            db.commit()
+            return
+        finally:
+            # Runs on every exit path -- success, the except above, and any
+            # exception this try block didn't anticipate -- so the
+            # temporary audio is never left on disk (Prompt 2 step 3's
+            # explicit requirement) regardless of how analysis ended.
+            if tmp_path is not None:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        _apply_result(row, result)
+        row.audio_sha256 = hashlib.sha256(data).hexdigest()
+        row.analysis_status = "completed"
+        row.analysis_version = ANALYSIS_VERSION
+        row.analyzed_at = utc_now()
+        row.analysis_attempt_count += 1
+        # A fresh, successful analysis always supersedes whatever staleness
+        # an earlier fingerprint mismatch flagged (pipeline.
+        # external_track_cache.verify_fingerprint) -- the new audio_sha256
+        # set just above is, by definition, current again.
+        row.is_stale = False
         db.commit()
 
 

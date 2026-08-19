@@ -110,6 +110,19 @@ def _optional_text(value) -> str | None:
     return value or None
 
 
+def audius_stream_url(track_id: str) -> str:
+    """The stream URL for a given Audius track ID -- a pure, deterministic
+    function of the ID alone, not something that only exists at search
+    time (verified against _search_tracks_uncached's own construction
+    below, which now calls this instead of duplicating it). This is what
+    lets audio_analysis.analyze_external_track() re-fetch a track's audio
+    later, in a background worker, from nothing but the (source,
+    external_id) identity stored on its external_tracks row -- no need to
+    re-run a search or persist the URL itself."""
+
+    return f"{AUDIUS_API_BASE}/tracks/{quote(str(track_id), safe='')}/stream?app_name={APP_NAME}"
+
+
 def get_artwork_url(artwork: dict | None) -> str | None:
     """
     Extract the best available artwork URL from Audius.
@@ -228,7 +241,6 @@ def _search_tracks_uncached(prompt: str, limit: int = 5) -> list[dict]:
         artwork_url = get_artwork_url(track.get("artwork"))
         if not isinstance(artwork_url, str):
             artwork_url = None
-        safe_track_id = quote(str(track_id), safe="")
 
         results.append(
             {
@@ -241,7 +253,7 @@ def _search_tracks_uncached(prompt: str, limit: int = 5) -> list[dict]:
                 "mood": _optional_text(track.get("mood")),
                 "tags": _optional_text(track.get("tags")),
                 "cover_url": artwork_url,
-                "audio_url": f"{AUDIUS_API_BASE}/tracks/{safe_track_id}/stream?app_name={APP_NAME}",
+                "audio_url": audius_stream_url(track_id),
             }
         )
 
