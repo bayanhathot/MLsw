@@ -16,7 +16,7 @@ from app.core.security import hash_password
 from app.database.models.catalog import CatalogTrack
 from app.database.models.user import User
 from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
-from app.services.pipeline import audio_renderer, audius_retriever, catalog_retriever
+from app.services.pipeline import audio_renderer, audius_retriever, catalog_retriever, transition_planner
 from app.services.pipeline.audio_renderer import PydubAudioRenderer
 from app.services.pipeline.audius_retriever import (
     MIN_POOL_SIZE,
@@ -1121,9 +1121,14 @@ def test_segment_selector_trusts_a_not_applicable_rows_deliberately_seeded_windo
     assert segment.musical_key is None
 
 
-def _segment(bpm=None, key=None) -> SelectedSegment:
+def _segment(
+    bpm=None, key=None, *, end_second=30, key_mode=None, camelot=None, key_confidence=None,
+    bpm_confidence=None, phrase_boundaries=None,
+) -> SelectedSegment:
     return SelectedSegment(
-        track=_track(), start_second=0, end_second=30, method="whole_clip", bpm=bpm, musical_key=key
+        track=_track(), start_second=0, end_second=end_second, method="whole_clip", bpm=bpm,
+        musical_key=key, key_mode=key_mode, camelot=camelot, key_confidence=key_confidence,
+        bpm_confidence=bpm_confidence, phrase_boundaries=phrase_boundaries,
     )
 
 
@@ -1180,6 +1185,161 @@ def test_transition_planner_max_crossfade_ms_also_caps_the_first_segment_case():
     planner = DeterministicTransitionPlanner()
     capped = planner.plan(None, _segment(), prefers_smoother=True, max_crossfade_ms=1000)
     assert capped.crossfade_ms == 1000
+
+
+# --- Camelot-aware key categorization (_key_category) ----------------------
+
+_HIGH_KEY_CONFIDENCE = 0.9  # well above _MIN_KEY_CONFIDENCE_FOR_HARMONIC_BONUS
+
+
+def test_key_category_does_not_collapse_a_parallel_major_minor_pair_into_same_key():
+    # C major -> C minor: bare pitch-class distance is 0 (identical pitch
+    # class), which a naive distance-only system would treat as a perfect
+    # match. Real key-aware categorization must not: the mode differs, so
+    # this is neither the same key nor a relative pair (different Camelot
+    # number: C major=8B, C minor=5A) -- it falls all the way through to
+    # "conflicting".
+    previous = _segment(
+        key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE,
+    )
+    next_segment = _segment(
+        key="C", key_mode="minor", camelot="5A", key_confidence=_HIGH_KEY_CONFIDENCE,
+    )
+    assert transition_planner._key_category(previous, next_segment) == "conflicting"
+
+
+def test_key_category_recognizes_same_key():
+    previous = _segment(key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE)
+    next_segment = _segment(key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE)
+    assert transition_planner._key_category(previous, next_segment) == "same_key"
+
+
+def test_key_category_recognizes_relative_major_minor():
+    # C major (8B) <-> A minor (8A): same Camelot number, opposite letter
+    # -- verified reference values, see test_audio_analysis.py's own
+    # cross-checked Camelot table.
+    previous = _segment(key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE)
+    next_segment = _segment(key="A", key_mode="minor", camelot="8A", key_confidence=_HIGH_KEY_CONFIDENCE)
+    assert transition_planner._key_category(previous, next_segment) == "relative"
+
+
+def test_key_category_recognizes_adjacent_camelot():
+    # C major (8B) -> G major (9B): one wheel-step apart, same letter.
+    previous = _segment(key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE)
+    next_segment = _segment(key="G", key_mode="major", camelot="9B", key_confidence=_HIGH_KEY_CONFIDENCE)
+    assert transition_planner._key_category(previous, next_segment) == "adjacent_camelot"
+
+
+def test_key_category_falls_back_to_compatible_fifth_via_raw_pitch_class_without_camelot():
+    # C -> G is a genuine fifth by raw pitch class (_key_distance == 5),
+    # but with no camelot stored on either side (e.g. an older
+    # v1-analyzed row) -- the fallback tier still recognizes it using
+    # only musical_key.
+    previous = _segment(key="C", key_confidence=_HIGH_KEY_CONFIDENCE)
+    next_segment = _segment(key="G", key_confidence=_HIGH_KEY_CONFIDENCE)
+    assert transition_planner._key_category(previous, next_segment) == "compatible_fifth"
+
+
+def test_key_category_is_none_when_either_sides_confidence_is_too_low():
+    previous = _segment(
+        key="C", key_mode="major", camelot="8B",
+        key_confidence=transition_planner._MIN_KEY_CONFIDENCE_FOR_HARMONIC_BONUS - 0.01,
+    )
+    next_segment = _segment(key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE)
+    assert transition_planner._key_category(previous, next_segment) is None
+
+
+def test_transition_planner_low_key_confidence_measurably_suppresses_the_harmonic_bonus():
+    # Identical (compatible) key data on both sides -- only key_confidence
+    # differs -- so any crossfade_ms difference is attributable to the
+    # confidence gate alone, not a different key relationship.
+    planner = DeterministicTransitionPlanner()
+    confident_previous = _segment(
+        bpm=120, key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE,
+    )
+    confident_next = _segment(
+        bpm=120, key="C", key_mode="major", camelot="8B", key_confidence=_HIGH_KEY_CONFIDENCE,
+    )
+    unconfident_previous = _segment(
+        bpm=120, key="C", key_mode="major", camelot="8B", key_confidence=0.01,
+    )
+    unconfident_next = _segment(
+        bpm=120, key="C", key_mode="major", camelot="8B", key_confidence=0.01,
+    )
+    confident = planner.plan(confident_previous, confident_next)
+    unconfident = planner.plan(unconfident_previous, unconfident_next)
+    assert confident.crossfade_ms > unconfident.crossfade_ms
+    assert confident.crossfade_ms - unconfident.crossfade_ms == transition_planner._KEY_CATEGORY_BONUS_MS["same_key"]
+
+
+# --- Phrase-alignment hard constraint --------------------------------------
+
+
+def test_transition_planner_falls_back_to_a_hard_cut_when_no_phrase_boundary_is_within_reach():
+    planner = DeterministicTransitionPlanner()
+    # end_second=30, but every phrase boundary is far earlier than
+    # reach_ms (max_crossfade_ms=4000ms=4s) could ever look back.
+    previous = _segment(
+        end_second=30, bpm_confidence=0.9, phrase_boundaries=[2.0, 6.0, 10.0, 14.0],
+    )
+    plan = planner.plan(previous, _segment(), max_crossfade_ms=4000)
+    assert plan.style == "cut"
+    assert plan.crossfade_ms == 0
+
+
+def test_transition_planner_crossfades_when_a_phrase_boundary_is_within_reach():
+    planner = DeterministicTransitionPlanner()
+    # A boundary at 28s is within 4s (max_crossfade_ms) of end_second=30.
+    previous = _segment(
+        end_second=30, bpm_confidence=0.9, phrase_boundaries=[4.0, 12.0, 20.0, 28.0],
+    )
+    plan = planner.plan(previous, _segment(), max_crossfade_ms=4000)
+    assert plan.style == "crossfade"
+    assert plan.crossfade_ms > 0
+
+
+def test_transition_planner_skips_the_phrase_gate_when_there_are_too_few_boundaries_to_trust():
+    # Only one boundary (audio_analysis._beat_grids always includes index
+    # 0 even from a too-short/sparse beat grid -- see
+    # _trusted_phrase_boundaries) -- far from end_second, but this must
+    # NOT force a cut: with no trustworthy phrase data, behavior falls
+    # back to today's bpm/key-only decision (never worse than not having
+    # the data at all).
+    planner = DeterministicTransitionPlanner()
+    previous = _segment(end_second=30, bpm_confidence=0.9, phrase_boundaries=[2.0])
+    plan = planner.plan(previous, _segment(), max_crossfade_ms=4000)
+    assert plan.style == "crossfade"
+
+
+def test_transition_planner_skips_the_phrase_gate_when_bpm_confidence_is_too_low():
+    # Plenty of boundaries, but a shaky tempo estimate undermines the
+    # whole beat/downbeat/phrase grid they were derived from -- same
+    # "don't trust a shaky guess" fallback as too-few-boundaries above.
+    planner = DeterministicTransitionPlanner()
+    previous = _segment(
+        end_second=30,
+        bpm_confidence=transition_planner._MIN_BPM_CONFIDENCE_FOR_PHRASE_TRUST - 0.01,
+        phrase_boundaries=[2.0, 6.0, 10.0, 14.0],
+    )
+    plan = planner.plan(previous, _segment(), max_crossfade_ms=4000)
+    assert plan.style == "crossfade"
+
+
+def test_transition_planner_phrase_gate_reach_defaults_to_max_crossfade_ms_when_uncapped():
+    # mix_service.py never passes max_crossfade_ms -- the phrase-alignment
+    # reach must still be bounded (MAX_CROSSFADE_MS), not infinite. Two
+    # boundaries (not one) so this is trusted (_MIN_PHRASE_BOUNDARIES_FOR_TRUST),
+    # both well outside MAX_CROSSFADE_MS's reach from end_second.
+    planner = DeterministicTransitionPlanner()
+    reach_seconds = transition_planner.MAX_CROSSFADE_MS / 1000.0
+    end_second = int(reach_seconds) + 30
+    previous = _segment(
+        end_second=end_second,
+        bpm_confidence=0.9,
+        phrase_boundaries=[2.0, end_second - reach_seconds - 5.0],
+    )
+    plan = planner.plan(previous, _segment())  # no max_crossfade_ms -- mix_service.py's case
+    assert plan.style == "cut"
 
 
 def test_rendered_session_audio_is_actually_servable(client):
