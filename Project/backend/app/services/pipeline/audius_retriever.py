@@ -238,6 +238,18 @@ def _score_candidates(
     total is therefore a weighted *average* over only the signals that were
     actually available, not a weighted sum over all of them -- missing
     metadata reduces confidence, it never counts against a candidate.
+
+    Explicit scope boundary (persistent-Audius-analysis-cache Prompt 5,
+    stated here rather than silently missing): this scoring function does
+    NOT read pipeline.external_track_cache/external_tracks at all, even
+    though a previously-analyzed candidate here may already have real
+    bpm/musical_key/key_confidence/phrase_boundaries available (see
+    Track.external_track_id). A candidate with a great tempo/key match to
+    whatever's currently playing is not ranked any higher here than an
+    unanalyzed one -- that data only ever affects SegmentSelector/
+    TransitionPlanner *after* a candidate is already chosen, never this
+    retrieval-time ranking step. A real, deliberate candidate for a future
+    proposal, not an oversight of this one.
     """
 
     rrf_rank = {key: index for index, key in enumerate(fused_order)}

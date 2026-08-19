@@ -307,6 +307,52 @@ def test_create_session_enriches_and_dispatches_analysis_for_a_new_audius_candid
     assert dispatched == [row.id]
 
 
+def test_create_session_gives_a_previously_analyzed_audius_track_real_segment_data(
+    client, monkeypatch, db_session
+):
+    # Prompt 5 step 1, end to end: a *previously analyzed* Audius candidate
+    # (external_tracks row already "completed") must feed real bpm/
+    # musical_key/method through SegmentSelector into the session's own
+    # pipeline trace, the same way an analyzed catalog track already does
+    # -- not the whole-clip/no-data fallback an unanalyzed Audius track
+    # still correctly gets (see test_external_track_downstream_parity.py
+    # for the direct SegmentSelector/TransitionPlanner-level proof this
+    # test corroborates through the real HTTP path).
+    from app.database.models.external_track import ExternalTrack
+    from app.services.pipeline import external_track_cache
+
+    monkeypatch.setattr(external_track_cache, "AUDIUS_ANALYSIS_CACHE_ENABLED", True)
+    db_session.add(ExternalTrack(
+        source="audius", external_id="already-analyzed-1", title="Known Track", artist="Known Artist",
+        analysis_status="completed", analysis_version="v2",
+        bpm=118.0, bpm_confidence=0.85, musical_key="G", key_mode="major", camelot="9B",
+        key_confidence=0.7, integrated_loudness_lufs=-13.0,
+        beat_grid_json=[0.5], downbeat_grid_json=[0.5], phrase_boundaries_json=[0.5],
+        segment_start_second=5, segment_end_second=35, segment_method="chorus_detection",
+    ))
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [
+            {
+                "title": "Known Track", "artist": "Known Artist",
+                "audio_url": "https://audio.example/already-analyzed-1",
+                "source_track_id": "already-analyzed-1", "duration": 100, "source": "audius",
+            },
+        ],
+    )
+    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None))
+
+    session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
+    assert session["nowPlaying"]["title"] == "Known Track"
+
+    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
+    selector_trace = row.pipeline_trace_json["segment_selector"]
+    assert selector_trace["method"] == "chorus_detection"
+    assert selector_trace["bpm"] == 118.0
+    assert selector_trace["musical_key"] == "G"
+
+
 def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_candidate_fails(
     client, monkeypatch, db_session
 ):
