@@ -1,4 +1,4 @@
-name: Cuemix CI
+﻿name: Cuemix CI
 
 on:
   push:
@@ -156,6 +156,8 @@ jobs:
           path: |
             /var/cache/apt/archives/*.deb
             /var/lib/apt/lists
+            !/var/lib/apt/lists/lock
+            !/var/lib/apt/lists/partial
           key: apt-ffmpeg-${{ runner.os }}-${{ steps.apt-cache-date.outputs.date }}
 
       - name: Install ffmpeg
@@ -252,6 +254,8 @@ jobs:
           path: |
             /var/cache/apt/archives/*.deb
             /var/lib/apt/lists
+            !/var/lib/apt/lists/lock
+            !/var/lib/apt/lists/partial
           key: apt-playwright-chromium-${{ runner.os }}-${{ steps.apt-cache-date.outputs.date }}
 
       - name: Install the Chromium test browser
@@ -337,7 +341,16 @@ jobs:
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       COOKIE_SECURE: "false"
       COOKIE_SAMESITE: "lax"
-      BACKEND_PUBLIC_URL: ""
+      # Real bug found via this job's own first run: an empty
+      # BACKEND_PUBLIC_URL makes public_api_url() return a bare,
+      # unprefixed path ("/uploads/1"), which the frontend's
+      # backendMediaUrl() can't recognize (it only rewrites "/api/"-
+      # prefixed or absolute dev-backend URLs) -- media links resolved
+      # against the *frontend's* own origin instead of the backend's,
+      # 404ing (observed live: "[WebServer] [404] GET /uploads/1"). Must
+      # match PUBLIC_API_BASE_URL below exactly, so backendMediaUrl's
+      # isDevelopmentBackend check (hostname/port match) recognizes it.
+      BACKEND_PUBLIC_URL: http://127.0.0.1:5000
       ROOT_PATH: ""
       CORS_ORIGINS: http://127.0.0.1:4173
       ENABLE_COLD_SEED: "false"
@@ -424,6 +437,8 @@ jobs:
           path: |
             /var/cache/apt/archives/*.deb
             /var/lib/apt/lists
+            !/var/lib/apt/lists/lock
+            !/var/lib/apt/lists/partial
           key: apt-playwright-chromium-${{ runner.os }}-${{ steps.apt-cache-date.outputs.date }}
 
       - name: Install the Chromium test browser

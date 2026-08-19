@@ -37,6 +37,20 @@ const BACKEND_URL = (process.env.PLAYWRIGHT_BACKEND_URL || '').replace(/\/+$/, '
 test.skip(!BACKEND_URL, "PLAYWRIGHT_BACKEND_URL not set -- see this file's own module docstring.");
 
 const DELIVERY_TIMEOUT_MS = 8_000;
+// The observing page's WS subscription is NOT complete the moment a static
+// heading/button renders: authStore's own /auth/me check must resolve
+// first, only then does realtimeSocket.js open the WebSocket and send its
+// subscribe message for the current channel(s) -- see realtimeSocket.js's
+// own module docstring ("socket opens on login"). All four tests here
+// initially raced this: the "acting" mutation fired immediately after a
+// page-ready assertion that doesn't actually depend on that chain, so the
+// subscribe message could still be in flight (or not yet sent) when the
+// event was published. There's no exported connection-state to poll
+// instead (realtimeSocket.js keeps `socket` module-private), so this is a
+// deliberate, generous fixed buffer for that chain to settle -- not
+// elegant, but real auth+WS-open+subscribe round trips against a local
+// backend are well under a second, so this has real margin.
+const WS_SUBSCRIBE_SETTLE_MS = 2_000;
 const RUN_ID = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 /** @param {import('@playwright/test').APIRequestContext} request */
@@ -125,6 +139,7 @@ test('live feed: browser A posts, browser B sees it appear with no reload', asyn
 	try {
 		await pageB.goto('/community');
 		await expect(pageB.getByRole('heading', { name: 'Community' })).toBeVisible();
+		await pageB.waitForTimeout(WS_SUBSCRIBE_SETTLE_MS);
 
 		const title = `Live feed test ${RUN_ID}`;
 		const created = await requestA.post(`${BACKEND_URL}/posts`, {
@@ -152,6 +167,7 @@ test("notifications: browser A comments on browser B's post, browser B gets a li
 
 		await pageB.goto('/');
 		await expect(pageB.getByRole('button', { name: 'Notifications' })).toBeVisible();
+		await pageB.waitForTimeout(WS_SUBSCRIBE_SETTLE_MS);
 
 		const commented = await requestA.post(`${BACKEND_URL}/posts/${post.id}/comments`, {
 			data: { body: 'Delivered live, this should notify the post author.' }
@@ -194,6 +210,7 @@ test('chat: browser A sends a DM, browser B receives it live', async ({ browser 
 		// this races the thread's own async open against the message send,
 		// and a message that arrives before subscription is just missed.
 		await expect(pageB.getByPlaceholder('Write a message…')).toBeVisible();
+		await pageB.waitForTimeout(WS_SUBSCRIBE_SETTLE_MS);
 
 		const messageBody = `Live DM ${RUN_ID}, delivered with no reload`;
 		const sent = await requestA.post(`${BACKEND_URL}/messages`, {
@@ -214,6 +231,7 @@ test('media: browser A uploads an attachment, browser B sees it render live', as
 	try {
 		await pageB.goto('/community');
 		await expect(pageB.getByRole('heading', { name: 'Community' })).toBeVisible();
+		await pageB.waitForTimeout(WS_SUBSCRIBE_SETTLE_MS);
 
 		const filename = `rt-${RUN_ID}.png`;
 		// A minimal valid 1x1 PNG -- real bytes, decodable, not a fixture
