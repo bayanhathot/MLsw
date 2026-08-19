@@ -10,6 +10,7 @@ rows instead of a fixed list.
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     Float,
@@ -105,21 +106,74 @@ class CatalogTrack(Base):
     # genuinely weak/ambiguous beat.
     bpm_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     musical_key: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    # How much more energy the winning pitch class carries than its
-    # runner-up in the same mean chroma profile musical_key is chosen from
-    # (see audio_analysis._key_confidence). Normalized to [0.0, 1.0]: 0.0
-    # means the top two pitch classes were tied (maximally ambiguous key),
-    # 1.0 means the runner-up carried none of the winner's energy. This is
-    # a confidence signal for the *heuristic's own pick*, not a fix for
-    # the heuristic's known major/minor detection limitation -- see this
-    # column's neighbor and audio_analysis.py's module docstring.
+    # "major" or "minor" -- the mode half of real Krumhansl-Schmuckler-style
+    # key-finding (see audio_analysis._estimate_key); musical_key alone was
+    # always just a bare pitch class with no mode until this was added.
+    # Null under the exact same conditions musical_key is (not yet
+    # analyzed, analysis failed, or a seeded demo row -- see this column's
+    # neighbors).
+    key_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # Camelot wheel notation (e.g. "8B" for C major), a deterministic
+    # lookup from (musical_key, key_mode) -- see audio_analysis.camelot_for
+    # and its _CAMELOT_MAJOR/_CAMELOT_MINOR tables. Stored rather than
+    # computed on read since it's a pure function of two already-stored
+    # columns and every consumer wants it pre-joined with the row. Null
+    # whenever musical_key/key_mode are.
+    camelot: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    # The correlation margin between the winning Krumhansl-Schmuckler key
+    # template and its runner-up (see audio_analysis._estimate_key),
+    # covering the *whole* (musical_key, key_mode) decision -- not a
+    # separate confidence for pitch class vs. mode. Normalized to [0.0,
+    # 1.0]: 0.0 means the winning and runner-up templates fit the observed
+    # chroma equally well (maximally ambiguous -- often the same root's
+    # opposite mode, or a closely related key), 1.0 means the runner-up
+    # was a far worse fit. This superseded an earlier, narrower
+    # chroma-energy-margin definition of the same column name (only ever
+    # covered pitch-class choice, no mode) -- both real signals, never an
+    # invented number.
     key_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ITU-R BS.1770 integrated loudness of the whole analyzed waveform, in
+    # LUFS (measured once here via pyloudnorm, reusing the same waveform
+    # librosa already loaded for bpm/key -- never re-measured per segment
+    # or per crossfade at render time, which would answer a subtly
+    # different question and cost real CPU on every render). Typically
+    # negative (louder audio -> a value closer to 0, e.g. -8; quieter ->
+    # more negative, e.g. -20). Null exactly when bpm/musical_key are: not
+    # yet analyzed, analysis failed, or the seeded demo catalog rows that
+    # never ran real analysis (see analysis_status="not_applicable").
+    # audio_renderer.py skips loudness normalization entirely when this is
+    # null -- an Audius track (no catalog_track_id at all) always hits
+    # that same path, matching bpm/musical_key's existing None-means-skip
+    # handling in transition_planner.py.
+    integrated_loudness_lufs: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Beat-grid timing, in seconds, straight from librosa.beat.beat_track's
+    # own beat-frame output (already computed to derive bpm -- see
+    # audio_analysis._beat_grids; never a second onset-envelope pass).
+    # Small JSON lists on the row, mirroring played_track_keys_json/
+    # played_artists_json's existing small-list-JSON pattern (DJSession)
+    # rather than a new table -- these lists are only ever read whole,
+    # never queried/filtered by individual entry. `[]` (not null) means
+    # analysis ran and genuinely found no beats; null means not yet
+    # analyzed/failed/not_applicable, same as every other analysis field.
+    beat_grid_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Every _BEATS_PER_BAR-th entry of beat_grid_json, starting from the
+    # first beat -- a COARSE HEURISTIC assuming constant 4/4 time, not
+    # genuine downbeat/meter detection (librosa's beat_track has no
+    # concept of bar position at all). Drifts on a 3/4 track or one with a
+    # meter change partway through.
+    downbeat_grid_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Every _BARS_PER_PHRASE-th entry of downbeat_grid_json -- an even
+    # coarser heuristic layered on top of the already-heuristic
+    # downbeat_grid_json (assumes fixed 8-bar phrasing), not real
+    # structural/section analysis.
+    phrase_boundaries_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     segment_start_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_end_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # Which build of the analysis pipeline produced the fields above ("v1" =
-    # the current librosa chroma+beat_track+self-similarity approach, see
-    # audio_analysis.py's module docstring) and when it ran -- both null
+    # Which build of the analysis pipeline produced the fields above ("v2" =
+    # the current librosa chroma+beat_track+self-similarity approach plus
+    # real Krumhansl-Schmuckler key-finding, see audio_analysis.py's module
+    # docstring and ANALYSIS_VERSION's own comment) and when it ran -- both null
     # until analysis actually completes (never set on a "failed" run, so a
     # failed row's null version/timestamp naturally falls into any future
     # "reprocess" query without needing its own separate condition). Stored

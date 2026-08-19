@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 import pytest
+from pydub import AudioSegment
+
 from conftest import TestingSessionLocal
 
 from app.core.security import hash_password
@@ -1272,6 +1274,87 @@ def test_render_track_transition_reserved_ms_zero_produces_no_tail():
     )
     assert result.reserved_tail is None
     assert result.body.duration_ms == 30000
+
+
+def _measure_lufs(clip) -> float:
+    """Test-only ITU-R BS.1770 measurement of an already-loaded pydub
+    AudioSegment, via pyloudnorm -- independent of anything audio_renderer.py
+    computes, so a passing assertion against this proves the *actual*
+    rendered loudness moved, not just that gain math ran without error."""
+
+    import numpy as np
+    import pyloudnorm
+
+    samples = np.array(clip.get_array_of_samples()).astype(np.float64)
+    if clip.channels > 1:
+        samples = samples.reshape((-1, clip.channels))
+    max_amplitude = float(2 ** (8 * clip.sample_width - 1))
+    meter = pyloudnorm.Meter(clip.frame_rate)
+    return meter.integrated_loudness(samples / max_amplitude)
+
+
+def test_load_clip_normalizes_differently_loud_segments_toward_the_same_measured_target(tmp_path):
+    # Two genuinely different-loudness variants of the same source audio
+    # (12 LU apart, roughly as different as two independently-mastered
+    # catalog tracks could plausibly be) -- each tagged with its own *true*
+    # measured loudness, exactly mirroring what audio_analysis.py's
+    # pyloudnorm measurement would really store for it. A stored value that
+    # doesn't match the clip's real loudness would make the gain math
+    # correct but the *outcome* meaningless -- this is why the fixture
+    # measures each variant for real rather than inventing numbers.
+    source = AudioSegment.from_file(_DEMO_WAV_PATH)[:30000]
+    quiet_path = tmp_path / "quiet.wav"
+    loud_path = tmp_path / "loud.wav"
+    (source - 6).export(quiet_path, format="wav")
+    (source + 6).export(loud_path, format="wav")
+    quiet_true_lufs = _measure_lufs(AudioSegment.from_file(quiet_path))
+    loud_true_lufs = _measure_lufs(AudioSegment.from_file(loud_path))
+    assert loud_true_lufs - quiet_true_lufs > 10  # sanity: the fixture really is 12 LU apart
+
+    target = audio_renderer.TARGET_LOUDNESS_LUFS
+    quiet_segment = _local_file_segment_long().model_copy(
+        update={
+            "track": _track(local_path=str(quiet_path)),
+            "integrated_loudness_lufs": quiet_true_lufs,
+        }
+    )
+    loud_segment = _local_file_segment_long().model_copy(
+        update={
+            "track": _track(local_path=str(loud_path)),
+            "integrated_loudness_lufs": loud_true_lufs,
+        }
+    )
+
+    quiet_clip, quiet_reason = audio_renderer._load_clip(quiet_segment)
+    loud_clip, loud_reason = audio_renderer._load_clip(loud_segment)
+    assert quiet_reason is None
+    assert loud_reason is None
+
+    quiet_measured = _measure_lufs(quiet_clip)
+    loud_measured = _measure_lufs(loud_clip)
+    # Both land within half a LU of the shared target -- genuine
+    # equalization measured on the actual rendered samples, not just proof
+    # that _apply_loudness_gain ran.
+    assert abs(quiet_measured - target) < 0.5
+    assert abs(loud_measured - target) < 0.5
+    assert abs(quiet_measured - loud_measured) < 0.5
+
+
+def test_render_track_transition_with_no_stored_loudness_still_renders(monkeypatch):
+    # An Audius-shaped segment: remote, no catalog analysis, so
+    # integrated_loudness_lufs is None -- must render successfully with no
+    # gain applied, not crash or block on a missing value.
+    demo_bytes = _DEMO_WAV_PATH.read_bytes()
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: (demo_bytes, None)
+    )
+    segment = _segment()
+    assert segment.integrated_loudness_lufs is None
+
+    renderer = PydubAudioRenderer()
+    result = renderer.render_track_transition(segment, resume_offset_ms=0, reserved_ms=5000)
+    assert result.body.is_pass_through is False
+    assert result.body.duration_ms > 0
 
 
 def test_render_track_transition_pass_through_on_load_failure(monkeypatch):

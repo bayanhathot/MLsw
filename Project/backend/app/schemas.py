@@ -578,7 +578,40 @@ class SelectedSegment(BaseModel):
     end_second: int = Field(ge=0)
     method: Literal["chorus_detection", "whole_clip"]
     bpm: float | None = None
+    # A genuine confidence signal for `bpm` (see
+    # CatalogTrack.bpm_confidence/audio_analysis._bpm_confidence), not just
+    # bpm itself -- transition_planner.py uses it to decide whether the
+    # derived beat/phrase grid is trustworthy enough to gate a transition
+    # on, since a shaky tempo estimate makes everything downstream of it
+    # (the beat grid, and so downbeat_grid/phrase_boundaries) shakier too.
+    bpm_confidence: float | None = None
     musical_key: str | None = None
+    # "major"/"minor" (see CatalogTrack.key_mode) and the deterministic
+    # Camelot-wheel code derived from (musical_key, key_mode) (see
+    # CatalogTrack.camelot/audio_analysis.camelot_for). None under the
+    # same conditions musical_key is.
+    key_mode: str | None = None
+    camelot: str | None = None
+    # The correlation margin behind musical_key/key_mode's pick (see
+    # CatalogTrack.key_confidence/audio_analysis._estimate_key).
+    # transition_planner.py skips its harmonic-key bonus/penalty entirely
+    # when this is low -- a low-confidence key guess must not drive a
+    # transition decision any more than a missing one does.
+    key_confidence: float | None = None
+    # Coarse, heuristic phrase-boundary timestamps (seconds, absolute
+    # within the source track) -- see CatalogTrack.phrase_boundaries_json/
+    # audio_analysis._beat_grids for exactly how heuristic (a fixed
+    # 4/4-time, 8-bar-phrase assumption, not real meter/structure
+    # detection). None for an Audius track or a not-yet-analyzed catalog
+    # track, same as bpm/musical_key.
+    phrase_boundaries: list[float] | None = None
+    # ITU-R BS.1770 integrated loudness (LUFS) of the source track, measured
+    # once at analysis time (see CatalogTrack.integrated_loudness_lufs).
+    # None for an Audius track (no catalog analysis exists) or a catalog
+    # track not yet analyzed -- audio_renderer.py skips loudness
+    # normalization entirely in that case, the same None-means-skip
+    # handling bpm/musical_key already get in transition_planner.py.
+    integrated_loudness_lufs: float | None = None
 
 
 class TransitionPlan(BaseModel):

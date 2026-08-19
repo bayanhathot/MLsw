@@ -248,7 +248,13 @@ def _build_catalog_track(
         row.bpm = duplicate.bpm
         row.bpm_confidence = duplicate.bpm_confidence
         row.musical_key = duplicate.musical_key
+        row.key_mode = duplicate.key_mode
+        row.camelot = duplicate.camelot
         row.key_confidence = duplicate.key_confidence
+        row.integrated_loudness_lufs = duplicate.integrated_loudness_lufs
+        row.beat_grid_json = duplicate.beat_grid_json
+        row.downbeat_grid_json = duplicate.downbeat_grid_json
+        row.phrase_boundaries_json = duplicate.phrase_boundaries_json
         row.segment_start_second = duplicate.segment_start_second
         row.segment_end_second = duplicate.segment_end_second
         row.segment_method = duplicate.segment_method

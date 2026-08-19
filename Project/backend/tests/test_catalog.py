@@ -8,6 +8,7 @@ from conftest import register_and_login
 
 from app.database.models.catalog import CatalogTrack
 from app.main import app
+from app.services.audio_analysis import camelot_for
 
 
 def anonymous():
@@ -107,16 +108,37 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     assert row.segment_end_second > row.segment_start_second
     # Lets future targeted reprocessing (e.g. "everything below version N",
     # "everything analyzed before date X") query these independently --
-    # see CatalogTrack.analysis_version's own docstring.
-    assert row.analysis_version == "v1"
+    # see CatalogTrack.analysis_version's own docstring. "v2": real
+    # Krumhansl-Schmuckler key-finding (root + mode), not v1's bare
+    # strongest-chroma-bin pitch class guess.
+    assert row.analysis_version == "v2"
     assert row.analyzed_at is not None
     # Genuine confidence signals read off the same librosa computations
     # bpm/musical_key are chosen from (see audio_analysis._bpm_confidence/
-    # _key_confidence), not placeholders -- both normalized to [0.0, 1.0].
+    # _estimate_key), not placeholders -- both normalized to [0.0, 1.0].
     assert row.bpm_confidence is not None
     assert 0.0 <= row.bpm_confidence <= 1.0
     assert row.key_confidence is not None
     assert 0.0 <= row.key_confidence <= 1.0
+    # Real key-finding now also picks a mode, and camelot is a
+    # deterministic lookup from (musical_key, key_mode) -- see
+    # audio_analysis.camelot_for.
+    assert row.key_mode in ("major", "minor")
+    assert row.camelot is not None
+    assert row.camelot == camelot_for(row.musical_key, row.key_mode)
+    # ITU-R BS.1770 integrated loudness (pyloudnorm) -- always negative in
+    # practice, well above the -70 LUFS absolute silence gate.
+    assert row.integrated_loudness_lufs is not None
+    assert -70.0 < row.integrated_loudness_lufs < 0.0
+    # Beat-grid timing, reused from beat_track's own beat-frame output (see
+    # audio_analysis._beat_grids) -- the 60s demo wav has real beats.
+    assert row.beat_grid_json
+    assert all(isinstance(t, (int, float)) for t in row.beat_grid_json)
+    assert row.beat_grid_json == sorted(row.beat_grid_json)
+    # downbeat_grid/phrase_boundaries are the declared coarse 4/4 + 8-bar
+    # heuristic -- exact fixed-stride slices of beat_grid_json.
+    assert row.downbeat_grid_json == row.beat_grid_json[::4]
+    assert row.phrase_boundaries_json == row.downbeat_grid_json[::8]
 
 
 def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client, db_session, monkeypatch):
@@ -155,6 +177,11 @@ def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client
     assert second_row.checksum_sha256 == first_row.checksum_sha256
     assert second_row.bpm == first_row.bpm
     assert second_row.musical_key == first_row.musical_key
+    assert second_row.key_mode == first_row.key_mode
+    assert second_row.camelot == first_row.camelot
+    assert second_row.beat_grid_json == first_row.beat_grid_json
+    assert second_row.downbeat_grid_json == first_row.downbeat_grid_json
+    assert second_row.phrase_boundaries_json == first_row.phrase_boundaries_json
     assert second_row.segment_start_second == first_row.segment_start_second
     assert second_row.segment_end_second == first_row.segment_end_second
     assert second_row.storage_name == first_row.storage_name  # reused physical file
@@ -162,6 +189,7 @@ def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client
     assert second_row.analyzed_at == first_row.analyzed_at
     assert second_row.bpm_confidence == first_row.bpm_confidence
     assert second_row.key_confidence == first_row.key_confidence
+    assert second_row.integrated_loudness_lufs == first_row.integrated_loudness_lufs
 
 
 def test_duplicate_upload_with_different_metadata_still_creates_its_own_row(client, db_session):

@@ -48,7 +48,13 @@ class LibrosaSegmentSelector(SegmentSelector):
                     end_second=row.segment_end_second,
                     method=row.segment_method or "whole_clip",
                     bpm=row.bpm,
+                    bpm_confidence=row.bpm_confidence,
                     musical_key=row.musical_key,
+                    key_mode=row.key_mode,
+                    camelot=row.camelot,
+                    key_confidence=row.key_confidence,
+                    phrase_boundaries=row.phrase_boundaries_json,
+                    integrated_loudness_lufs=row.integrated_loudness_lufs,
                 )
 
         end_second = track.duration_seconds if track.duration_seconds > 0 else FALLBACK_SEGMENT_SECONDS
@@ -58,5 +64,11 @@ class LibrosaSegmentSelector(SegmentSelector):
             end_second=end_second,
             method="whole_clip",
             bpm=None,
+            bpm_confidence=None,
             musical_key=None,
+            key_mode=None,
+            camelot=None,
+            key_confidence=None,
+            phrase_boundaries=None,
+            integrated_loudness_lufs=None,
         )

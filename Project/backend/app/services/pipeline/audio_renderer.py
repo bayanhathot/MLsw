@@ -51,6 +51,13 @@ _REMOTE_TIMEOUT_SECONDS = 8.0
 # on a small VM disk.
 RENDERED_AUDIO_TTL_SECONDS = float(os.getenv("RENDERED_AUDIO_TTL_SECONDS", "3600"))
 
+# Common streaming-platform integrated-loudness target (matches Spotify's
+# own -14 LUFS default). Every segment with a stored
+# integrated_loudness_lufs is shifted toward this same target before
+# rendering, so two tracks recorded at very different loudness don't
+# produce an audible volume jump at a crossfade -- see _apply_loudness_gain.
+TARGET_LOUDNESS_LUFS = float(os.getenv("TARGET_LOUDNESS_LUFS", "-14.0"))
+
 
 def _render_dir() -> Path:
     directory = upload_queue.UPLOAD_DIR / RENDER_SUBDIR
@@ -88,6 +95,27 @@ def _looks_like_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
+def _apply_loudness_gain(clip: AudioSegment, segment: SelectedSegment) -> AudioSegment:
+    """Shifts `clip` toward TARGET_LOUDNESS_LUFS by a flat gain derived from
+    `segment.integrated_loudness_lufs` -- the track's own whole-track
+    integrated loudness, measured once at analysis time (see
+    audio_analysis.py's _integrated_loudness_lufs), never re-measured here
+    per segment/crossfade slice (both expensive per render and a different
+    measurement than the track's own overall loudness). A flat gain shift
+    preserves the track's own dynamics -- this is normalization, not
+    compression/limiting; pydub's own .normalize() is peak-based and
+    wouldn't address the actual problem (integrated loudness mismatch).
+    Returns `clip` unchanged -- no gain applied -- when no stored value
+    exists (an Audius track, or a catalog track not yet analyzed): the
+    same missing-signal-skipped idiom bpm/musical_key already get in
+    transition_planner.py, never a fabricated/assumed loudness."""
+
+    if segment.integrated_loudness_lufs is None:
+        return clip
+    gain_db = TARGET_LOUDNESS_LUFS - segment.integrated_loudness_lufs
+    return clip.apply_gain(gain_db)
+
+
 def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None]:
     """Returns (clip, None) on success, or (None, reason) on failure -- see
     _download's docstring for why the reason is threaded through rather than
@@ -117,6 +145,7 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
     start_ms = max(0, segment.start_second * 1000)
     end_ms = segment.end_second * 1000
     clip = audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
+    clip = _apply_loudness_gain(clip, segment)
     return clip, None
 
 
