@@ -219,6 +219,25 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+      # Root cause of a real production incident: redis had no dependents
+      # anywhere in this file, and remote-deploy.sh's `up` only lists
+      # backend/frontend/caddy/ollama explicitly (mirroring the "no
+      # dependents, so it must be named explicitly" pattern ollama's own
+      # comment below describes) -- redis was never in that list either, so
+      # once its container was ever removed/not yet created on a given VM,
+      # no subsequent deploy ever (re)created it. The app kept reporting
+      # healthy throughout (backend's own healthcheck below only checks that
+      # /db-health responds 200, not that its redis.reachable field is
+      # true), so this degraded silently: real-time delivery (channel_hub.py
+      # -- chat, notifications, live feed, media) is Redis-pub/sub-backed
+      # even for this single-worker deployment and fails open (drops events,
+      # never raises) rather than erroring, and upload_queue.py's job
+      # durability silently fell back to in-memory-only. This dependency is
+      # the actual fix: it makes redis a real dependent-having service, so
+      # any `docker compose up backend ...` (this script's included) always
+      # brings it up and waits for its own healthcheck first.
+      redis:
+        condition: service_healthy
       # Deliberately NOT gated on ollama's healthcheck: even though it's now
       # the default provider, the LLM step is still optional at every call
       # site (prompt_parser.parse_prompt fails open to the deterministic
