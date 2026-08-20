@@ -24,6 +24,13 @@ Kept here for reference, or for standing up a second environment:
    `PUBLIC_BASE_URL`. The public value must be the certificate-valid HTTPS
    origin; it is intentionally separate from the SSH hostname or IP and its
    hostname must match `DOMAIN` in the VM's `.env` file.
+   The workflow also manages three non-secret feature settings. Their
+   current course-test defaults match `Project/.env`:
+   `AUDIUS_ANALYSIS_CACHE_ENABLED=true`,
+   `DEBUG_DASHBOARD_ENABLED=true`, and
+   `DEBUG_DASHBOARD_OWNER_USER_ID=51`. Define repository variables with
+   those names to override the defaults when the production owner account
+   changes or an emergency feature shutdown is required.
 5. Add secrets `SSH_PRIVATE_KEY` and `GHCR_READ_TOKEN`. The token needs only
    `read:packages`. The workflow trusts the VM's SSH host key on first
    connect each run (`StrictHostKeyChecking accept-new`) rather than pinning
@@ -36,7 +43,12 @@ Kept here for reference, or for standing up a second environment:
 On each push to `main`, after CI succeeds, immutable commit-tagged images are
 pushed to GHCR. The gated deploy job logs the VM into GHCR, uploads only the
 versioned deployment files, applies Alembic migrations, recreates services,
-and verifies `$PUBLIC_BASE_URL/api/db-health` from the runner.
+and verifies `$PUBLIC_BASE_URL/api/db-health` from the runner. Before Compose
+runs, `remote-deploy.sh` synchronizes the three managed feature settings into
+the VM's persistent `~/cuemix-deploy/.env`; after recreation it reads each
+value from the running backend container and fails the deployment on drift.
+This is necessary because CI intentionally preserves the VM's `.env`, so a
+stale explicit `false` would otherwise override a newer Compose default.
 
 `BACKEND_WORKERS` must remain `1` while notification fanout and upload jobs are
 process-local. Scaling API workers/replicas first requires Redis (or another

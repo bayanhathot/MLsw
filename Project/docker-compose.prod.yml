@@ -53,16 +53,17 @@ x-backend-environment: &backend-environment
   # key/Camelot/LUFS/beat grid/phrase boundaries) -- see Project/SECURITY.md's
   # "Third-party compliance gates" section (risk accepted 2026-08-20) and
   # app/services/pipeline/external_track_cache.py's own module docstring.
-  # Off by default even here; must also be set in this VM's persisted
-  # ~/cuemix-deploy/.env to take effect, since docker-compose only passes
-  # through variables it explicitly references.
-  AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-false}
+  # Enabled for the course test deployment after the documented risk was
+  # accepted. CI also synchronizes this into the VM's persisted .env so an
+  # older explicit false value cannot silently override this default.
+  AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-true}
   EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
   # Gates the owner-only admin debug dashboard (routers/admin_debug.py) --
-  # off by default, killable instantly without a redeploy. The owner-id
-  # check is the real access control; the flag alone does not grant access.
-  DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-false}
-  DEBUG_DASHBOARD_OWNER_USER_ID: ${DEBUG_DASHBOARD_OWNER_USER_ID:-}
+  # enabled for owner testing, and still killable instantly by setting the
+  # VM value false. The owner-id check is the real access control; the flag
+  # alone does not grant access.
+  DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-true}
+  DEBUG_DASHBOARD_OWNER_USER_ID: ${DEBUG_DASHBOARD_OWNER_USER_ID:-51}
   # Cold-seeds a realistic ~50-user dataset on every deploy (see
   # app/coldseed/build.py) -- idempotent, so safe to leave on. Set to false
   # to opt out.

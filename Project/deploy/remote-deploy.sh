@@ -12,6 +12,52 @@ test -f docker-compose.prod.yml || { echo "Production Compose file is missing" >
 command -v docker >/dev/null 2>&1 || { echo "Docker is not installed" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is not installed" >&2; exit 1; }
 
+# CI owns these non-secret feature switches for the course test deployment.
+# The VM's .env deliberately survives deploys, so merely changing Compose's
+# defaults cannot fix an old explicit "false" value. Persist the validated
+# values supplied by the workflow before Compose reads the file. A manual
+# invocation that supplies none of them leaves .env untouched, preserving
+# the dashboard's emergency kill-switch behavior outside automated deploys.
+set_managed_env() {
+  local key="$1"
+  local value="$2"
+  local temporary
+  temporary="$(mktemp "${DEPLOY_ROOT}/.env.XXXXXX")"
+  awk -v key="${key}" -v value="${value}" '
+    BEGIN { replaced = 0 }
+    index($0, key "=") == 1 { print key "=" value; replaced = 1; next }
+    { print }
+    END { if (!replaced) print key "=" value }
+  ' .env > "${temporary}"
+  chmod --reference=.env "${temporary}"
+  mv "${temporary}" .env
+}
+
+if [ -n "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED:-}" ]; then
+  case "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED}" in
+    true|false) ;;
+    *) echo "MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED must be true or false" >&2; exit 1 ;;
+  esac
+  set_managed_env AUDIUS_ANALYSIS_CACHE_ENABLED "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED}"
+fi
+if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
+  case "${MANAGED_DEBUG_DASHBOARD_ENABLED}" in
+    true|false) ;;
+    *) echo "MANAGED_DEBUG_DASHBOARD_ENABLED must be true or false" >&2; exit 1 ;;
+  esac
+  set_managed_env DEBUG_DASHBOARD_ENABLED "${MANAGED_DEBUG_DASHBOARD_ENABLED}"
+fi
+if [ -n "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID:-}" ]; then
+  case "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}" in
+    *[!0-9]*|'') echo "MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID must be a positive integer" >&2; exit 1 ;;
+  esac
+  if [ "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}" -le 0 ]; then
+    echo "MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID must be a positive integer" >&2
+    exit 1
+  fi
+  set_managed_env DEBUG_DASHBOARD_OWNER_USER_ID "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}"
+fi
+
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
@@ -22,6 +68,31 @@ compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 # would never create it at all on a fresh VM.
 "${compose[@]}" up --detach --remove-orphans backend frontend caddy ollama
 "${compose[@]}" ps
+
+# Prove the recreated backend received the managed values. This catches the
+# exact class of drift where CI is green but an old VM .env silently keeps a
+# feature disabled. Do not print the full container environment: it contains
+# production credentials.
+verify_managed_env() {
+  local key="$1"
+  local expected="$2"
+  local actual
+  actual="$("${compose[@]}" exec -T backend printenv "${key}")"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "running backend has ${key}=${actual:-<unset>}; expected ${expected}" >&2
+    exit 1
+  fi
+  echo "Verified running backend feature setting: ${key}=${expected}"
+}
+if [ -n "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED:-}" ]; then
+  verify_managed_env AUDIUS_ANALYSIS_CACHE_ENABLED "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED}"
+fi
+if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
+  verify_managed_env DEBUG_DASHBOARD_ENABLED "${MANAGED_DEBUG_DASHBOARD_ENABLED}"
+fi
+if [ -n "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID:-}" ]; then
+  verify_managed_env DEBUG_DASHBOARD_OWNER_USER_ID "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}"
+fi
 
 # Ensure the local LLM refinement model is present. Read OLLAMA_MODEL out of
 # the real deployment .env (not just the compose file's own default) so a
