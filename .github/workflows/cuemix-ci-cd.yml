@@ -675,6 +675,24 @@ jobs:
           --max-time 30
           "${PUBLIC_BASE_URL%/}/api/db-health"
 
+      # Catches the exact failure mode a real deploy once had silently: the
+      # /static StaticFiles mount 404ing for every request behind the
+      # /api-stripping reverse proxy (see app/main.py's FastAPI() call site
+      # for the root-cause writeup) had no automated check that would have
+      # caught it before a human noticed. db-health alone doesn't cover this
+      # -- it's a completely different route type (a plain @app.get, not a
+      # Mount), so it stayed green throughout. --fail makes any non-2xx here
+      # fail the job the same way the health check above does.
+      - name: Verify a real static asset is actually reachable
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+        run: >-
+          curl --fail --show-error
+          --retry 12 --retry-delay 5 --retry-all-errors --retry-connrefused
+          --max-time 30
+          "${PUBLIC_BASE_URL%/}/api/static/audio/cuemix-demo.wav"
+          --output /dev/null
+
   rollback-production:
     name: Roll back Azure VM to a prior SHA
     runs-on: ubuntu-latest

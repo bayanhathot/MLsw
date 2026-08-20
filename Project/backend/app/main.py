@@ -108,11 +108,32 @@ async def _lifespan(_app: FastAPI):
     await channel_hub.stop_listener()
 
 
+# Deliberately NOT passing root_path=os.getenv("ROOT_PATH", "") here, even
+# though that env var exists and both compose files default it to "/api".
+# Both reverse proxies in front of this app (frontend/nginx.conf's
+# "location /api/ { proxy_pass http://cuemix_backend/; }" comment, and
+# deploy/Caddyfile's "handle_path /api/*") STRIP the /api prefix before
+# forwarding, so this app only ever receives paths without it -- FastAPI's
+# root_path is for the opposite topology (a proxy that passes the prefix
+# through unstripped). Passing it here anyway broke every StaticFiles
+# mount specifically (not regular routes): FastAPI's __call__ force-sets
+# scope["root_path"] on every request (fastapi/applications.py), Mount's
+# own matching then derives a *child* root_path as root_path + matched_path
+# for whatever's mounted at /static, and that child match requires
+# scope["path"] to literally start with "{root_path}/static" -- which,
+# since the proxy already stripped /api, it never does. Confirmed by
+# tracing starlette._utils.get_route_path across a live request: every
+# path under /static/... 404s with root_path="/api" and 200s with it
+# unset, on an otherwise-identical request. ROOT_PATH itself is still read
+# independently by app.core.config.public_api_url() for constructing
+# correct browser-facing URLs (frontend/src/lib/services/api.js's
+# backendMediaUrl does the equivalent for /static/... URLs specifically)
+# -- that's the actual, working mechanism for the "browser needs the /api
+# prefix" concern; FastAPI's own root_path was never load-bearing for it.
 app = FastAPI(
     title="Cuemix Backend",
     description="Backend API for the Cuemix Smart AI DJ Mixer project.",
     version="0.2.0",
-    root_path=os.getenv("ROOT_PATH", ""),
     lifespan=_lifespan,
 )
 

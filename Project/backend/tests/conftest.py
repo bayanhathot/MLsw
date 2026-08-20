@@ -1,11 +1,31 @@
 import os
 import time
 
+import dotenv
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+# Must run before any `app.*` import: app/database/database.py and
+# app/core/security.py both call dotenv.load_dotenv() at their own import
+# time with no path, which walks up from CWD and silently picks up
+# Project/.env (a real, gitignored, developer-local file) if one exists --
+# a machine with that file present gets a materially different test
+# environment than CI (which has none) for every env var this file doesn't
+# already explicitly default below, with no visible signal that happened.
+# Confirmed as a real, not just theoretical, problem this way: a session
+# that had locally set AUDIUS_ANALYSIS_CACHE_ENABLED=true and
+# DEBUG_DASHBOARD_ENABLED=true in Project/.env (for unrelated Docker
+# verification) silently ran the *entire* .venv-based test suite with both
+# flags live -- including real background Audius-analysis dispatch during
+# tests that never intended to exercise that path -- and ROOT_PATH=/api
+# broke the static-file mount outright (see app/main.py's own writeup).
+# Patching dotenv.load_dotenv to a no-op (rather than only pre-setting a
+# known list of vars) closes the whole class of problem at once: it can't
+# go stale as new env-backed config is added, unlike an enumerated list.
+dotenv.load_dotenv = lambda *args, **kwargs: False
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite://")
 os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
@@ -17,6 +37,17 @@ os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 # directly with its own env vars monkeypatched, independent of which
 # provider dependencies.py wires up.
 os.environ.setdefault("VIBE_LLM_PROVIDER", "none")
+# Every other env-backed flag/config value read by app/ (ROOT_PATH,
+# AUDIUS_ANALYSIS_CACHE_ENABLED, ENABLE_PIPELINE_DEBUG,
+# DEBUG_DASHBOARD_ENABLED, every pipeline-tuning weight in
+# audius_retriever.py/catalog_retriever.py, etc.) already has its own safe,
+# off-by-default fallback baked into its own os.getenv(key, default) call
+# site -- with Project/.env no longer reachable, those fallbacks are what
+# every test actually runs against, without needing a second, parallel list
+# of defaults maintained here that would only drift out of sync with the
+# real ones. Tests that need a *non-default* value for one of those
+# (e.g. AUDIUS_ANALYSIS_CACHE_ENABLED=true) set it explicitly via
+# monkeypatch.setenv, scoped to just that test.
 
 from app.core.rate_limit import auth_rate_limit, write_rate_limit
 from app.core.redis_client import get_sync_redis_client

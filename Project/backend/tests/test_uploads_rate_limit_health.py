@@ -312,6 +312,25 @@ def test_health_and_request_id(client):
     assert audio.content[:4] == b"RIFF"
 
 
+def test_static_mount_never_requires_a_root_path_prefix(client):
+    """Regression guard for a real bug: FastAPI(root_path="/api") broke
+    every request under the /static Mount specifically (not regular
+    routes -- see app/main.py's own writeup on the exact mechanism),
+    because both reverse proxies in front of this app (frontend/nginx.conf,
+    deploy/Caddyfile) strip /api before forwarding, so the app never
+    actually receives a path containing it. Asserts the fix directly on
+    the app object (root_path must be empty, full stop) rather than only
+    on env-dependent behavior, so this can't silently regress if root_path
+    is ever reintroduced under a different-looking env var."""
+
+    from app.main import app as fastapi_app
+
+    assert fastapi_app.root_path == ""
+    for path in ("/static/audio/cuemix-demo.wav", "/static/audio/GENERATED_AUDIO.md"):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path} should be reachable without any /api prefix"
+
+
 def test_cors_origins_are_environment_configurable(monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "https://one.example, https://two.example/")
     assert cors_origins() == ["https://one.example", "https://two.example"]
