@@ -376,17 +376,29 @@ jobs:
         working-directory: Project/backend
         run: python -m alembic upgrade head
 
-      # --workers 2: real production runs a single worker (see
-      # redis_client.py's own comment), but channel_hub.py never takes an
-      # in-process shortcut regardless of worker count ("Redis is the
-      # single source of truth for delivery, even within one process") --
-      # 2 workers is a strictly stronger, still-realistic test of that
-      # claim (genuine cross-process delivery via Redis pub/sub, not just
-      # same-process), closer to what a scaled-up deployment would run.
+      # --workers 1, not 2: this job's own first real run found /ws
+      # consistently returning 404 on WebSocket handshake (confirmed from
+      # the Playwright trace's network log -- "Error during WebSocket
+      # handshake: Unexpected response code: 404" -- not an auth/origin
+      # rejection, which would be 401/403) while ordinary HTTP endpoints on
+      # the same server worked fine. --workers 2 was originally chosen as a
+      # deliberately *stronger* test than production's real config (see
+      # redis_client.py's own comment: "Production only ever has one loop
+      # for the process's whole lifetime (BACKEND_WORKERS=1)") on the
+      # theory that channel_hub.py's Redis-pub/sub delivery never takes an
+      # in-process shortcut regardless of worker count -- but that's a
+      # claim about *delivery*, not about whether uvicorn's own
+      # multi-worker mode serves a WebSocket route correctly at all, which
+      # this codebase has apparently never actually exercised (nothing
+      # here runs uvicorn with workers>1 anywhere else). Reverted to
+      # exactly production's own real, tested configuration rather than
+      # debug an untested one -- if multi-worker WS support is worth
+      # verifying, that's a separate, deliberate investigation, not a
+      # side effect of this test's own setup.
       - name: Start the real backend
         working-directory: Project/backend
         run: |
-          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 5000 --workers 2 \
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 5000 --workers 1 \
             > "${RUNNER_TEMP}/backend.log" 2>&1 &
           for _attempt in $(seq 1 30); do
             if curl --fail --silent --show-error http://127.0.0.1:5000/db-health >/dev/null 2>&1; then

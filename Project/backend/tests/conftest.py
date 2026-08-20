@@ -72,15 +72,27 @@ def _drain_upload_queue(timeout=15.0):
     genuinely stuck job degrades to the pre-existing flaky behavior instead
     of turning into a second hang.
 
-    Note: this only sees real upload jobs, not submit_analysis's bare
-    "analyze:<track_id>" queue entries (which are never represented in
-    UploadQueue._jobs at all -- see upload_queue.py's _ANALYZE_PREFIX
-    comment). That's fine here: app.main's requeue_pending_analysis(),
-    the only thing that would submit one of those outside an actual
-    upload's own flow, is neutralized for the whole test session below
-    (a plain TestClient(app) with no `with` block, e.g. test_catalog.py's
-    anonymous() helper, never runs the ASGI lifespan at all, so it was
-    never actually a source of these either).
+    Also waits for the underlying queue's own unfinished_tasks count to
+    reach zero, not just _jobs' tracked upload jobs -- this was found
+    incomplete for real: submit_analysis's bare "analyze:<track_id>" /
+    submit_external_analysis's "analyze_external:<id>" queue entries are
+    never represented in UploadQueue._jobs at all (see upload_queue.py's
+    _ANALYZE_PREFIX comment), so a still-running background
+    analyze_catalog_track/analyze_external_track job from one test could
+    still race the *next* test's own clean_database table wipe -- observed
+    directly in CI, more than once, as a stray "Catalog track analysis job
+    failed for id=N" alongside an unrelated test's own SQLAlchemy session
+    erroring ("Could not refresh instance", "cannot rollback - no
+    transaction is active"). This older docstring used to reason that was
+    fine because requeue_pending_analysis() (the only *other* submitter of
+    a bare analyze job) is neutralized for the whole test session below --
+    true, but incomplete: routers/catalog.py's own on_stored_callback also
+    calls submit_analysis directly for an ordinary successful upload, which
+    is not neutralized and is exactly what a real test exercises.
+    unfinished_tasks (incremented by Queue.put, decremented by task_done --
+    both already called correctly for every job kind, including bare
+    analyze ones -- see _worker()) is the one signal that actually covers
+    every queue entry, not just the ones with a _jobs row.
     """
 
     deadline = time.monotonic() + timeout
@@ -91,7 +103,7 @@ def _drain_upload_queue(timeout=15.0):
                 for job_id, job in _upload_queue._jobs.items()
                 if job["status"] in _ACTIVE_UPLOAD_STATUSES
             ]
-        if not active:
+        if not active and _upload_queue._queue.unfinished_tasks == 0:
             return
         time.sleep(0.02)
     print(f"conftest: _drain_upload_queue timed out after {timeout}s with jobs still active")
