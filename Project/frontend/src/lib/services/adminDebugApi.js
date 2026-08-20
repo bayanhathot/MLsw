@@ -1,11 +1,13 @@
-/** Owner-only admin debug dashboard API (routers/admin_debug.py).
+/** Admin debug dashboard API (routers/admin_debug.py), reachable by any
+ * logged-in account.
  *
- * Backend-gated by DEBUG_DASHBOARD_ENABLED + an owner-user-id check -- every
- * caller must handle a 404 ApiError by simply not rendering anything, the
- * same "fail closed, no visible trace of the feature" contract debugApi.js
- * already documents for the other (unauthenticated) debug panel. A 404 here
- * additionally means "you personally are not authorized," not just "the
- * feature is off" -- the backend deliberately makes those indistinguishable.
+ * Backend-gated by DEBUG_DASHBOARD_ENABLED plus requiring a logged-in
+ * session -- every caller must handle a 404 ApiError by simply not
+ * rendering anything, the same "fail closed, no visible trace of the
+ * feature" contract debugApi.js already documents for the other
+ * (unauthenticated) debug panel. A 404 here additionally means "you are
+ * not logged in," not just "the feature is off" -- the backend
+ * deliberately makes those indistinguishable.
  */
 
 import { apiRequest } from './api.js';

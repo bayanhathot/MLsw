@@ -1,9 +1,11 @@
-"""Coverage for the owner-only admin debug dashboard (routers/admin_debug.py):
-the flag+owner gate (404, never 401/403, for every unauthorized shape), real
-session/external-track data reaching an authorized owner, that no secret
-value ever reaches the rendered response, the "admin_debug" channel_hub
-authorization rule, and that publishing dashboard events never breaks or
-blocks the real session-loop request path even when it fails.
+"""Coverage for the admin debug dashboard (routers/admin_debug.py): the
+flag+auth gate (404, never 401/403, for both unauthorized shapes -- flag
+off, or not logged in; any logged-in account passes once the flag is on,
+see admin_debug.py's own docstring for why), real session/external-track
+data reaching an authenticated user, that no secret value ever reaches the
+rendered response, the "admin_debug" channel_hub authorization rule, and
+that publishing dashboard events never breaks or blocks the real
+session-loop request path even when it fails.
 """
 
 import os
@@ -12,12 +14,12 @@ import pytest
 
 from conftest import register_and_login
 
-from app.core.config import debug_dashboard_enabled, debug_dashboard_owner_user_id
+from app.core.config import debug_dashboard_enabled
 from app.core.security import SECRET_KEY
 from app.services import admin_debug_events
 
 
-def _owner_id(client) -> int:
+def _user_id(client) -> int:
     return client.get("/auth/me").json()["id"]
 
 
@@ -32,21 +34,10 @@ def test_debug_dashboard_enabled_parses_common_truthy_values(monkeypatch):
         assert debug_dashboard_enabled() is False
 
 
-def test_debug_dashboard_owner_user_id_is_none_when_unset_or_unparseable(monkeypatch):
-    monkeypatch.delenv("DEBUG_DASHBOARD_OWNER_USER_ID", raising=False)
-    assert debug_dashboard_owner_user_id() is None
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", "not-a-number")
-    assert debug_dashboard_owner_user_id() is None
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", "7")
-    assert debug_dashboard_owner_user_id() == 7
-
-
 @pytest.mark.parametrize("path", ["/admin/debug/sessions", "/admin/debug/external-tracks", "/admin/debug/events"])
 def test_admin_debug_is_404_when_flag_disabled(client, path, monkeypatch):
     monkeypatch.delenv("DEBUG_DASHBOARD_ENABLED", raising=False)
     register_and_login(client)
-    owner_id = _owner_id(client)
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
     response = client.get(path)
     assert response.status_code == 404
     assert response.json() == {"detail": "Not found."}
@@ -54,42 +45,37 @@ def test_admin_debug_is_404_when_flag_disabled(client, path, monkeypatch):
 
 def test_admin_debug_is_404_when_not_logged_in(client, monkeypatch):
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", "999999")
     # Deliberately no register_and_login call.
     response = client.get("/admin/debug/sessions")
     assert response.status_code == 404
 
 
-def test_admin_debug_is_404_for_an_authenticated_non_owner(client, monkeypatch):
+def test_admin_debug_is_reachable_by_any_authenticated_account(client, second_client, monkeypatch):
+    """Access is "any logged-in account," not one specific owner -- a
+    second, unrelated account must succeed exactly like the first."""
+
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    register_and_login(client)
-    real_id = _owner_id(client)
-    # Owner ID configured to someone else entirely -- this authenticated
-    # user is not authorized.
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(real_id + 1))
-    response = client.get("/admin/debug/sessions")
-    assert response.status_code == 404
+    register_and_login(client, "alice", "alice@example.example")
+    register_and_login(second_client, "bob", "bob@example.example")
+    assert client.get("/admin/debug/sessions").status_code == 200
+    assert second_client.get("/admin/debug/sessions").status_code == 200
 
 
-def test_admin_debug_kill_switch_still_404s_the_real_owner(client, monkeypatch):
-    """The flag being off must win even for the one correctly-configured
-    owner account -- this is the "kill it instantly" guarantee the whole
-    feature is gated on."""
+def test_admin_debug_kill_switch_still_404s_a_logged_in_user(client, monkeypatch):
+    """The flag being off must win even for an authenticated account --
+    this is the "kill it instantly" guarantee the whole feature is gated
+    on."""
 
     register_and_login(client)
-    owner_id = _owner_id(client)
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "false")
     assert client.get("/admin/debug/sessions").status_code == 404
     assert client.get("/admin/debug/external-tracks").status_code == 404
     assert client.get("/admin/debug/events").status_code == 404
 
 
-def test_admin_debug_owner_sees_real_session_data(client, monkeypatch):
+def test_admin_debug_shows_real_session_data(client, monkeypatch):
     register_and_login(client)
-    owner_id = _owner_id(client)
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
 
     started = client.post("/sessions/start", json={"prompt": "smooth focus music"})
     assert started.status_code == 200
@@ -112,9 +98,7 @@ def test_admin_debug_external_tracks_search_filters_by_artist_or_title(client, d
     from app.database.models.external_track import ExternalTrack
 
     register_and_login(client)
-    owner_id = _owner_id(client)
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
 
     db_session.add_all([
         ExternalTrack(source="audius", external_id="a1", title="Sunset Drive", artist="Nova Loop"),
@@ -139,9 +123,7 @@ def test_admin_debug_external_tracks_search_filters_by_artist_or_title(client, d
 
 def test_admin_debug_events_endpoint_returns_recorded_events(client, monkeypatch):
     register_and_login(client)
-    owner_id = _owner_id(client)
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
 
     admin_debug_events._events.clear()
     admin_debug_events.record_event({"event": "session_stage_latency", "stage": "create_session", "total_ms": 12.3})
@@ -157,9 +139,7 @@ def test_admin_debug_response_never_contains_the_backend_secret_key(client, monk
     leaked here every session cookie in production would be forgeable."""
 
     register_and_login(client)
-    owner_id = _owner_id(client)
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
     client.post("/sessions/start", json={"prompt": "smooth focus music"})
 
     for path in ("/admin/debug/sessions", "/admin/debug/external-tracks", "/admin/debug/events"):
@@ -168,13 +148,12 @@ def test_admin_debug_response_never_contains_the_backend_secret_key(client, monk
         assert os.getenv("DATABASE_URL", "") == "" or os.getenv("DATABASE_URL") not in response.text
 
 
-def test_admin_debug_channel_requires_flag_and_owner_match(monkeypatch):
+def test_admin_debug_channel_requires_only_the_flag_and_authentication(monkeypatch):
     from app.routers.realtime import _authorize_subscribe
 
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", "5")
     assert _authorize_subscribe(db=None, channel="admin_debug", user_id=5) is True
-    assert _authorize_subscribe(db=None, channel="admin_debug", user_id=6) is False
+    assert _authorize_subscribe(db=None, channel="admin_debug", user_id=6) is True
 
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "false")
     assert _authorize_subscribe(db=None, channel="admin_debug", user_id=5) is False
@@ -221,9 +200,7 @@ def test_admin_debug_channel_pushes_a_live_session_update(client, monkeypatch):
     channel_hub's real Redis-backed fanout rather than a second mechanism."""
 
     register_and_login(client)
-    owner_id = _owner_id(client)
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
-    monkeypatch.setenv("DEBUG_DASHBOARD_OWNER_USER_ID", str(owner_id))
 
     with client.websocket_connect("/ws") as socket:
         socket.send_json({"action": "subscribe", "channel": "admin_debug"})

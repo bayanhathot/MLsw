@@ -10,7 +10,7 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from app.core.config import cors_origins, debug_dashboard_enabled, debug_dashboard_owner_user_id
+from app.core.config import cors_origins, debug_dashboard_enabled
 from app.core.security import decode_access_token
 from app.database import database as db_module
 from app.database.models.forum import ForumPost
@@ -36,13 +36,16 @@ def _authorize_subscribe(db: Session, channel: str, user_id: int) -> bool:
     (see messaging.py's /messages/{username}). "feed:{kind}" and
     "user:{own_id}" need nothing beyond the connection already being
     authenticated. "admin_debug" (routers/admin_debug.py) uses the exact
-    same owner check as that router's own REST endpoints -- both flag AND
-    user-id must match, so a subscribe attempt gets silently refused
-    (no such channel, from this authenticated user's point of view) the
-    same way the REST route 404s rather than 403s for anyone else."""
+    same access rule as that router's own REST endpoints -- any
+    authenticated user, gated only on the flag (see admin_debug.py's own
+    docstring for why "any account" rather than "no account" or one
+    specific account) -- so a subscribe attempt while the flag is off
+    gets silently refused (no such channel, from this authenticated
+    user's point of view) the same way the REST routes 404 rather than
+    403 when disabled."""
 
     if channel == "admin_debug":
-        return debug_dashboard_enabled() and user_id == debug_dashboard_owner_user_id()
+        return debug_dashboard_enabled()
     if channel.startswith("user:"):
         return channel == f"user:{user_id}"
     if channel.startswith("feed:"):

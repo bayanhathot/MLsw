@@ -600,7 +600,6 @@ jobs:
       # recreated backend received them.
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
-      PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID: ${{ vars.DEBUG_DASHBOARD_OWNER_USER_ID || '51' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -627,10 +626,6 @@ jobs:
               *) echo "${name} must be true or false" >&2; exit 1 ;;
             esac
           done
-          if ! [[ "${PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID must be a positive integer" >&2
-            exit 1
-          fi
 
       # Host keys are trusted on first connect (TOFU) rather than pinned via a
       # verified SSH_KNOWN_HOSTS secret. The runner is ephemeral, so this is a
@@ -678,7 +673,7 @@ jobs:
           FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID='${PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       # --retry-all-errors is required, not optional: on a first-ever deploy
       # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and
@@ -725,7 +720,6 @@ jobs:
     env:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
-      PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID: ${{ vars.DEBUG_DASHBOARD_OWNER_USER_ID || '51' }}
     steps:
       - name: Check out the rollback ref
         uses: actions/checkout@v4
@@ -759,10 +753,6 @@ jobs:
               *) echo "${name} must be true or false" >&2; exit 1 ;;
             esac
           done
-          if ! [[ "${PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID must be a positive integer" >&2
-            exit 1
-          fi
 
       - name: Configure SSH identity
         env:
@@ -811,7 +801,7 @@ jobs:
           frontend_image="ghcr.io/${owner}/cuemix-frontend:${{ inputs.rollback_sha }}"
           echo "Rolling back to ${backend_image} / ${frontend_image}"
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID='${PRODUCTION_DEBUG_DASHBOARD_OWNER_USER_ID}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       - name: Verify the public TLS database health endpoint
         env:

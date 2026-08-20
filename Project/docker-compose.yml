@@ -62,10 +62,9 @@ x-backend-environment: &backend-environment
   # docker-compose.prod.yml's own copy of this comment.
   AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-false}
   EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
-  # Gates the owner-only admin debug dashboard -- see docker-compose.prod.yml's
-  # own copy of this comment.
+  # Gates the admin debug dashboard -- see docker-compose.prod.yml's own
+  # copy of this comment.
   DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-false}
-  DEBUG_DASHBOARD_OWNER_USER_ID: ${DEBUG_DASHBOARD_OWNER_USER_ID:-}
 
 services:
   postgres:

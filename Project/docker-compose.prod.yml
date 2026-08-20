@@ -58,12 +58,11 @@ x-backend-environment: &backend-environment
   # older explicit false value cannot silently override this default.
   AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-true}
   EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
-  # Gates the owner-only admin debug dashboard (routers/admin_debug.py) --
-  # enabled for owner testing, and still killable instantly by setting the
-  # VM value false. The owner-id check is the real access control; the flag
-  # alone does not grant access.
+  # Gates the admin debug dashboard (routers/admin_debug.py), reachable by
+  # any logged-in account once true (see that router's own docstring) --
+  # enabled for the course test deployment, still killable instantly by
+  # setting the VM value false.
   DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-true}
-  DEBUG_DASHBOARD_OWNER_USER_ID: ${DEBUG_DASHBOARD_OWNER_USER_ID:-51}
   # Cold-seeds a realistic ~50-user dataset on every deploy (see
   # app/coldseed/build.py) -- idempotent, so safe to leave on. Set to false
   # to opt out.

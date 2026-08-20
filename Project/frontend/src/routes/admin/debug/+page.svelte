@@ -1,14 +1,16 @@
 <!--
   File: src/routes/admin/debug/+page.svelte
-  Purpose: Owner-only admin debug dashboard -- session-loop visibility
-  (Prompt 16's pipeline_trace, per-stage latency), the Audius persistent-
-  analysis cache (external_tracks), and a recent-activity/failure feed.
+  Purpose: Admin debug dashboard, reachable by any logged-in account --
+  session-loop visibility (Prompt 16's pipeline_trace, per-stage latency),
+  the Audius persistent-analysis cache (external_tracks), and a
+  recent-activity/failure feed.
 
   Access control is entirely server-side (routers/admin_debug.py): every
-  request here either succeeds with real data or 404s, exactly like
-  navigating to a route that doesn't exist. This page adds no client-side
-  role check of its own -- there is nothing to guard against by hiding
-  markup, since an unauthorized visitor's every API call already 404s.
+  request here either succeeds with real data or 404s (flag off, or not
+  logged in), exactly like navigating to a route that doesn't exist. This
+  page adds no client-side check of its own -- there is nothing to guard
+  against by hiding markup, since an unauthorized visitor's every API call
+  already 404s.
 
   Live updates reuse the app's single shared realtime WebSocket
   (realtimeSocket.js -- the same connection chat/notifications/feed use),

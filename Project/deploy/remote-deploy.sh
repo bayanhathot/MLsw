@@ -47,16 +47,6 @@ if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
   esac
   set_managed_env DEBUG_DASHBOARD_ENABLED "${MANAGED_DEBUG_DASHBOARD_ENABLED}"
 fi
-if [ -n "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID:-}" ]; then
-  case "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}" in
-    *[!0-9]*|'') echo "MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID must be a positive integer" >&2; exit 1 ;;
-  esac
-  if [ "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}" -le 0 ]; then
-    echo "MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID must be a positive integer" >&2
-    exit 1
-  fi
-  set_managed_env DEBUG_DASHBOARD_OWNER_USER_ID "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}"
-fi
 
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 "${compose[@]}" config --quiet
@@ -89,9 +79,6 @@ if [ -n "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED:-}" ]; then
 fi
 if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
   verify_managed_env DEBUG_DASHBOARD_ENABLED "${MANAGED_DEBUG_DASHBOARD_ENABLED}"
-fi
-if [ -n "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID:-}" ]; then
-  verify_managed_env DEBUG_DASHBOARD_OWNER_USER_ID "${MANAGED_DEBUG_DASHBOARD_OWNER_USER_ID}"
 fi
 
 # Ensure the local LLM refinement model is present. Read OLLAMA_MODEL out of
