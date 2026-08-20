@@ -59,3 +59,13 @@ typing-extensions==4.16.0
 typing-inspection==0.4.3
 urllib3==2.7.0
 uvicorn==0.49.0
+# Bare uvicorn has no ASGI WebSocket protocol implementation bundled -- without
+# this, uvicorn logs "No supported WebSocket library detected" at startup and
+# every WS upgrade request (chat/notifications/live feed/media realtime
+# delivery, app/routers/realtime.py's /ws) 404s instead of upgrading, since it
+# never reaches the route handler at all. Confirmed live against production
+# via a real WebSocket handshake curl (404) before this fix -- the entire
+# real-time delivery system had never worked. Pinned as a direct dependency
+# rather than switching to the uvicorn[standard] extra so the dependency set
+# stays explicit and this requirements.txt remains the single source of truth.
+websockets==16.0
