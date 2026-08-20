@@ -141,13 +141,16 @@ test('live feed: browser A posts, browser B sees it appear with no reload', asyn
 		await expect(pageB.getByRole('heading', { name: 'Community' })).toBeVisible();
 		await pageB.waitForTimeout(WS_SUBSCRIBE_SETTLE_MS);
 
-		const title = `Live feed test ${RUN_ID}`;
+		// ForumPostCard.svelte only renders a post's title for kind: 'discussion'
+		// (status-kind posts show only their body) -- assert on body, the field
+		// that's actually visible for the kind used here, not title.
+		const body = `Live feed test ${RUN_ID}, delivered over the wire, no reload needed.`;
 		const created = await requestA.post(`${BACKEND_URL}/posts`, {
-			data: { title, body: 'Delivered over the wire, no reload needed.', kind: 'status' }
+			data: { title: `Live feed test ${RUN_ID}`, body, kind: 'status' }
 		});
 		expect(created.ok(), `create post: ${created.status()} ${await created.text()}`).toBe(true);
 
-		await expect(pageB.getByText(title)).toBeVisible({ timeout: DELIVERY_TIMEOUT_MS });
+		await expect(pageB.getByText(body)).toBeVisible({ timeout: DELIVERY_TIMEOUT_MS });
 	} finally {
 		await cleanup();
 	}
@@ -266,11 +269,13 @@ test('media: browser A uploads an attachment, browser B sees it render live', as
 		expect(job.status, `upload job never completed: ${JSON.stringify(job)}`).toBe('completed');
 		expect(job.attachment).toBeTruthy();
 
-		const title = `Media test ${RUN_ID}`;
+		// Same rendering rule as the live-feed test above: status-kind posts
+		// only ever show body, never title -- assert on body.
+		const body = `Media test ${RUN_ID}, this post should render an image live.`;
 		const created = await requestA.post(`${BACKEND_URL}/posts`, {
 			data: {
-				title,
-				body: 'This post should render an image live.',
+				title: `Media test ${RUN_ID}`,
+				body,
 				kind: 'status',
 				attachment_ids: [job.attachment.id]
 			}
@@ -280,7 +285,7 @@ test('media: browser A uploads an attachment, browser B sees it render live', as
 			`create post with attachment: ${created.status()} ${await created.text()}`
 		).toBe(true);
 
-		await expect(pageB.getByText(title)).toBeVisible({ timeout: DELIVERY_TIMEOUT_MS });
+		await expect(pageB.getByText(body)).toBeVisible({ timeout: DELIVERY_TIMEOUT_MS });
 		await expect(pageB.getByAltText(filename)).toBeVisible();
 	} finally {
 		await cleanup();
