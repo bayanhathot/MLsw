@@ -402,16 +402,20 @@ def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_cand
     assert row.pipeline_trace_json["candidate_retriever"]["name"] == "catalog"
 
 
-def test_create_session_keeps_the_pass_through_when_not_even_the_catalog_can_rescue_it(
+def test_create_session_rejects_rather_than_serves_a_dead_pass_through_when_nothing_rescues_it(
     client, monkeypatch, db_session
 ):
-    # The catalog rescue only helps when it actually has something to offer:
-    # a named artist absent from the tiny local demo catalog still has
-    # nowhere left to fall through to, so the session must land on the
-    # retry-capped Audius attempt's honest pass-through, same as before the
-    # rescue existed. The catalog (primary) has no Nancy Ajram at all, so
-    # this genuinely falls through to Audius (fallback) at the retrieval
-    # stage already, before rendering even starts.
+    # D1: this used to assert the opposite -- that a session would land on
+    # and keep "Broken 4"'s dead pass-through URL as now_playing once every
+    # rescue option was exhausted. That was the defect: a nonexistent/
+    # unavailable recommendation reaching playback. The catalog rescue only
+    # helps when it actually has something to offer, and the last-resort
+    # "any catalog row" tier is deliberately never used to substitute an
+    # unrelated track for an explicit artist ask (see _resolve_and_render's
+    # own comment on that gate) -- so a named artist absent from the tiny
+    # local demo catalog, whose only real (Audius) candidates are all
+    # genuinely unplayable, must now be rejected outright via
+    # NoMatchingCandidate/422 rather than ever handed a dead URL.
     tracks = [
         {
             "title": f"Broken {i}", "artist": "Nancy Ajram",
@@ -429,23 +433,14 @@ def test_create_session_keeps_the_pass_through_when_not_even_the_catalog_can_res
         lambda url: (None, "download_failed_http_403"),
     )
 
-    session = client.post(
+    response = client.post(
         "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
-    ).json()
-    # All 5 candidates were genuinely tried (not capped early) -- the last
-    # of them is the kept, honest pass-through.
-    assert session["nowPlaying"]["title"] == "Broken 4"
-
-    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
-    audio_trace = row.pipeline_trace_json["audio_renderer"]
-    assert audio_trace["is_pass_through"] is True
-    assert len(audio_trace["skipped_tracks"]) == 4
-    # True: the catalog (primary) had nothing at all for Nancy Ajram, so
-    # Audius (fallback) served these candidates from the start.
-    assert row.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
+    )
+    assert response.status_code == 422
+    assert db_session.query(DJSession).count() == 0  # nothing was ever created
 
 
-def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monkeypatch, db_session):
+def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monkeypatch):
     # AUDIO_RENDER_RETRY_LIMIT defaults to the whole candidate pool now
     # (never stop early while untried real candidates remain), but it must
     # still act as a hard safety cap when an operator lowers it.
@@ -462,23 +457,29 @@ def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monke
         "app.services.pipeline.audius_retriever.search_tracks",
         lambda prompt, limit=5: tracks,
     )
+    download_calls = []
     monkeypatch.setattr(
         "app.services.pipeline.audio_renderer._download",
-        lambda url: (None, "download_failed_http_403"),
+        lambda url: (download_calls.append(url), (None, "download_failed_http_403"))[1],
     )
 
-    session = client.post(
+    # D1: a named artist absent from the catalog whose only real candidates
+    # are all unplayable is now rejected outright (see
+    # test_create_session_rejects_rather_than_serves_a_dead_pass_through_when_nothing_rescues_it)
+    # rather than landing on a kept pass-through -- so this test's own
+    # purpose (AUDIO_RENDER_RETRY_LIMIT still caps how many attempts are
+    # actually made, even though the default now tries the whole pool)
+    # has to be verified via the download call count instead of a
+    # returned now_playing/pipeline_trace, neither of which exist once the
+    # request is rejected.
+    response = client.post(
         "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
-    ).json()
-    assert session["nowPlaying"]["title"] == "Broken 1"
-
-    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
-    assert len(row.pipeline_trace_json["audio_renderer"]["skipped_tracks"]) == 1
+    )
+    assert response.status_code == 422
+    assert len(download_calls) == 2  # capped, not all 5 candidates tried
 
 
-def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(
-    client, monkeypatch, db_session
-):
+def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(client, monkeypatch):
     # A genuinely unreachable source can hang for the full remote timeout on
     # every single attempt, unlike a fast-failing HTTP error -- the shared
     # wall-clock budget must still cut retries short well before
@@ -496,20 +497,22 @@ def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(
         "app.services.pipeline.audius_retriever.search_tracks",
         lambda prompt, limit=5: tracks,
     )
+    download_calls = []
     monkeypatch.setattr(
         "app.services.pipeline.audio_renderer._download",
-        lambda url: (None, "download_failed_http_403"),
+        lambda url: (download_calls.append(url), (None, "download_failed_http_403"))[1],
     )
 
-    session = client.post(
+    # D1: same rejection as above -- verified via the download call count
+    # rather than a returned now_playing/pipeline_trace (see that test's
+    # own comment).
+    response = client.post(
         "/sessions/start", json={"prompt": "play something by Nancy Ajram"}
-    ).json()
+    )
+    assert response.status_code == 422
     # A zero time budget means the very first attempt already exceeds the
     # deadline once it returns -- exactly one attempt is made, not all 5.
-    assert session["nowPlaying"]["title"] == "Broken 0"
-
-    row = db_session.query(DJSession).filter_by(id=session["id"]).one()
-    assert row.pipeline_trace_json["audio_renderer"]["skipped_tracks"] == []
+    assert len(download_calls) == 1
 
 
 def test_a_previously_known_broken_track_is_skipped_without_a_download_attempt(
@@ -1528,6 +1531,102 @@ def test_try_render_ranked_candidates_always_tries_at_least_the_first_candidate(
         deadline=already_expired_deadline,
     )
     assert track.source_track_id == "slow-0"
+
+
+# --- D1: never serve a dead pass-through as now_playing ---------------------
+
+
+class _AlwaysPassThroughRenderer:
+    """Simulates a source that is completely unavailable end to end: every
+    render -- the primary attempt, the rescue attempt, and the last-resort
+    catalog tier alike -- comes back an honest pass-through, never a real
+    render."""
+
+    def render_track_transition(self, segment, *, resume_offset_ms, reserved_ms):
+        from app.schemas import StagedRender, StagedTrackRender
+
+        return StagedTrackRender(
+            body=StagedRender(
+                audio_url=segment.track.audio_url, duration_ms=1000,
+                is_pass_through=True, fallback_reason="simulated_unavailable",
+            ),
+        )
+
+
+class _FixedCandidateRetriever:
+    def __init__(self, name, tracks):
+        self.name = name
+        self._tracks = tracks
+
+    def retrieve(self, db, intent, *, limit=5, recent_artists=frozenset(), viewer_id=None):
+        return list(self._tracks)
+
+
+def _dead_track(source, index):
+    return Track(
+        source=source, source_track_id=f"{source}-dead-{index}", title=f"Dead {index}",
+        artist="Artist", album=None, audio_url=f"https://audio.example/{source}-dead-{index}",
+        cover_url=None, duration_seconds=180, genre=None, vibe=None, vibe_label=None,
+        catalog_track_id=None, local_path=None,
+    )
+
+
+def test_resolve_and_render_raises_rather_than_returning_a_dead_pass_through(db_session):
+    # D1: with the primary, the one rescue attempt, and the last-resort
+    # catalog tier (session_manager._resolve_and_render's real last_resort_
+    # tracks call -- it self-heals an empty catalog table with the 4 seeded
+    # demo rows, see catalog_retriever._ensure_seed_catalog, so this
+    # genuinely exercises that tier rather than finding it trivially empty)
+    # all failing to render anything but a pass-through, this must raise
+    # NoMatchingCandidate rather than ever building a now_playing dict
+    # around a dead URL.
+    import pytest
+
+    from app.schemas import PromptIntent
+    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+    from app.services.pipeline.orchestrator import NoMatchingCandidate
+
+    intent = PromptIntent(
+        mood="balanced", energy="medium", vocals="neutral", genres=[],
+        artist=None, artist_mode="none", search_query="anything",
+    )
+    retriever = _FixedCandidateRetriever("stub_catalog", [_dead_track("catalog", i) for i in range(3)])
+    fallback_retriever = _FixedCandidateRetriever("stub_fallback", [_dead_track("audius", i) for i in range(3)])
+
+    with pytest.raises(NoMatchingCandidate):
+        session_manager._resolve_and_render(
+            db_session, intent, retriever, fallback_retriever,
+            get_segment_selector(), get_transition_planner(), _AlwaysPassThroughRenderer(),
+            session_id="session_test_d1_exhausted", previous_segment=None, prefers_smoother=False,
+        )
+
+
+def test_resolve_and_render_never_substitutes_an_unrelated_track_for_a_required_artist(db_session):
+    # The last-resort catalog tier must stay gated on `not intent.artist`,
+    # same as orchestrator.retrieve_candidates_with_fallback's own tier 4:
+    # an explicit artist ask that turns out unplayable everywhere is a
+    # NoMatchingCandidate, never silently served as some unrelated catalog
+    # track just because one happened to exist (the self-healed seed catalog
+    # last_resort_tracks would otherwise find).
+    import pytest
+
+    from app.schemas import PromptIntent
+    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+    from app.services.pipeline.orchestrator import NoMatchingCandidate
+
+    intent = PromptIntent(
+        mood="balanced", energy="medium", vocals="neutral", genres=[],
+        artist="Nancy Ajram", artist_mode="required", search_query="play something by Nancy Ajram",
+    )
+    retriever = _FixedCandidateRetriever("stub_catalog", [_dead_track("catalog", i) for i in range(3)])
+    fallback_retriever = _FixedCandidateRetriever("stub_fallback", [_dead_track("audius", i) for i in range(3)])
+
+    with pytest.raises(NoMatchingCandidate):
+        session_manager._resolve_and_render(
+            db_session, intent, retriever, fallback_retriever,
+            get_segment_selector(), get_transition_planner(), _AlwaysPassThroughRenderer(),
+            session_id="session_test_d1_artist_gate", previous_segment=None, prefers_smoother=False,
+        )
 
 
 # --- Phase 9: live in-session crossfades (reserved-region mechanism) ------

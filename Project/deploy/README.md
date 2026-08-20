@@ -24,13 +24,16 @@ Kept here for reference, or for standing up a second environment:
    `PUBLIC_BASE_URL`. The public value must be the certificate-valid HTTPS
    origin; it is intentionally separate from the SSH hostname or IP and its
    hostname must match `DOMAIN` in the VM's `.env` file.
-   The workflow also manages three non-secret feature settings. Their
-   current course-test defaults match `Project/.env`:
-   `AUDIUS_ANALYSIS_CACHE_ENABLED=true`,
-   `DEBUG_DASHBOARD_ENABLED=true`, and
-   `DEBUG_DASHBOARD_OWNER_USER_ID=51`. Define repository variables with
-   those names to override the defaults when the production owner account
-   changes or an emergency feature shutdown is required.
+   The workflow also manages four non-secret settings. Their current
+   course-test defaults match `Project/.env`:
+   `AUDIUS_ANALYSIS_CACHE_ENABLED=true`, `DEBUG_DASHBOARD_ENABLED=true`,
+   `ENABLE_PIPELINE_DEBUG=true` (debug mode is on everywhere right now --
+   this VM isn't serving real production traffic yet), and
+   `BACKEND_WORKERS=2` (see the "Horizontal scaling" section below).
+   Define repository variables with those names (`AUDIUS_ANALYSIS_CACHE_ENABLED`,
+   `DEBUG_DASHBOARD_ENABLED`, `ENABLE_PIPELINE_DEBUG`, `BACKEND_WORKERS`) to
+   override the defaults, e.g. for an emergency feature shutdown or to scale
+   worker count up/down.
 5. Add secrets `SSH_PRIVATE_KEY` and `GHCR_READ_TOKEN`. The token needs only
    `read:packages`. The workflow trusts the VM's SSH host key on first
    connect each run (`StrictHostKeyChecking accept-new`) rather than pinning
@@ -44,15 +47,42 @@ On each push to `main`, after CI succeeds, immutable commit-tagged images are
 pushed to GHCR. The gated deploy job logs the VM into GHCR, uploads only the
 versioned deployment files, applies Alembic migrations, recreates services,
 and verifies `$PUBLIC_BASE_URL/api/db-health` from the runner. Before Compose
-runs, `remote-deploy.sh` synchronizes the three managed feature settings into
-the VM's persistent `~/cuemix-deploy/.env`; after recreation it reads each
-value from the running backend container and fails the deployment on drift.
-This is necessary because CI intentionally preserves the VM's `.env`, so a
-stale explicit `false` would otherwise override a newer Compose default.
+runs, `remote-deploy.sh` synchronizes the four managed settings into
+the VM's persistent `~/cuemix-deploy/.env`; after recreation it verifies each
+one against the running deployment and fails on drift -- `printenv` inside
+the backend container for the three boolean flags, and the container's own
+launch args for `BACKEND_WORKERS` (which only ever reaches `uvicorn`'s
+`--workers` argument, never the container's environment). This is necessary
+because CI intentionally preserves the VM's `.env`, so a stale explicit value
+would otherwise override a newer Compose default.
 
-`BACKEND_WORKERS` must remain `1` while notification fanout and upload jobs are
-process-local. Scaling API workers/replicas first requires Redis (or another
-shared pub/sub and durable queue) plus shared object storage.
+### Horizontal scaling
+
+`BACKEND_WORKERS=2`: two `uvicorn` worker processes inside the one backend
+container, sharing the container's filesystem mount (`uploads_data`) and
+talking to the same Postgres/Redis/Ollama services -- not two separate
+containers/hosts. This is safe today because every piece of state that used
+to matter across workers is now either database-backed (`known_broken_tracks`)
+or Redis-backed:
+
+- `channel_hub.py` (forum/messaging/social/mixes realtime) and
+  `upload_queue.py` (job durability) always were.
+- `app/core/rate_limit.py`, `app/services/pipeline_debug_service.py`, and
+  `app/services/prompt_parser.py`'s Ollama concurrency semaphore/call stats
+  were ported to Redis for this (D6b) -- each still falls back to its
+  original process-local behavior when `REDIS_URL` is unconfigured/
+  unreachable, so a single-instance/no-Redis setup is unaffected.
+
+What raising this past same-container workers -- real separate hosts/pods,
+not just more `uvicorn` processes in one container -- would additionally
+need: shared object storage (S3/MinIO or a network filesystem) for
+`UPLOAD_DIR` in place of the local `uploads_data` volume, since rendered
+mixes/session audio and catalog uploads are currently only visible across
+workers because they share one container's mount, not because anything
+storage-aware was built. `app/routers/media.py`,
+`app/services/pipeline/audio_renderer.py`, `app/services/upload_queue.py`,
+and `app/services/pipeline/catalog_retriever.py` would all need their direct
+filesystem reads/writes routed through that abstraction instead.
 
 ## Operations
 

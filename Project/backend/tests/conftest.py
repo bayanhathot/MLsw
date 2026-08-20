@@ -207,6 +207,19 @@ def clean_database(tmp_path, monkeypatch):
     if redis_client is not None:
         for key in redis_client.scan_iter("cuemix:upload:*"):
             redis_client.delete(key)
+        # D6b: RateLimiter now checks Redis first when it's configured (see
+        # app/core/rate_limit.py), same reasoning as the upload-queue sweep
+        # just above -- auth_rate_limit.reset()/write_rate_limit.reset() only
+        # clear each limiter's process-local fallback state, not whatever a
+        # previous test already recorded in the real, shared Redis instance.
+        for key in redis_client.scan_iter("cuemix:ratelimit:*"):
+            redis_client.delete(key)
+        # D6b: the distributed Ollama semaphore/cluster-stats hash --
+        # prompt_parser.reset_ollama_stats() already clears the stats key,
+        # but the semaphore key can otherwise leak a held-but-unreleased
+        # lease from a test that errored mid-acquire into the next test.
+        redis_client.delete("cuemix:ollama_semaphore")
+        redis_client.delete("cuemix:ollama_stats")
     with TestingSessionLocal() as db:
         for table in reversed(Base.metadata.sorted_tables):
             db.execute(table.delete())

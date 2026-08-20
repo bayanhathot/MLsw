@@ -64,6 +64,7 @@ from app.routers.admin_debug import router as admin_debug_router
 from app.routers.realtime import router as realtime_router
 from app.services.audio_analysis import requeue_pending_analysis, requeue_pending_external_analysis
 from app.services.channel_hub import channel_hub
+from app.services.pipeline_debug_service import pipeline_debug_hub
 
 # No logging.basicConfig/dictConfig existed anywhere in this backend before
 # this line -- every logger.info(...) call in app/ (including this file's
@@ -91,6 +92,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     await channel_hub.start_listener()
+    await pipeline_debug_hub.start_listener()
     # Re-dispatches analysis for any catalog track stranded at
     # analysis_status="pending" by a previous crash/restart -- see
     # requeue_pending_analysis's own docstring for why a plain "was it
@@ -106,6 +108,7 @@ async def _lifespan(_app: FastAPI):
     requeue_pending_external_analysis()
     yield
     await channel_hub.stop_listener()
+    await pipeline_debug_hub.stop_listener()
 
 
 # Deliberately NOT passing root_path=os.getenv("ROOT_PATH", "") here, even

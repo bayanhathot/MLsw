@@ -746,6 +746,20 @@ class OllamaLastCallRead(BaseModel):
     ok: bool | None = None
 
 
+class OllamaStatsRead(BaseModel):
+    """Cumulative, per-process call counters -- see
+    prompt_parser.get_ollama_stats's own docstring. Meaningful on its own
+    when BACKEND_WORKERS is 1; with more replicas, see OllamaHealthRead.
+    cluster_stats for the cross-replica aggregate (D6b)."""
+
+    attempted: int
+    succeeded: int
+    timed_out: int
+    shed: int
+    success_rate: float | None = None
+    mean_latency_ms: float | None = None
+
+
 class OllamaHealthRead(BaseModel):
     configured: bool
     reachable: bool
@@ -753,6 +767,11 @@ class OllamaHealthRead(BaseModel):
     configured_model: str | None = None
     loaded_models: list[str] = Field(default_factory=list)
     last_call: OllamaLastCallRead
+    stats: OllamaStatsRead
+    # D6b: None whenever Redis isn't configured/reachable (see
+    # prompt_parser.get_cluster_ollama_stats' own docstring) -- distinct
+    # from a real all-zero cluster with no calls yet.
+    cluster_stats: OllamaStatsRead | None = None
 
 
 class PipelineDebugRead(BaseModel):

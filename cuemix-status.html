@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cuemix — Requirements Status</title>
+<style>
+  :root{
+    --bg:#0b1220; --surface:#111a2b; --surface-2:#16223a; --line:#22314e;
+    --ink:#e8eefc; --ink-2:#a9b8d4; --ink-3:#7387a8;
+    --accent:#4c8dff; --bar-bg:#1b2740;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .shell{max-width:1180px;margin:0 auto;padding:0 24px}
+  header{padding:40px 0 28px;border-bottom:1px solid var(--line);margin-bottom:32px}
+  .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+  h1{margin:8px 0 6px;font-size:30px;letter-spacing:-.02em}
+  .sub{color:var(--ink-2);max-width:78ch;margin:0}
+  .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-top:26px}
+  .tile{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .tile strong{display:block;font-size:32px;letter-spacing:-.02em;line-height:1.1}
+  .tile span{display:block;font-size:12px;color:var(--ink-3);margin-top:6px;letter-spacing:.03em}
+  .tile.flag strong{color:#f5a1ae}
+  .tile.ok strong{color:#8ee0b0}
+  h2{font-size:19px;margin:38px 0 6px;letter-spacing:-.01em}
+  h2 + .note{margin:0 0 18px;color:var(--ink-2);font-size:14px;max-width:82ch}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:12px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
+    letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:999px;border:1px solid}
+  .chip.good{color:#8ee0b0;border-color:#245c41;background:#12281e}
+  .chip.warn{color:#f0cd85;border-color:#5c4a20;background:#2a2211}
+  .chip.serious{color:#f2b394;border-color:#63351f;background:#2b1a12}
+  .chip.critical{color:#f5a1ae;border-color:#63232f;background:#2b1219}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
+    font-weight:700;padding:0 12px 10px;border-bottom:1px solid var(--line)}
+  td{padding:14px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600}
+  code{background:var(--surface-2);border:1px solid var(--line);border-radius:5px;
+    padding:1px 6px;font-size:12px;color:#c8d6f2;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .why{color:var(--ink-2);font-size:13.5px;margin:8px 0 0}
+  .chart{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 20px 12px}
+  .row{display:grid;grid-template-columns:210px 1fr 74px;gap:14px;align-items:center;margin-bottom:11px}
+  .row .lbl{font-size:13px;color:var(--ink-2);text-align:right}
+  .track{position:relative;height:26px;background:var(--bar-bg);border-radius:6px}
+  .fill{position:absolute;top:3px;bottom:3px;left:0;background:var(--accent);border-radius:5px}
+  .val{font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--ink-2);white-space:nowrap}
+  .val b{color:var(--ink)}
+  .axis{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-3);
+    margin:2px 88px 0 224px;padding-top:6px;border-top:1px solid var(--line)}
+  .item{display:grid;grid-template-columns:78px 1fr;gap:16px;padding:16px 0;border-bottom:1px solid var(--line)}
+  .item:last-child{border-bottom:none}
+  .item h4{margin:0 0 4px;font-size:15px}
+  .item p{margin:6px 0 0;color:var(--ink-2);font-size:13.5px}
+  .item .fix{color:#a8c7ff}
+  .act{display:grid;grid-template-columns:26px 1fr 150px;gap:14px;align-items:start;
+    padding:14px 0;border-bottom:1px solid var(--line)}
+  .act:last-child{border-bottom:none}
+  .act h4{margin:0;font-size:15px}
+  .act p{margin:5px 0 0;color:var(--ink-2);font-size:13.5px}
+  .act .meta{text-align:right;font-size:12px;color:var(--ink-3);white-space:nowrap}
+  .act .gain{display:block;color:#8ee0b0;font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}
+  input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);margin-top:2px;cursor:pointer}
+  .live{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;
+    padding:14px 18px;margin-top:16px;display:flex;gap:26px;align-items:center;flex-wrap:wrap}
+  .live b{font-size:26px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .live span{font-size:12px;color:var(--ink-3);display:block}
+  footer{margin:48px 0 60px;padding-top:22px;border-top:1px solid var(--line);
+    color:var(--ink-3);font-size:12.5px;line-height:1.7}
+  @media (max-width:760px){
+    .row{grid-template-columns:1fr}.row .lbl{text-align:left}.axis{margin:2px 0 0}
+    .act{grid-template-columns:26px 1fr}.act .meta{grid-column:2;text-align:left}
+    table,thead,tbody,th,td,tr{display:block}thead{display:none}
+    td{border:none;padding:4px 0}tbody tr{border-bottom:1px solid var(--line);padding:14px 0}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<header>
+  <div class="eyebrow">Cuemix · Software Engineering for ML · Spring 2026</div>
+  <h1>Requirements status</h1>
+  <p class="sub">Where the project stands against the seven graded requirements and the original
+  proposal, scored from the repository itself. A requirement earns marks only where code and current
+  evidence prove it—not where comments or architecture make it plausible. Strictly re-audited at
+  commit <code>1e25270</code> on 20 August 2026.</p>
+
+  <div class="hero">
+    <div class="tile"><strong>73</strong><span>Strict rubric estimate, out of 100</span></div>
+    <div class="tile ok"><strong>3</strong><span>Requirements fully met</span></div>
+    <div class="tile flag"><strong>1</strong><span>High-severity defect open</span></div>
+    <div class="tile flag"><strong>68</strong><span>If the high defect earns −5</span></div>
+    <div class="tile"><strong>16.5</strong><span>Points still reachable</span></div>
+    <div class="tile ok"><strong>+5</strong><span>Rubric points in the next 2.5 days</span></div>
+  </div>
+</header>
+
+<h2>1 · Requirement scoring</h2>
+<p class="note">Three requirements are fully met. Four remain partial under a proof-first reading.
+The weakest area is still the 50-point proposal; the last remaining open defect is the
+single-instance deployment topology (D6) — every other defect in the register has a verified fix.</p>
+
+<div class="chart">
+  <div id="chartRows"></div>
+  <div class="axis"><span>0</span><span>25%</span><span>50%</span><span>75%</span><span>100% of item weight</span></div>
+</div>
+
+<div class="card" style="margin-top:14px">
+<table>
+  <thead><tr><th>Requirement</th><th>Weight</th><th>Score</th><th>Status &amp; evidence</th></tr></thead>
+  <tbody id="rubricRows"></tbody>
+</table>
+</div>
+
+<h2>2 · Requirement 1 — the proposal, feature by feature</h2>
+<p class="note">Scored across the six feature groups the proposal defines. Automatic mixing is
+substantially implemented and well tested. <strong>Segments as a user-controlled object</strong>—the
+proposal's stated core idea—remain absent, and three named analytics still lack explicit outputs.</p>
+<div class="card">
+<table>
+  <thead><tr><th>Proposal feature group</th><th>Score</th><th>What exists today</th></tr></thead>
+  <tbody id="proposalRows"></tbody>
+</table>
+</div>
+
+<h2>3 · Defect register</h2>
+<p class="note">The guidelines charge <strong>−5 points per bug found</strong>. Only open issues are
+listed, and none currently are — all seven tracked defects (D1–D7) have verified fixes. Debug access
+is excluded by the lecturer's decision.</p>
+<div class="card" id="bugRows"></div>
+
+<h2>4 · Plan of work</h2>
+<p class="note">Ranked by grade impact and defect risk. Tick items to project both the rubric score
+and the high-severity penalty exposure.</p>
+<div class="card" id="actionRows"></div>
+<div class="live">
+  <div><b id="projScore">73</b><span>Projected score</span></div>
+  <div><b id="projDays">0</b><span>Days committed</span></div>
+  <div><b id="projBugs">0</b><span>High-severity defect open</span></div>
+  <div><b id="projRiskScore">73</b><span>Risk-adjusted score</span></div>
+  <div style="flex:1;min-width:230px;color:var(--ink-2);font-size:13px">
+    Rubric ceiling is 89.5 with everything below completed. No high-severity defect is open right now
+    (D1 is fixed); every grader-found bug and every late week can still cost another 5.
+  </div>
+</div>
+
+<h2>5 · Demo order</h2>
+<p class="note">Ten minutes, one claim per requirement, every claim backed by something the grader can
+see. Lead with your strongest material, not with the login screen.</p>
+<div class="card">
+  <ol style="margin:0;padding-left:20px;color:var(--ink-2);font-size:14px;line-height:1.9">
+    <li><strong style="color:var(--ink)">Live crossfade, with audio.</strong> A body → bridge →
+      continuation sequence with no gap, and the planner's reasoning shown beside it. This is the
+      single best answer to "explain intelligent mixing" and it is fully built.</li>
+    <li><strong style="color:var(--ink)">Production Audius repeat.</strong> Run the identical track
+      twice on the VM and prove the second response uses a detected ~30-second window. The local
+      Calm Down 0–151s → 58–88s trace is supporting evidence, not production proof.</li>
+    <li><strong style="color:var(--ink)">Deployment.</strong> Green pipeline, deployed SHA, live HTTPS
+      URL opened in the browser.</li>
+    <li><strong style="color:var(--ink)">Forum, two browsers.</strong> Anonymous post, vote, DM with a
+      video attachment, live notification — no refresh.</li>
+    <li><strong style="color:var(--ink)">Playlist upload.</strong> Batch upload with priority decay,
+      then restart the worker and show the queue recover.</li>
+    <li><strong style="color:var(--ink)">Hallucination guards.</strong> Show the 6/6 scorecard only
+      after changing the unavailable-Audius case to require rejection/rescue rather than accepting a
+      dead pass-through as success.</li>
+    <li><strong style="color:var(--ink)">Memory.</strong> Log out, log back in, preferences and prompt
+      shortcuts intact.</li>
+  </ol>
+</div>
+
+<footer>
+  <strong style="color:var(--ink-2)">Method.</strong> Scores derive from reading the repository at
+  <code>Project/</code> at commit <code>1e25270</code> on 20 August 2026—models, routers, services,
+  tests, evaluation artifacts, the CI workflow and both Compose files—against the proposal and course
+  guidelines. CI/CD run <a href="https://github.com/bayanhathot/MLsw/actions/runs/32401306027">#32401306027</a>
+  completed successfully for <code>1e25270</code>, including Azure deployment. Local verification: 434 backend
+  tests passed and 10 Redis-dependent tests skipped; Svelte check reported 0 errors/0 warnings and
+  34 frontend tests passed. CI supplies real Redis and completed successfully.<br>
+  <strong style="color:var(--ink-2)">Estimates, not an official grade.</strong> Requirement 1 in
+  particular is judged holistically by the professor. The displayed 73 is before bug penalties; the
+  remaining high-severity defect creates a plausible 5-point downside. Debug access is not counted
+  as a defect because the lecturer explicitly accepted it.
+</footer>
+
+</div>
+<script>
+const rubric = [
+  {n:'01', t:'Project proposal', w:50, score:30, verdict:['serious','Partly met'],
+   ev:'Retrieval, DSP analysis, phrase/key-aware planning, rendered saved mixes and the live body → bridge → continuation state machine are real and tested. Audius persistent analysis is enabled in the VM profile. The 50-point gap remains product-facing: no user-saved segment model/API/editor/library exists, passive replay/like/skip signals do not change ranking, and most-replayed segment, average segment length and time-saved outputs are absent.'},
+  {n:'02', t:'Long-term memory', w:5, score:5, verdict:['good','Fully met'],
+   ev:'<code>UserPreference</code>, <code>PromptShortcut</code>, <code>UserMusicProfile</code> and <code>ListeningEvent</code> persist per user. Positive explicit DJ feedback is read back into future session intent; persistence is not merely a table with no consumer.'},
+  {n:'03', t:'Robustness to hallucinations', w:10, score:8, verdict:['warn','Strong, not complete'],
+   ev:'The LLM cannot invent playable catalog fields; silent and near-silent uploads are rejected; detected windows have an energy floor; local whole-clip fallbacks trim dead air; malformed LLM output fails safely; and a committed adversarial report says 6/6. Strict deduction: that report counts an unavailable Audius pass-through as PASS, and Audius whole-clip fallback is still untrimmed. See D1–D2.'},
+  {n:'04', t:'Smart job queue', w:5, score:5, verdict:['good','Fully met'],
+   ev:'Bounded parallel priority queue, playlist batch upload, validation, per-batch priority decay, cancel/retry, Redis durability, restart recovery and dedicated stress/recovery tests are present. The previously reported local bulk-upload discrepancy is no longer reproduced by the current full suite or green CI.'},
+  {n:'05', t:'Local LLM integration', w:10, score:6, verdict:['warn','Partly met'],
+   ev:'Compose-managed Ollama/Qwen, model pull and warm-up, schema-constrained decoding, timeouts, fail-open behavior and a separate math/context evaluation exist. In-product use remains one-shot prompt classification; <code>acquire(timeout=0.05)</code> sheds contention to the deterministic parser, and only the most recent call is observable. See D4–D5.'},
+  {n:'06', t:'Forum &amp; communication suite', w:10, score:10, verdict:['good','Fully met'],
+   ev:'All eight requested sub-features are implemented: posts/comments with anonymity and media, votes and metrics, friend-gated DMs with media, Redis-backed live delivery, rate limits, size caps and realistic cold seeding. Real-backend two-browser E2E is part of CI.'},
+  {n:'07', t:'Deployment &amp; CI/CD', w:10, score:9, verdict:['warn','Strong, not complete'],
+   ev:'Public HTTPS, database/Redis health, backend/frontend/E2E tests, immutable images and automatic Azure deployment are proven. Strict deduction: <code>BACKEND_WORKERS</code> must remain 1 and the deployment guide says replicas still require shared storage/queue work, so “scale easily” is not fully met.'}
+];
+
+const proposal = [
+  ['1. User authentication + personal segment library', 60,
+   'Registration, PBKDF2-SHA256, cookie auth, CSRF and rate limits are complete. The "personal music segment library" has no table, no endpoint and no screen.'],
+  ['2. Song upload + waveform + manual segment marking', 40,
+   'Upload, validation, batch queue, DSP analysis and streaming are excellent. No waveform library is imported anywhere in <code>frontend/src</code>, and users cannot select start/end timestamps at all.'],
+  ['3. Smart transition engine', 92,
+   'Compatibility scoring, key/BPM/phrase factors, loudness normalization and live bridge crossfades are implemented and tested. Keep a recorded production audio proof; metadata and tests alone do not prove what the grader will hear.'],
+  ['4. Auto-mix generator + four modes', 80,
+   'Retrieval, planning, rendering and all four modes (workout, relaxation, emotional/Tarab, party) work. Mixes are built from auto-detected segments, never from user-saved ones, because those do not exist.'],
+  ['5. Learning from likes, replays, skips, saved segments', 40,
+   'Explicit DJ feedback moves <code>UserPreference</code>. <code>ListeningEvent</code> stores <code>skipped</code>, but nothing consumes it for ranking; likes and replays do not influence selection; saved segments cannot, by construction.'],
+  ['6. Analytics dashboard', 35,
+   'Listening statistics exist — artists, genres, trends, time of day, listening DNA. Most-replayed segment, average segment length and time saved are absent, and this is the area the guidelines single out as "really interested in seeing".']
+];
+
+const bugs = [];
+// D1-D7 all closed -- see the corresponding entries in
+// cuemix-defect-prompt-roadmap_2.md's prompt log. D6's audit (6a) found two
+// of the three cited blockers (channel_hub.py, upload_queue.py) were
+// already Redis-backed; the third category (rate_limit.py,
+// pipeline_debug_service.py, prompt_parser.py's Ollama semaphore/stats) was
+// ported to Redis too (6b), BACKEND_WORKERS raised to 2, and proven with
+// real cross-worker HTTP/websocket/Redis evidence -- see deploy/README.md's
+// "Horizontal scaling" section for what's still single-host (shared
+// container/volume, not separate hosts/pods) and what that would need.
+
+const actions = [
+  {id:'a1', t:'Make Audius safety fail closed', d:'Done: dead pass-through URLs are rejected (or rescued to a real playable track) rather than ever reaching now_playing, and downloaded fallback audio gets a bounded energy check. Closed D1–D2.', days:1, gain:2, risk:1, done:true},
+  {id:'a2', t:'Make the LLM meet its concurrency requirement', d:'Done: real bounded queueing (OLLAMA_QUEUE_WAIT_SECONDS) and attempted/succeeded/timed-out/shed counters are live on the debug panel. Closed D4–D5.', days:1.5, gain:3, done:true},
+  {id:'a3', t:'Ship the four promised analytics cards', d:'Most replayed segment, average segment length, listening statistics and time saved—backend aggregates plus clearly labelled cards and documented formulas.', days:2, gain:2.5},
+  {id:'a4', t:'Waveform editor + saved segment library', d:'Model, migration, create/list/delete API, draggable start/end handles, looping preview and a reusable library card. This is still the largest proposal gap.', days:5, gain:6},
+  {id:'a5', t:'Wire passive signals into ranking', d:'Bounded weights from replay, like, save and skip into future ranking, with decay, caps and an offline evaluation showing movement over baseline.', days:3, gain:1.5},
+  {id:'a6', t:'Prove a scalable deployment topology', d:'Done: rate limiting, the pipeline debug hub, and the Ollama concurrency semaphore/stats ported to Redis (channel_hub/upload_queue already were), BACKEND_WORKERS raised to 2, real cross-worker HTTP/websocket/Redis evidence captured. Closed D6. Shared object storage for true multi-host replicas (beyond one container\'s workers) remains documented as future work in deploy/README.md.', days:2, gain:1, done:true},
+  {id:'a7', t:'Build the production demo and evidence pack', d:'Timed rubric order, current run/SHA, real two-pass Audius segmentation, audible transition recording, scope-change correspondence and fallback video. D7\'s stale comment is already fixed.', days:1, gain:0.5}
+];
+
+const BASE = rubric.reduce((s,r)=>s+r.score,0);
+
+document.querySelector('#chartRows').innerHTML = rubric.map(r=>
+  `<div class="row"><div class="lbl">${r.t} <span style="color:var(--ink-3)">/${r.w}</span></div>
+   <div class="track"><div class="fill" style="width:${r.score/r.w*100}%"></div></div>
+   <div class="val"><b>${r.score}</b> / ${r.w}</div></div>`).join('');
+
+document.querySelector('#rubricRows').innerHTML = rubric.map(r=>
+  `<tr><td><strong>${r.n} · ${r.t}</strong></td>
+   <td class="num">${r.w}</td><td class="num">${r.score}</td>
+   <td><span class="chip ${r.verdict[0]}">${r.verdict[1]}</span><p class="why">${r.ev}</p></td></tr>`).join('');
+
+document.querySelector('#proposalRows').innerHTML = proposal.map(p=>{
+  const tone = p[1]>=80?'good':p[1]>=50?'warn':'critical';
+  return `<tr><td><strong>${p[0]}</strong></td>
+    <td style="width:120px"><span class="chip ${tone}">${p[1]}%</span></td><td>${p[2]}</td></tr>`;
+}).join('') + `<tr><td><strong>Mean → requirement 1 score</strong></td>
+  <td><span class="chip serious">58%</span></td>
+  <td>58% of 50 points = <strong>29</strong>, carried above as <strong>30</strong>. A generous
+  weighting toward the working mixing engine reaches 34; the gap to a top score is almost entirely
+  the saved-segment feature and the three missing analytics.</td></tr>`;
+
+document.querySelector('#bugRows').innerHTML = bugs.length ? bugs.map(b=>{
+  const label = {critical:'High',serious:'Medium',warn:'Low'}[b.sev];
+  return `<div class="item"><div><span class="chip ${b.sev}">${label}</span>
+    <div style="font-size:11px;color:var(--ink-3);margin-top:7px;letter-spacing:.08em">${b.id}</div></div>
+    <div><h4>${b.t}</h4><p>${b.d}</p><p class="fix"><strong>Fix:</strong> ${b.f}</p></div></div>`;
+}).join('') : `<div class="item"><div><span class="chip good">Clear</span></div>
+  <div><h4>No open defects</h4><p>D1–D7 all have verified fixes in the current tree.</p></div></div>`;
+
+document.querySelector('#actionRows').innerHTML = actions.map(a=>
+  `<div class="act"><input type="checkbox" data-act="${a.id}" aria-label="Commit to ${a.t}"${a.done ? ' checked' : ''}>
+   <div><h4>${a.t}${a.done ? ' <span class="chip good">done</span>' : ''}</h4><p>${a.d}</p></div>
+   <div class="meta"><span class="gain">${a.gain ? '+'+a.gain+' pts' : 'penalty risk'}</span>${a.days} day${a.days===1?'':'s'}<br>
+   <span style="color:var(--ink-3)">${a.risk ? 'closes one −5 risk' : (a.gain/a.days).toFixed(1)+' pts/day'}</span></div></div>`).join('');
+
+// In-memory only, so this file behaves identically wherever it is opened --
+// pre-seeded with whichever actions are already done (see the `done` flag
+// above), not just picked ad hoc.
+const picked = new Set(actions.filter(a=>a.done).map(a=>a.id));
+function refresh(){
+  let score = BASE, days = 0;
+  actions.forEach(a=>{ if(picked.has(a.id)){ score += a.gain; days += a.days; } });
+  const highBugs = 0; // D1 (the one high-severity defect) is fixed, unconditionally
+  document.querySelector('#projScore').textContent = Math.min(100,score).toFixed(score%1?1:0);
+  document.querySelector('#projDays').textContent = days%1 ? days.toFixed(1) : days;
+  document.querySelector('#projBugs').textContent = highBugs;
+  document.querySelector('#projRiskScore').textContent = Math.max(0, score - highBugs * 5).toFixed(score%1?1:0);
+}
+document.querySelectorAll('[data-act]').forEach(box=>box.addEventListener('change',e=>{
+  e.target.checked ? picked.add(e.target.dataset.act) : picked.delete(e.target.dataset.act);
+  refresh();
+}));
+refresh();
+</script>
+</body>
+</html>

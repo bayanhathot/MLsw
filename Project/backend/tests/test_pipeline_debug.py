@@ -2,6 +2,8 @@
 the Ollama health probe, last-call tracking, and the per-session trace the
 debug endpoint reads back."""
 
+import os
+
 import httpx
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -10,7 +12,7 @@ from conftest import register_and_login
 
 from app.core.config import pipeline_debug_enabled
 from app.database.models.catalog import CatalogTrack
-from app.services import prompt_parser
+from app.services import pipeline_debug_service, prompt_parser
 from app.services.pipeline.ollama_health import check_ollama_health
 
 
@@ -279,3 +281,56 @@ def test_pipeline_debug_websocket_connects_when_enabled_and_authenticated(client
     register_and_login(client)
     with client.websocket_connect("/debug/ws") as socket:
         socket.send_text("ready")
+
+
+# --- D6b: pipeline_debug_hub ported to Redis pub/sub -----------------------
+
+
+def test_session_creation_survives_a_broken_pipeline_debug_publish(client, monkeypatch):
+    """The debug panel's own plumbing must never be able to break or block
+    the real session-loop request path -- same standard as
+    test_admin_debug.py's identical test for admin_debug_events.sync_publish.
+    Patches the actual point of failure a real deployment could hit (the
+    Redis client notify_pipeline_debug_change() gets), not the wrapper
+    function itself, so this exercises its real internal try/except."""
+
+    monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
+
+    class _BoomClient:
+        def publish(self, *args, **kwargs):
+            raise RuntimeError("redis publish is broken")
+
+    monkeypatch.setattr(pipeline_debug_service, "get_sync_redis_client", lambda: _BoomClient())
+
+    response = client.post("/sessions/start", json={"prompt": "smooth focus music"})
+    assert response.status_code == 200
+
+
+@pytest.mark.skipif(
+    not os.getenv("REDIS_URL", "").strip(),
+    reason="a real live-push proof requires a real REDIS_URL",
+)
+def test_pipeline_debug_websocket_receives_a_live_push_from_a_different_replica(
+    client, second_client, monkeypatch
+):
+    """Two-client-style live proof, same standard as
+    test_admin_debug.py::test_admin_debug_channel_pushes_a_live_session_update
+    -- client and second_client are two independent TestClient(app) instances,
+    each with its own ASGI lifespan/event loop (see conftest.py's own
+    fixtures), the closest this test suite gets to two real BACKEND_WORKERS
+    replicas. second_client holds the debug websocket open; a real
+    session-creating request from `client` (a different process's own
+    session_manager.create_session -> notify_pipeline_debug_change() call)
+    must arrive on second_client's open socket without any manual refetch,
+    proving this reuses the real Redis-backed fanout (D6b) rather than the
+    old in-process-only anyio bridge, which could never have delivered this
+    across two separate TestClient instances at all."""
+
+    monkeypatch.setenv("ENABLE_PIPELINE_DEBUG", "true")
+
+    with second_client.websocket_connect("/debug/ws") as socket:
+        started = client.post("/sessions/start", json={"prompt": "smooth focus music"})
+        assert started.status_code == 200
+
+        envelope = socket.receive_json()
+        assert envelope["type"] == "pipeline_trace_updated"

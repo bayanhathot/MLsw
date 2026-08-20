@@ -37,7 +37,10 @@ from app.services import (
     upload_queue,
 )
 from app.services.pipeline import audio_renderer, external_track_cache
-from app.services.pipeline.catalog_retriever import LAST_RESORT_CATALOG_RETRIEVER
+from app.services.pipeline.catalog_retriever import (
+    LAST_RESORT_CATALOG_RETRIEVER,
+    last_resort_tracks,
+)
 from app.services.pipeline.dependencies import get_vibe_understander
 from app.services.pipeline.interfaces import (
     AudioRenderer,
@@ -848,6 +851,83 @@ def _resolve_and_render(
                     rescue_track, rescue_segment, rescue_transition, rescue_rendered,
                 )
                 served_by = rescue_source
+
+    # D1: primary plus the one rescue attempt above can both still end on a
+    # pass-through -- a URL that was never actually rendered because the
+    # source audio itself is unavailable/undecodable (e.g. Audius returning
+    # 4xx for every remaining candidate). Serving that URL as "now playing"
+    # means the player is handed dead audio. One more, last-ditch attempt:
+    # the retrieval fallback chain's own tier-4 "any visible catalog row"
+    # pool (orchestrator.retrieve_candidates_with_fallback /
+    # LAST_RESORT_CATALOG_RETRIEVER), restricted to tracks not already tried
+    # this resolution. Gated on `not intent.artist`, mirroring tier 4's own
+    # gate there: an explicit artist ask must never be silently substituted
+    # with an unrelated track just because the real match was unplayable --
+    # that's a NoMatchingCandidate, not a consolation prize.
+    still_pass_through, still_fallback_reason = _staged_pass_through(rendered)
+    if still_pass_through and not intent.artist:
+        tried_track_keys = (
+            exclude_track_keys
+            | {_track_key(track)}
+            | {f"{entry['source']}:{entry['source_track_id']}" for entry in skipped_tracks}
+        )
+        last_resort_started = time.perf_counter()
+        last_resort_candidates = [
+            candidate
+            for candidate in last_resort_tracks(db, viewer_id=viewer_id, limit=_CANDIDATE_LIMIT)
+            if _track_key(candidate) not in tried_track_keys
+        ]
+        retrieval_ms += round((time.perf_counter() - last_resort_started) * 1000, 2)
+        if last_resort_candidates:
+            (
+                lr_track, lr_segment, lr_transition, lr_rendered, lr_skipped, lr_stage_timings,
+            ) = _try_render_ranked_candidates(
+                db, last_resort_candidates, selector, planner, renderer,
+                previous_segment=previous_segment, prefers_smoother=prefers_smoother,
+                deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
+            )
+            for key, value in lr_stage_timings.items():
+                stage_timings[key] = round(stage_timings[key] + value, 2)
+            lr_is_pass_through, _lr_fallback_reason = _staged_pass_through(lr_rendered)
+            if not lr_is_pass_through:
+                skipped_tracks.append({
+                    "source": track.source,
+                    "source_track_id": track.source_track_id,
+                    "title": track.title,
+                    "fallback_reason": still_fallback_reason,
+                })
+                skipped_tracks.extend(lr_skipped)
+                track, segment, transition, rendered = (
+                    lr_track, lr_segment, lr_transition, lr_rendered,
+                )
+                served_by = LAST_RESORT_CATALOG_RETRIEVER
+        still_pass_through, still_fallback_reason = _staged_pass_through(rendered)
+
+    if still_pass_through:
+        # Every real candidate, the one rescue attempt, and (when eligible)
+        # the last-resort catalog tier all failed to produce playable
+        # audio -- refuse to serve a dead URL as now_playing. Recorded the
+        # same way routers/sessions.py already records a create_session-time
+        # NoMatchingCandidate, so this is visible in the admin debug event
+        # feed regardless of which caller (create/apply_feedback/advance/
+        # prepare_next) hit it -- those all already handle this exception
+        # (see their own try/except NoMatchingCandidate blocks).
+        record_event({
+            "event": "resolve_and_render_exhausted",
+            "session_id": session_id,
+            "last_attempted_track": {
+                "source": track.source,
+                "source_track_id": track.source_track_id,
+                "title": track.title,
+            },
+            "fallback_reason": still_fallback_reason,
+        })
+        raise NoMatchingCandidate(
+            "No playable audio could be rendered for this request: every ranked "
+            "candidate, any rescue attempt from the other retriever, and (when "
+            "eligible) the last-resort catalog fallback all failed to produce "
+            "anything but an unavailable/undecodable source."
+        )
 
     # bridge_from consistently determines rendered's shape across both the
     # primary and any rescue attempt above (rescue always reuses the same

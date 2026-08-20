@@ -25,9 +25,10 @@ jobs:
   check:
     name: Check production health endpoint
     runs-on: ubuntu-latest
-    # No-op (not a failure) until PUBLIC_BASE_URL is actually configured --
-    # same "keep CI green without a deployed target" principle
-    # VM_DEPLOY_ENABLED already follows in cuemix-ci-cd.yml.
+    # PUBLIC_BASE_URL is configured and the VM is deployed (see
+    # VM_DEPLOY_ENABLED in cuemix-ci-cd.yml), so this runs for real. The
+    # guard is kept so this stays a no-op rather than a failure if that ever
+    # changes -- same "keep CI green without a deployed target" principle.
     if: vars.PUBLIC_BASE_URL != ''
     steps:
       # /api/db-health returns HTTP 200 -- and so, until this, "healthy" --

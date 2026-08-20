@@ -54,6 +54,15 @@ if [ -n "${MANAGED_ENABLE_PIPELINE_DEBUG:-}" ]; then
   esac
   set_managed_env ENABLE_PIPELINE_DEBUG "${MANAGED_ENABLE_PIPELINE_DEBUG}"
 fi
+if [ -n "${MANAGED_BACKEND_WORKERS:-}" ]; then
+  case "${MANAGED_BACKEND_WORKERS}" in
+    ''|*[!0-9]*) echo "MANAGED_BACKEND_WORKERS must be a positive integer" >&2; exit 1 ;;
+  esac
+  if [ "${MANAGED_BACKEND_WORKERS}" -lt 1 ]; then
+    echo "MANAGED_BACKEND_WORKERS must be a positive integer" >&2; exit 1
+  fi
+  set_managed_env BACKEND_WORKERS "${MANAGED_BACKEND_WORKERS}"
+fi
 
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 "${compose[@]}" config --quiet
@@ -89,6 +98,22 @@ if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
 fi
 if [ -n "${MANAGED_ENABLE_PIPELINE_DEBUG:-}" ]; then
   verify_managed_env ENABLE_PIPELINE_DEBUG "${MANAGED_ENABLE_PIPELINE_DEBUG}"
+fi
+# D6b: BACKEND_WORKERS only ever reaches the container via the compose
+# file's `command: [..., --workers, ${BACKEND_WORKERS:-2}]` templating, not
+# as an environment variable inside the container -- printenv (what
+# verify_managed_env checks above) would see nothing. Inspect the actually-
+# running container's real launch args instead, the same "prove the live
+# process, not just the file" standard.
+if [ -n "${MANAGED_BACKEND_WORKERS:-}" ]; then
+  backend_cid="$("${compose[@]}" ps -q backend)"
+  actual_workers="$(docker inspect --format '{{range .Args}}{{.}} {{end}}' "${backend_cid}" \
+    | grep -oE -- '--workers [0-9]+' | awk '{print $2}')"
+  if [ "${actual_workers}" != "${MANAGED_BACKEND_WORKERS}" ]; then
+    echo "running backend container has --workers=${actual_workers:-<unset>}; expected ${MANAGED_BACKEND_WORKERS}" >&2
+    exit 1
+  fi
+  echo "Verified running backend worker count: --workers=${MANAGED_BACKEND_WORKERS}"
 fi
 
 # Ensure the local LLM refinement model is present. Read OLLAMA_MODEL out of

@@ -1,10 +1,12 @@
 import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 
 import httpx
+import pytest
 
 from app.schemas import PromptIntent
 from app.services import audius_service, prompt_parser
@@ -201,12 +203,15 @@ def test_concurrent_parse_prompt_calls_respect_the_ollama_slot_bound(monkeypatch
     for slots instead of racing through sequentially. Verifies: no more
     than the configured limit are ever in-flight against "Ollama" at once,
     every caller still returns a valid PromptIntent (never hangs, never
-    raises), and callers that miss a slot within the real 0.05s acquire
-    timeout cleanly fall back to the deterministic parse rather than
-    blocking."""
+    raises), and -- D4 -- most callers genuinely queue for a slot and reach
+    the model rather than shedding to the deterministic fallback: this
+    used to shed almost everything (the old acquire timeout was a hardcoded
+    0.05s, far shorter than this mock's own 0.2s delay per call), which is
+    exactly the defect D4 fixed."""
 
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
     monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    prompt_parser.reset_ollama_stats()
 
     in_flight = 0
     high_water_mark = 0
@@ -258,6 +263,165 @@ def test_concurrent_parse_prompt_calls_respect_the_ollama_slot_bound(monkeypatch
     assert all(isinstance(result, PromptIntent) for result in results)
     assert high_water_mark <= concurrency_limit
     assert high_water_mark >= 1  # sanity: the mock was actually exercised
+
+    # D4: real queueing means most of these 20 calls reach the model instead
+    # of shedding immediately -- the pre-fix version of this test only
+    # asserted results were valid PromptIntents (true for a shed fallback
+    # too), so it never actually caught nearly everything being shed.
+    stats = prompt_parser.get_ollama_stats()
+    print(f"[llm-concurrency] attempted={stats['attempted']} succeeded={stats['succeeded']} "
+          f"shed={stats['shed']}")
+    assert stats["succeeded"] >= 8
+    assert stats["timed_out"] == 0  # every attempt the mock served was a clean 200
+
+
+def test_ollama_stats_count_a_successful_call(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    prompt_parser.reset_ollama_stats()
+
+    def ok(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "response": '{"mood":"balanced","energy":"medium","vocals":"neutral","genres":[],"search_query":"x"}'
+            },
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", ok)
+    prompt_parser.parse_prompt("chill lofi beats")
+
+    stats = prompt_parser.get_ollama_stats()
+    assert stats["attempted"] == 1
+    assert stats["succeeded"] == 1
+    assert stats["timed_out"] == 0
+    assert stats["shed"] == 0
+    assert stats["success_rate"] == 1.0
+    assert stats["mean_latency_ms"] is not None
+
+
+def test_ollama_stats_count_a_timeout_as_attempted_but_not_succeeded(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    prompt_parser.reset_ollama_stats()
+
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("slow")
+
+    monkeypatch.setattr(httpx.Client, "post", timeout)
+    prompt_parser.parse_prompt("chill lofi beats")
+
+    stats = prompt_parser.get_ollama_stats()
+    assert stats["attempted"] == 1
+    assert stats["succeeded"] == 0
+    assert stats["timed_out"] == 1
+    assert stats["shed"] == 0
+    assert stats["success_rate"] == 0.0
+    assert stats["mean_latency_ms"] is None  # no successful call to average
+
+
+def test_ollama_stats_count_a_shed_call_without_counting_it_as_attempted(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    # Keep this test fast regardless of OLLAMA_QUEUE_WAIT_SECONDS's default --
+    # every slot is held for the whole test, so parse_prompt must genuinely
+    # shed, not queue.
+    monkeypatch.setenv("OLLAMA_QUEUE_WAIT_SECONDS", "0.05")
+    # D6b: parse_prompt prefers the Redis-backed distributed semaphore when
+    # Redis is configured/reachable -- this test exercises the
+    # process-local _ollama_slots fallback specifically (it holds that
+    # semaphore directly to force a shed), so it forces that path regardless
+    # of whether this environment happens to have a real Redis available.
+    monkeypatch.setattr(prompt_parser, "get_sync_redis_client", lambda: None)
+    prompt_parser.reset_ollama_stats()
+
+    acquired = prompt_parser._ollama_slots.acquire(timeout=0)
+    assert acquired  # sanity: we actually hold every slot below
+    held = [acquired]
+    try:
+        while prompt_parser._ollama_slots.acquire(timeout=0):
+            held.append(True)
+
+        prompt_parser.parse_prompt("chill lofi beats")
+    finally:
+        for _ in held:
+            prompt_parser._ollama_slots.release()
+
+    stats = prompt_parser.get_ollama_stats()
+    assert stats["shed"] == 1
+    assert stats["attempted"] == 0  # a shed call never reached Ollama
+
+
+# --- D6b: Ollama concurrency/stats shared across BACKEND_WORKERS replicas --
+
+
+@pytest.mark.skipif(
+    not os.getenv("REDIS_URL", "").strip(),
+    reason="a real cross-replica proof requires a real REDIS_URL",
+)
+def test_distributed_ollama_semaphore_enforces_the_limit_across_simulated_replicas(monkeypatch):
+    """Each _acquire_ollama_slot() call below simulates a *different*
+    replica racing for the same cluster-wide limit -- no shared Python
+    object between them, only the real Redis-backed semaphore
+    (_OLLAMA_SEMAPHORE_KEY). Proves OLLAMA_MAX_CONCURRENCY is enforced
+    cluster-wide, not per-replica: 3 simulated replicas contending for a
+    limit of 2 must see exactly 2 acquire and 1 shed, and a release must
+    free the slot back up for a subsequent acquire."""
+
+    monkeypatch.setenv("OLLAMA_MAX_CONCURRENCY", "2")
+    redis_client = prompt_parser.get_sync_redis_client()
+    redis_client.delete(prompt_parser._OLLAMA_SEMAPHORE_KEY)
+
+    releases = [prompt_parser._acquire_ollama_slot(0.2) for _ in range(3)]
+    acquired = [r for r in releases if r is not None]
+    assert len(acquired) == 2  # the cluster-wide limit, not 3
+    assert releases.count(None) == 1  # the third replica genuinely shed
+
+    for release in acquired:
+        release()
+
+    # The limit is enforced again correctly after releasing -- not
+    # permanently exhausted by the earlier contention.
+    release = prompt_parser._acquire_ollama_slot(0.2)
+    assert release is not None
+    release()
+
+
+@pytest.mark.skipif(
+    not os.getenv("REDIS_URL", "").strip(),
+    reason="a real cross-replica proof requires a real REDIS_URL",
+)
+def test_cluster_ollama_stats_aggregate_across_simulated_replicas(monkeypatch):
+    """_record_ollama_call/_record_ollama_shed increment the same Redis hash
+    regardless of which "replica" (here: which reset_ollama_stats-scoped
+    process-local state) calls them -- get_cluster_ollama_stats() must
+    report the sum across all of them, not any one replica's own local
+    counters."""
+
+    prompt_parser.reset_ollama_stats()  # also clears the Redis hash
+
+    prompt_parser._record_ollama_call(100.0, True)
+    prompt_parser._record_ollama_call(50.0, False)
+    prompt_parser._record_ollama_shed()
+
+    # A fresh, separate reset of only the process-local counters -- a real
+    # second replica's own _ollama_stats dict would likewise start at zero
+    # while the Redis-backed cluster counters keep accumulating.
+    with prompt_parser._last_call_lock:
+        prompt_parser._ollama_stats.update(
+            {"attempted": 0, "succeeded": 0, "timed_out": 0, "shed": 0,
+             "latency_count": 0, "latency_sum_ms": 0.0, "latency_max_ms": 0.0}
+        )
+    prompt_parser._record_ollama_call(200.0, True)
+
+    cluster = prompt_parser.get_cluster_ollama_stats()
+    assert cluster is not None
+    assert cluster["attempted"] == 3
+    assert cluster["succeeded"] == 2
+    assert cluster["timed_out"] == 1
+    assert cluster["shed"] == 1
+    assert cluster["mean_latency_ms"] == pytest.approx((100.0 + 200.0) / 2, abs=0.1)
 
 
 def test_valid_llm_classification_cannot_replace_catalog_search_text(monkeypatch):

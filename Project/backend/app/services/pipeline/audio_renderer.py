@@ -9,7 +9,12 @@ at the same rendered file with the right start/end seconds.
 
 If a track's audio genuinely can't be fetched (an unreachable remote
 preview), that segment is left as an honestly-labelled pass-through/cut
-instead of fabricating a crossfade that never happened.
+instead of fabricating a crossfade that never happened. The same applies
+when it fetches fine but turns out silent/near-silent throughout: an
+Audius whole-clip window (never pre-trimmed the way a local file's is --
+see _load_clip) is checked for leading/trailing silence right here, on the
+bytes already fetched, and refused as a pass-through rather than ever
+rendered.
 """
 
 import concurrent.futures
@@ -189,6 +194,29 @@ def _apply_loudness_gain(clip: AudioSegment, segment: SelectedSegment) -> AudioS
     return clip.apply_gain(gain_db)
 
 
+# D2/Cause A: shared with segment_selector.py's own local-file whole-clip
+# trim (_trim_leading_trailing_silence there calls into
+# _leading_trailing_silence_ms below rather than duplicating this logic) --
+# one threshold/min-window policy, not two independently-tuned copies.
+# pydub's own documented default for detect_leading_silence is also -50 dBFS.
+_SILENCE_TRIM_THRESHOLD_DBFS = -50.0
+_MIN_TRIMMED_WINDOW_SECONDS = 1
+
+
+def _leading_trailing_silence_ms(clip: AudioSegment) -> tuple[int, int]:
+    """How much of `clip`'s start/end is silence, per pydub's own
+    detect_leading_silence. Pure in-memory computation on an already-
+    decoded AudioSegment -- no subprocess/IO, so unlike the actual decode
+    step this doesn't need its own _bounded() wrapper (the decode that
+    produced `clip` is already bounded by its own caller)."""
+
+    from pydub.silence import detect_leading_silence
+
+    leading_ms = detect_leading_silence(clip, silence_threshold=_SILENCE_TRIM_THRESHOLD_DBFS)
+    trailing_ms = detect_leading_silence(clip.reverse(), silence_threshold=_SILENCE_TRIM_THRESHOLD_DBFS)
+    return leading_ms, trailing_ms
+
+
 def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None, str | None]:
     """Returns (clip, None, audio_sha256) on success, or (None, reason,
     None) on failure -- see _download's docstring for why the reason is
@@ -249,6 +277,30 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
     start_ms = max(0, segment.start_second * 1000)
     end_ms = segment.end_second * 1000
     clip = audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
+
+    if audio_sha256 is not None and segment.method == "whole_clip":
+        # D2/Cause A: an Audius whole-clip window is never pre-trimmed for
+        # silence the way a local file's is -- segment_selector.py's own
+        # _trim_leading_trailing_silence only runs on the local_path
+        # branch there, since it has no remote bytes to scan until this
+        # render actually fetches them (audio_sha256 is set here
+        # specifically because a remote fetch just happened -- see this
+        # function's own docstring). Reuses the same threshold/min-window
+        # rule via _leading_trailing_silence_ms, on the bytes already
+        # decoded above, so no second fetch happens. Unlike that local-
+        # file trim (which falls back to the untrimmed original when
+        # trimming would leave too little, since a genuinely silent local
+        # upload is already rejected at upload time -- see
+        # upload_queue._validate_decodable_audio), there is no earlier
+        # check for Audius audio: a trim-to-nothing result here means this
+        # render has nothing playable to offer, so it must fail outright
+        # rather than ever falling back to serving the untrimmed dead air.
+        leading_ms, trailing_ms = _leading_trailing_silence_ms(clip)
+        trimmed = clip[leading_ms : len(clip) - trailing_ms]
+        if len(trimmed) < _MIN_TRIMMED_WINDOW_SECONDS * 1000:
+            return None, "silent_or_near_silent_audio", None
+        clip = trimmed
+
     clip = _apply_loudness_gain(clip, segment)
     return clip, None, audio_sha256
 

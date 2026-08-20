@@ -439,7 +439,13 @@ def test_best_segment_never_selects_a_near_silent_region_over_a_loud_one():
     assert start != naive_start
 
 
-def test_best_segment_falls_back_to_whole_clip_when_the_entire_track_is_silent():
+def test_best_segment_signals_all_windows_below_floor_distinctly_from_whole_clip(tmp_path):
+    # D2/Cause B: this used to assert method == "whole_clip" here -- the
+    # defect itself, since that's indistinguishable from the legitimate
+    # too-short-to-window case and lets analyze_audio() report a uniformly
+    # near-silent track's entire duration as a *completed* analysis. The
+    # sentinel is intercepted by analyze_audio() (see the test below) and
+    # never reaches a DB row.
     sr = 22050
     duration_seconds = 90.0
     signal = np.zeros(int(sr * duration_seconds), dtype=np.float32)
@@ -450,10 +456,53 @@ def test_best_segment_falls_back_to_whole_clip_when_the_entire_track_is_silent()
         chroma, frames_per_second, duration_seconds, rms_frames, peak_amplitude
     )
 
-    assert method == "whole_clip"
-    assert start == 0
-    assert end == int(duration_seconds)
+    assert method == "all_windows_below_silence_floor"
     assert level is None
+
+
+def test_analyze_audio_raises_rather_than_completing_on_a_uniformly_silent_track(tmp_path):
+    # The sentinel above must never reach a persisted AnalysisResult --
+    # analyze_audio() itself raises, so both analyze_catalog_track and
+    # analyze_external_track's existing except-branches turn a uniformly
+    # near-silent track into an ordinary "failed" analysis (same
+    # retry/fallback machinery every other analysis failure already uses)
+    # rather than ever reporting it "completed".
+    sr = 22050
+    duration_seconds = 90
+    silence = np.zeros(sr * duration_seconds, dtype=np.float32)
+    path = tmp_path / "silent.wav"
+    sf.write(str(path), silence, sr)
+
+    with pytest.raises(ValueError, match="silence floor"):
+        audio_analysis.analyze_audio(str(path), label="test silent track")
+
+
+def test_analyze_catalog_track_marks_a_uniformly_silent_upload_failed_not_completed(db_session, tmp_path):
+    # D2/Cause B, end to end: the raise above must actually reach a
+    # persisted CatalogTrack row as analysis_status="failed", not
+    # "completed" -- proving the sentinel never silently reaches the DB
+    # via analyze_catalog_track's own existing (pre-existing, unmodified)
+    # except-branch.
+    catalog_dir = tmp_path / "catalog"
+    catalog_dir.mkdir()
+    sr = 22050
+    duration_seconds = 90
+    silence = np.zeros(sr * duration_seconds, dtype=np.float32)
+    sf.write(str(catalog_dir / "silent.wav"), silence, sr)
+
+    row = CatalogTrack(
+        title="Silent", artist="Someone", storage_name="silent.wav", content_type="audio/wav",
+        duration_seconds=duration_seconds, analysis_status="pending",
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+
+    audio_analysis.analyze_catalog_track(row.id)
+
+    db_session.refresh(row)
+    assert row.analysis_status == "failed"
+    assert row.segment_start_second is None  # _apply_result never ran
 
 
 def test_best_segment_still_ranks_normally_among_windows_that_all_pass_the_floor():
@@ -516,5 +565,65 @@ def test_analyze_audio_can_select_a_highlight_past_the_old_four_minute_cap(tmp_p
     # highlight (which only exists past 250s) was actually reachable, not
     # just that *some* window won.
     assert result.segment_start_second >= 240
+    assert result.segment_level_dbfs is not None
+    assert result.segment_level_dbfs >= audio_analysis._SILENCE_FLOOR_DBFS
+
+
+def test_analyze_audio_finds_a_highlight_past_the_current_ten_minute_cap(monkeypatch, tmp_path):
+    # D3: _MAX_ANALYSIS_SECONDS is still the bpm/key/beat-grid prefix, but
+    # no longer the ceiling on segment selection -- a track whose only real
+    # highlight sits well past that prefix (routine for an 8-20 minute
+    # Emotional/Tarab track) must still find it, via
+    # _select_long_track_segment's sampling of the remainder past the
+    # prefix.
+    #
+    # Every relevant constant is monkeypatched to 1/20th of its real
+    # default (_MAX_ANALYSIS_SECONDS 600->40, _TARGET_SEGMENT_SECONDS
+    # 30->3, _LONG_TRACK_REMAINDER_CHUNK_SECONDS 75->15) so this exercises
+    # the exact same code path -- the arithmetic is all relative to these
+    # constants, not hardcoded -- while keeping real decode/DSP cost (the
+    # dominant cost, not signal generation) proportionally down too; at
+    # full scale this fixture would need a genuine ~15-minute signal and
+    # take proportionally longer to decode than the suite's per-test
+    # budget comfortably allows.
+    monkeypatch.setattr(audio_analysis, "_MAX_ANALYSIS_SECONDS", 40)
+    monkeypatch.setattr(audio_analysis, "_TARGET_SEGMENT_SECONDS", 3)
+    monkeypatch.setattr(audio_analysis, "_LONG_TRACK_REMAINDER_CHUNK_SECONDS", 15)
+
+    sr = 22050
+    # _LONG_TRACK_REMAINDER_CHUNKS defaults to 4, tiling [40s, 100s) into
+    # 15s chunks: [40,55), [55,70), [70,85), [85,100). The highlight sits
+    # at [75s, 78s), inside the third chunk, comfortably past both the 40s
+    # prefix and the first two remainder chunks -- reachable only if
+    # sampling genuinely covers the whole remainder, not just its start.
+    filler_before_seconds = 75
+    highlight_seconds = 3
+    filler_after_seconds = 22
+
+    def _drifting_filler(seconds: float) -> np.ndarray:
+        t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+        freq_drift = 220.0 * (2 ** (np.floor(t / 3.0) % 12 / 12))
+        return (0.5 * np.sin(2 * np.pi * freq_drift * t)).astype(np.float32)
+
+    loop_seconds = 1.0
+    t_loop = np.linspace(0, loop_seconds, int(sr * loop_seconds), endpoint=False)
+    loop = (0.7 * np.sin(2 * np.pi * 440.0 * t_loop)).astype(np.float32)
+    highlight = np.tile(loop, int(highlight_seconds / loop_seconds))
+
+    signal = np.concatenate([
+        _drifting_filler(filler_before_seconds),
+        highlight,
+        _drifting_filler(filler_after_seconds),
+    ]).astype(np.float32)
+    path = tmp_path / "very_long_track.wav"
+    sf.write(str(path), signal, sr)
+
+    result = audio_analysis.analyze_audio(str(path), label="very long track test")
+
+    assert result.segment_method == "chorus_detection"
+    # The winning window must start at/after the 40s prefix -- proof the
+    # highlight (which only exists past 75s) was actually reachable past
+    # it, not just that *some* window inside the prefix won.
+    assert result.segment_start_second >= 40
     assert result.segment_level_dbfs is not None
     assert result.segment_level_dbfs >= audio_analysis._SILENCE_FLOOR_DBFS

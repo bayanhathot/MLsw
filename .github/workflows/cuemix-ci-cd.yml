@@ -587,10 +587,11 @@ jobs:
     timeout-minutes: 25
     needs: [publish-images]
     # Separate from DEPLOY_ENABLED (which only gates publishing images to
-    # GHCR): this VM belongs to the course, not the team, and the one-time
-    # `.env` + Docker setup on it isn't done yet. Leaving this variable unset
-    # keeps CI green (tests run, images publish) without touching the VM.
-    # Flip vars.VM_DEPLOY_ENABLED to "true" once that VM setup is complete.
+    # GHCR): this variable additionally gates actually deploying to the
+    # course's Azure VM over SSH via deploy/remote-deploy.sh. It is currently
+    # set to "true", so every green push to main deploys the VM. Unsetting it
+    # falls back to CI-only (tests run, images publish) without touching the
+    # VM -- useful if the VM ever needs to be taken out of the loop again.
     if: needs.publish-images.result == 'success' && vars.VM_DEPLOY_ENABLED == 'true'
     environment: production
     env:
@@ -601,6 +602,9 @@ jobs:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
       PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
+      # D6b: raised from 1 -- see docker-compose.prod.yml's own default and
+      # deploy/.env.production.example's comment for why this is now safe.
+      PRODUCTION_BACKEND_WORKERS: ${{ vars.BACKEND_WORKERS || '2' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -627,6 +631,9 @@ jobs:
               *) echo "${name} must be true or false" >&2; exit 1 ;;
             esac
           done
+          case "${PRODUCTION_BACKEND_WORKERS}" in
+            ''|*[!0-9]*) echo "PRODUCTION_BACKEND_WORKERS must be a positive integer" >&2; exit 1 ;;
+          esac
 
       # Host keys are trusted on first connect (TOFU) rather than pinned via a
       # verified SSH_KNOWN_HOSTS secret. The runner is ephemeral, so this is a
@@ -674,7 +681,7 @@ jobs:
           FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' MANAGED_BACKEND_WORKERS='${PRODUCTION_BACKEND_WORKERS}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       # --retry-all-errors is required, not optional: on a first-ever deploy
       # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and
@@ -722,6 +729,9 @@ jobs:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
       PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
+      # D6b: raised from 1 -- see docker-compose.prod.yml's own default and
+      # deploy/.env.production.example's comment for why this is now safe.
+      PRODUCTION_BACKEND_WORKERS: ${{ vars.BACKEND_WORKERS || '2' }}
     steps:
       - name: Check out the rollback ref
         uses: actions/checkout@v4
@@ -755,6 +765,9 @@ jobs:
               *) echo "${name} must be true or false" >&2; exit 1 ;;
             esac
           done
+          case "${PRODUCTION_BACKEND_WORKERS}" in
+            ''|*[!0-9]*) echo "PRODUCTION_BACKEND_WORKERS must be a positive integer" >&2; exit 1 ;;
+          esac
 
       - name: Configure SSH identity
         env:
@@ -803,7 +816,7 @@ jobs:
           frontend_image="ghcr.io/${owner}/cuemix-frontend:${{ inputs.rollback_sha }}"
           echo "Rolling back to ${backend_image} / ${frontend_image}"
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' MANAGED_BACKEND_WORKERS='${PRODUCTION_BACKEND_WORKERS}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       - name: Verify the public TLS database health endpoint
         env:

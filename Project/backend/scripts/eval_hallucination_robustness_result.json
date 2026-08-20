@@ -1,6 +1,6 @@
 {
-  "pass_count": 6,
-  "total_count": 6,
+  "pass_count": 7,
+  "total_count": 7,
   "pass_rate": 1.0,
   "cases": [
     {
@@ -45,10 +45,21 @@
       "case_id": "unavailable_audius_url",
       "label": "Unavailable Audius URL",
       "passed": true,
-      "detail": "Degraded gracefully to a pass-through (reason: download_failed_http_400)",
+      "detail": "Rejected / rescued to a playable track instead of a dead pass-through (final: catalog:1, served_by=catalog)",
+      "evidence": {
+        "is_pass_through": false,
+        "served_by": "catalog",
+        "final_track": "catalog:1"
+      }
+    },
+    {
+      "case_id": "silent_audius_stream",
+      "label": "Silent Audius stream (available, silent throughout)",
+      "passed": true,
+      "detail": "Correctly rejected: fallback_reason=silent_or_near_silent_audio",
       "evidence": {
         "is_pass_through": true,
-        "fallback_reason": "download_failed_http_400"
+        "fallback_reason": "silent_or_near_silent_audio"
       }
     },
     {

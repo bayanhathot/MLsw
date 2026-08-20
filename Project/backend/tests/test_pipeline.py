@@ -2,6 +2,7 @@
 indirectly: fuzzy artist matching, segment selection, and transition
 planning."""
 
+import io
 import os
 import threading
 import time
@@ -1568,6 +1569,71 @@ def test_render_track_transition_with_no_stored_loudness_still_renders(monkeypat
     result = renderer.render_track_transition(segment, resume_offset_ms=0, reserved_ms=5000)
     assert result.body.is_pass_through is False
     assert result.body.duration_ms > 0
+
+
+def test_load_clip_rejects_a_uniformly_near_silent_audius_whole_clip(monkeypatch):
+    # D2/Cause A: an Audius whole-clip window was never pre-trimmed/checked
+    # for silence the way a local file's is (segment_selector.py's own
+    # trim only runs on the local_path branch) -- a uniformly near-silent
+    # remote track must now be refused as a pass-through rather than ever
+    # rendered, the same protection the local-file whole-clip path already
+    # had.
+    quiet = AudioSegment.silent(duration=30000, frame_rate=22050).apply_gain(-5)  # still well below -50dBFS floor
+    buf = io.BytesIO()
+    quiet.export(buf, format="wav")
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: (buf.getvalue(), None)
+    )
+
+    segment = _segment(end_second=30)
+    clip, reason, sha256 = audio_renderer._load_clip(segment)
+    assert clip is None
+    assert reason == "silent_or_near_silent_audio"
+    assert sha256 is None
+
+
+def test_load_clip_trims_silence_padding_off_an_audius_whole_clip_without_rejecting_it(monkeypatch):
+    # A real tone padded with silence on both ends -- unlike the fully
+    # silent fixture above, this must render (not be rejected), just
+    # trimmed shorter than the untrimmed 30s window.
+    from pydub.generators import Sine
+
+    lead_silence = AudioSegment.silent(duration=5000, frame_rate=22050)
+    tone = Sine(440, sample_rate=22050).to_audio_segment(duration=20000).apply_gain(-3)
+    tail_silence = AudioSegment.silent(duration=5000, frame_rate=22050)
+    padded = lead_silence + tone + tail_silence
+    buf = io.BytesIO()
+    padded.export(buf, format="wav")
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: (buf.getvalue(), None)
+    )
+
+    segment = _segment(end_second=len(padded) // 1000)
+    clip, reason, sha256 = audio_renderer._load_clip(segment)
+    assert reason is None
+    assert clip is not None
+    assert sha256 is not None
+    # Trimmed down close to the real ~20s tone, not the untrimmed ~30s window.
+    assert 19 <= len(clip) / 1000 <= 21
+
+
+def test_load_clip_never_trims_a_chorus_detection_audius_segment(monkeypatch):
+    # A chorus_detection method means a real analysis already verified this
+    # exact window clears the energy floor (D2/Cause B) -- the whole-clip-
+    # only trim above must not re-scan/alter it.
+    quiet = AudioSegment.silent(duration=10000, frame_rate=22050).apply_gain(-5)
+    buf = io.BytesIO()
+    quiet.export(buf, format="wav")
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", lambda url: (buf.getvalue(), None)
+    )
+
+    segment = _segment(end_second=10).model_copy(update={"method": "chorus_detection"})
+    clip, reason, sha256 = audio_renderer._load_clip(segment)
+    assert reason is None
+    assert clip is not None
+    assert sha256 is not None
+    assert len(clip) / 1000 == pytest.approx(10, abs=0.1)  # untouched, not trimmed away
 
 
 def test_render_track_transition_pass_through_on_load_failure(monkeypatch):

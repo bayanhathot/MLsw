@@ -222,7 +222,7 @@ services:
       - --port
       - "5000"
       - --workers
-      - ${BACKEND_WORKERS:-1}
+      - ${BACKEND_WORKERS:-2}
     expose:
       - "5000"
     volumes:

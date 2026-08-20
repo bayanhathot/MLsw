@@ -269,6 +269,13 @@ def test_rate_limiter_does_not_trust_spoofed_forwarded_header(monkeypatch):
 
 
 def test_rate_limiter_uses_route_template_and_prunes_inactive_keys(monkeypatch):
+    # D6b: RateLimiter checks Redis first when REDIS_URL is configured (see
+    # app/core/rate_limit.py) -- this test exercises the process-local
+    # fallback's own pruning behavior specifically, so it forces that path
+    # regardless of whether this environment happens to have a real Redis
+    # available (test_uploads_rate_limit_health.py's other rate-limit test
+    # doesn't care which path runs, since both enforce the same limit).
+    monkeypatch.setattr("app.core.rate_limit.get_sync_redis_client", lambda: None)
     limiter = RateLimiter(requests=1, window_seconds=60)
 
     def request(path, route_path, client="127.0.0.1"):

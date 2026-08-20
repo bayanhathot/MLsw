@@ -32,13 +32,10 @@ logger = logging.getLogger(__name__)
 # Used only when duration is unknown (e.g. an Audius track that reported 0).
 FALLBACK_SEGMENT_SECONDS = 40
 
-# Absolute dBFS floor for the whole-clip fallback's head/tail silence scan.
-# Deliberately absolute (not relative to the track's own peak, unlike
-# audio_analysis._SILENCE_FLOOR_DBFS): this is pydub's own silence
-# detector, run over the raw clip at session time, not the analysis
-# pipeline's own peak-normalized measurement -- pydub's own documented
-# default for detect_leading_silence is also -50 dBFS.
-_TRIM_SILENCE_THRESHOLD_DBFS = -50.0
+# D2/Cause A: the actual threshold/min-window values now live on
+# audio_renderer (_SILENCE_TRIM_THRESHOLD_DBFS/_MIN_TRIMMED_WINDOW_SECONDS),
+# shared with that module's own Audius whole-clip check -- one policy, not
+# two independently-tuned copies.
 _MIN_TRIMMED_WINDOW_SECONDS = 1
 
 
@@ -52,7 +49,9 @@ def _trim_leading_trailing_silence(local_path: str, start_second: int, end_secon
     other session-time local-file decode in this codebase already gets
     (see audio_renderer._load_clip) -- so a slow/stuck decode can't hang
     the live session-resolution request the way an unbounded
-    AudioSegment.from_file/librosa.load call could.
+    AudioSegment.from_file/librosa.load call could. The actual silence-
+    boundary detection is audio_renderer._leading_trailing_silence_ms,
+    shared with that module's own Audius whole-clip trim (see _load_clip).
 
     Any failure (timeout, corrupt/unreadable file) falls back to the
     untrimmed (start_second, end_second) window unchanged -- exactly
@@ -63,7 +62,6 @@ def _trim_leading_trailing_silence(local_path: str, start_second: int, end_secon
     # free of a hard import-time dependency on audio_renderer, and pydub
     # itself is only needed on this specific fallback path.
     from pydub import AudioSegment
-    from pydub.silence import detect_leading_silence
 
     from app.services.pipeline import audio_renderer
 
@@ -78,8 +76,7 @@ def _trim_leading_trailing_silence(local_path: str, start_second: int, end_secon
     if clip is None or len(clip) == 0:
         return start_second, end_second
 
-    leading_ms = detect_leading_silence(clip, silence_threshold=_TRIM_SILENCE_THRESHOLD_DBFS)
-    trailing_ms = detect_leading_silence(clip.reverse(), silence_threshold=_TRIM_SILENCE_THRESHOLD_DBFS)
+    leading_ms, trailing_ms = audio_renderer._leading_trailing_silence_ms(clip)
     trimmed_start = start_second + leading_ms // 1000
     trimmed_end = end_second - trailing_ms // 1000
     if trimmed_end - trimmed_start < _MIN_TRIMMED_WINDOW_SECONDS:

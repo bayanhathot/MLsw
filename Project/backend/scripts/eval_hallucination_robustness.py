@@ -3,21 +3,26 @@ playback.
 
 The course rubric's own worked example: "the AI must not recommend a
 non-existent item -- for example, choosing a part of a song that is
-silence." This script runs six labeled adversarial cases end to end
-against the *real* production guards -- steps 1-4's fixes (energy floor
-in segment selection, the upload silence/near-silence threshold, the
-whole-clip silence trim, the raised analysis window) plus the
-pre-existing, untouched prompt_parser.py guardrails and the retrieval/
-render fallback chain -- and reports, per case, whether "no invalid item
-reached playback" held. Every case calls the real production function
-directly (retrieve_candidates_with_fallback, _validate_decodable_audio,
+silence." This script runs seven labeled adversarial cases end to end
+against the *real* production guards -- the original energy floor in
+segment selection, the upload silence/near-silence threshold, the
+whole-clip silence trim, the raised analysis window, plus D1/D2's later
+fixes (a render that's still a pass-through after every rescue attempt --
+including the last-resort catalog tier -- raises NoMatchingCandidate
+instead of ever being served; an Audius whole-clip window is checked for
+silence at render time, not just a local file's) and the pre-existing,
+untouched prompt_parser.py guardrails -- and reports, per case, whether
+"no invalid item reached playback" held. Every case calls the real
+production function directly (_resolve_and_render,
+retrieve_candidates_with_fallback, _validate_decodable_audio,
 PydubAudioRenderer.render, parse_prompt); nothing here reimplements any
 of the logic it's checking.
 
-Deliberately not written until steps 1-4 were done and verified: run
-before those fixes, case 1 (silence in segment selection) would have
-documented a real failure, not a pass -- see the module-level docstring
-of app/services/audio_analysis.py for that history.
+Deliberately not written until the original four segment-selection/upload
+fixes were done and verified: run before those, case 1 (silence in
+segment selection) would have documented a real failure, not a pass --
+see the module-level docstring of app/services/audio_analysis.py for that
+history.
 
 Run:
     cd Project/backend && python scripts/eval_hallucination_robustness.py
@@ -36,6 +41,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Must run before any `app.*` import, same reason and same fix as
+# tests/conftest.py's own identical patch: app/database/database.py and
+# app/core/security.py both call dotenv.load_dotenv() at their own import
+# time with no path, which walks up from CWD and silently picks up
+# Project/.env (a real, gitignored, developer-local file) if one exists.
+# python-dotenv's load_dotenv() defaults to override=False, so it only
+# fills in whichever env vars this script *hasn't* already set below --
+# which means any flag this script doesn't happen to default (e.g.
+# AUDIUS_ANALYSIS_CACHE_ENABLED) silently inherits a developer's local
+# override instead of running "safe, offline" as the comment below
+# intends. Confirmed as a real, not just theoretical, problem the exact
+# same way conftest.py's own writeup describes: a local Project/.env with
+# AUDIUS_ANALYSIS_CACHE_ENABLED=true made case_unavailable_audius_url's
+# real _resolve_and_render call actually dispatch a background analysis
+# job against db_module.SessionLocal -- a different, unmigrated SQLite
+# connection than this script's own `db` fixture -- surfacing as a stray
+# "no such table: external_tracks" traceback from a worker thread.
+import dotenv  # noqa: E402
+
+dotenv.load_dotenv = lambda *args, **kwargs: False
+
 # Same convention as scripts/measure_session_latency.py: safe, offline
 # defaults so this runs standalone (CI, a fresh checkout, anyone's
 # machine) without depending on whatever a real Project/.env happens to
@@ -45,6 +71,14 @@ os.environ.setdefault("SECRET_KEY", "eval-only-secret-key")
 os.environ.setdefault("ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 os.environ.setdefault("VIBE_LLM_PROVIDER", "none")
+# case_unavailable_audius_url's last-resort rescue (D1/D2) self-heals an
+# empty catalog table with the bundled demo track and stages its audio file
+# into UPLOAD_DIR on first use (catalog_retriever._ensure_local_file) -- a
+# throwaway tempdir keeps that a no-op outside this run rather than writing
+# into the real app/uploads/ source-adjacent directory.
+import tempfile  # noqa: E402 -- must run before app.main is imported below
+
+os.environ.setdefault("UPLOAD_DIR", tempfile.mkdtemp(prefix="cuemix-eval-"))
 
 import httpx
 import numpy as np
@@ -54,12 +88,14 @@ from sqlalchemy.orm import sessionmaker
 
 import app.main  # noqa: F401 -- registers every SQLAlchemy model before create_all, same reason measure_session_latency.py/eval_preferences.py both import this first.
 from app.database.base import Base
-from app.schemas import SelectedSegment, Track
-from app.services import audius_service, prompt_parser, upload_queue
+from app.schemas import PromptIntent, SelectedSegment, Track
+from app.services import audius_service, prompt_parser, session_manager, upload_queue
 from app.services.pipeline import audio_renderer
 from app.services.pipeline.dependencies import (
     get_audius_candidate_retriever,
+    get_segment_selector,
     get_session_candidate_retriever,
+    get_transition_planner,
 )
 from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
 
@@ -216,48 +252,138 @@ def case_corrupt_file(_db) -> CaseResult:
 # --- Case 5: an unavailable Audius URL -----------------------------------
 
 
-def case_unavailable_audius_url(_db) -> CaseResult:
-    """A stream URL for a track ID that doesn't exist on Audius -- reuses
-    PydubAudioRenderer.render (the real rendering entry point sessions and
-    mixes both call) end to end, including a real network request. The
-    pass criterion is "no invalid item reached playback": either a graceful
-    pass-through (is_pass_through=True, a diagnosable fallback_reason,
-    never a raised exception) or -- if Audius happens to redirect an
-    unknown ID somewhere decodable -- at minimum no crash."""
+class _FixedCandidateRetriever:
+    """A CandidateRetriever stub -- reused by both case 5 and case 6 below
+    to force a controlled, deterministic set of candidates through the
+    real _resolve_and_render orchestration (retrieval fallback, rescue,
+    last-resort tier) rather than depending on whatever Audius' real search
+    index happens to return today."""
+
+    def __init__(self, name, tracks):
+        self.name = name
+        self._tracks = tracks
+
+    def retrieve(self, db, intent, *, limit=5, recent_artists=frozenset(), viewer_id=None):
+        return list(self._tracks)
+
+
+def case_unavailable_audius_url(db) -> CaseResult:
+    """D1: a stream URL for a track ID that doesn't exist on Audius must
+    never reach playback as a dead pass-through. Reuses
+    session_manager._resolve_and_render (the real orchestration create_
+    session/apply_feedback/advance_session/prepare_next all call) end to
+    end, including a real network request against the real Audius URL --
+    both the primary and rescue retrievers are stubbed to return only this
+    one dead track, so the only way this can pass is via the real
+    last-resort catalog tier or an outright NoMatchingCandidate rejection,
+    exactly like a real request whose only real candidates are all
+    unavailable."""
 
     bad_url = audius_service.audius_stream_url("nonexistent-track-id-zzz-9182")
-    track = Track(
+    bad_track = Track(
         source="audius", source_track_id="nonexistent-track-id-zzz-9182", title="Doesn't Exist",
         artist="Nobody", album=None, audio_url=bad_url, cover_url=None, duration_seconds=180,
         genre=None, vibe=None, vibe_label=None, catalog_track_id=None, local_path=None,
+    )
+    intent = PromptIntent(
+        mood="balanced", energy="medium", vocals="neutral", genres=[],
+        artist=None, artist_mode="none", search_query="anything",
+    )
+    retriever = _FixedCandidateRetriever("eval_stub_catalog", [bad_track])
+    fallback_retriever = _FixedCandidateRetriever("eval_stub_fallback", [bad_track])
+
+    try:
+        track, _segment, _now_playing, _reasoning, pipeline_trace, served_by = session_manager._resolve_and_render(
+            db, intent, retriever, fallback_retriever,
+            get_segment_selector(), get_transition_planner(), audio_renderer.PydubAudioRenderer(),
+            session_id="eval_session_unavailable_audius_url", previous_segment=None, prefers_smoother=False,
+        )
+    except NoMatchingCandidate as exc:
+        return CaseResult(
+            "unavailable_audius_url", "Unavailable Audius URL", True,
+            f"Correctly rejected via NoMatchingCandidate rather than ever serving a dead URL: {exc}",
+            {"exception": str(exc)},
+        )
+    except Exception as exc:  # any other raise is a genuine failure -- this must degrade, not crash
+        return CaseResult(
+            "unavailable_audius_url", "Unavailable Audius URL", False,
+            f"FAILED: _resolve_and_render raised unexpectedly instead of degrading gracefully: {exc!r}",
+        )
+
+    is_pass_through = pipeline_trace["audio_renderer"]["is_pass_through"]
+    passed = not is_pass_through
+    return CaseResult(
+        "unavailable_audius_url", "Unavailable Audius URL", passed,
+        (
+            f"Rejected / rescued to a playable track instead of a dead pass-through "
+            f"(final: {track.source}:{track.source_track_id}, served_by={served_by.name})"
+            if passed else
+            f"FAILED: still landed on a pass-through (fallback_reason="
+            f"{pipeline_trace['audio_renderer']['fallback_reason']!r})"
+        ),
+        {
+            "is_pass_through": is_pass_through,
+            "served_by": served_by.name,
+            "final_track": f"{track.source}:{track.source_track_id}",
+        },
+    )
+
+
+# --- Case 6: a silent Audius stream (available, but silent throughout) ---
+
+
+def case_silent_audius_stream(_db) -> CaseResult:
+    """D2/Cause A: unlike a local upload (cases 2/3 above), there is no
+    upload-time validation for Audius audio -- an available stream that's
+    silent/near-silent throughout must still be refused as a pass-through
+    at render time rather than ever played. Monkeypatches
+    audio_renderer._download to return real, synthetic silent WAV bytes
+    (deterministic, no dependency on finding an actually-silent real Audius
+    track) and calls the real render() entry point end to end, same as
+    case 5 above."""
+
+    silent = AudioSegment.silent(duration=30000, frame_rate=22050).apply_gain(-5)
+    silent_bytes = _wav_bytes(silent)
+
+    track = Track(
+        source="audius", source_track_id="silent-track-zzz-9182", title="Silent Track",
+        artist="Nobody", album=None,
+        audio_url=audius_service.audius_stream_url("silent-track-zzz-9182"), cover_url=None,
+        duration_seconds=30, genre=None, vibe=None, vibe_label=None,
+        catalog_track_id=None, local_path=None,
     )
     segment = SelectedSegment(
         track=track, start_second=0, end_second=30, method="whole_clip",
         bpm=None, musical_key=None,
     )
     renderer = audio_renderer.PydubAudioRenderer()
+
+    original_download = audio_renderer._download
+    audio_renderer._download = lambda url: (silent_bytes, None)
     try:
         rendered = renderer.render([segment], [])
-    except Exception as exc:  # the one genuine failure mode: this must never raise
+    except Exception as exc:  # this must degrade gracefully, never raise
         return CaseResult(
-            "unavailable_audius_url", "Unavailable Audius URL", False,
+            "silent_audius_stream", "Silent Audius stream (available, silent throughout)", False,
             f"FAILED: render() raised instead of degrading gracefully: {exc!r}",
         )
+    finally:
+        audio_renderer._download = original_download
 
-    passed = rendered.is_pass_through and rendered.fallback_reason is not None
+    passed = rendered.is_pass_through and rendered.fallback_reason == "silent_or_near_silent_audio"
     return CaseResult(
-        "unavailable_audius_url", "Unavailable Audius URL", passed,
+        "silent_audius_stream", "Silent Audius stream (available, silent throughout)", passed,
         (
-            f"Degraded gracefully to a pass-through (reason: {rendered.fallback_reason})"
+            f"Correctly rejected: fallback_reason={rendered.fallback_reason}"
             if passed else
-            f"FAILED: expected a pass-through with a fallback_reason, got "
+            f"FAILED: expected a pass-through with fallback_reason='silent_or_near_silent_audio', got "
             f"is_pass_through={rendered.is_pass_through} fallback_reason={rendered.fallback_reason!r}"
         ),
         {"is_pass_through": rendered.is_pass_through, "fallback_reason": rendered.fallback_reason},
     )
 
 
-# --- Case 6: a malformed/malicious LLM JSON response ------------------
+# --- Case 7: a malformed/malicious LLM JSON response ------------------
 
 
 def case_malformed_llm_response(_db) -> CaseResult:
@@ -335,6 +461,7 @@ CASES = [
     case_near_silent_upload,
     case_corrupt_file,
     case_unavailable_audius_url,
+    case_silent_audius_stream,
     case_malformed_llm_response,
 ]
 

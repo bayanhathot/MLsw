@@ -22,7 +22,7 @@ from app.database.models.session import DJSession
 from app.schemas import OllamaHealthRead, PipelineDebugRead, SessionPipelineDebugRead
 from app.services.pipeline.ollama_health import check_ollama_health
 from app.services.pipeline_debug_service import pipeline_debug_hub
-from app.services.prompt_parser import get_last_ollama_call
+from app.services.prompt_parser import get_cluster_ollama_stats, get_last_ollama_call, get_ollama_stats
 
 router = APIRouter(prefix="/debug", tags=["debug"])
 
@@ -42,6 +42,12 @@ def _require_enabled() -> None:
 def _ollama_section() -> OllamaHealthRead:
     health = check_ollama_health()
     health["last_call"] = get_last_ollama_call()
+    health["stats"] = get_ollama_stats()
+    # D6b: None (rather than a zeroed-out dict) whenever Redis isn't
+    # configured/reachable -- see get_cluster_ollama_stats' own docstring --
+    # so the panel can honestly distinguish "no cluster view available" from
+    # "the cluster genuinely made zero calls."
+    health["cluster_stats"] = get_cluster_ollama_stats()
     return OllamaHealthRead.model_validate(health)
 
 

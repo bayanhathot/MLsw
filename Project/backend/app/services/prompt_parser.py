@@ -7,19 +7,37 @@ Whether the VibeUnderstander in `pipeline.vibe` calls out to Ollama at all is
 a startup-time choice made in `pipeline/dependencies.py`; `parse_prompt`
 below falls back to `deterministic_parse` on its own whenever Ollama isn't
 configured, unreachable, or returns something invalid.
+
+Concurrency (D4): at most OLLAMA_MAX_CONCURRENCY calls are ever in flight
+against Ollama at once; a call beyond that genuinely queues behind
+OLLAMA_QUEUE_WAIT_SECONDS (a real wait, not the old 50ms shed) before
+falling back to the deterministic parse. See get_ollama_stats() for the
+attempted/succeeded/timed_out/shed counters this produces, and
+get_cluster_ollama_stats() for the cross-replica aggregate.
+
+D6b: that concurrency cap is enforced across every BACKEND_WORKERS replica,
+not per-replica -- see _acquire_ollama_slot's own docstring for the
+Redis-backed distributed semaphore this uses when Redis is configured
+(falling back to the original process-local one otherwise).
 """
 
 import json
+import logging
 import os
 import re
 from datetime import UTC, datetime
 from threading import BoundedSemaphore, Lock
-from time import perf_counter
+from time import monotonic, perf_counter, sleep, time
+from uuid import uuid4
 
 import httpx
+import redis as sync_redis
 from pydantic import ValidationError
 
+from app.core.redis_client import get_sync_redis_client
 from app.schemas import PromptIntent
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_GENRES = {
     "ambient",
@@ -34,7 +52,133 @@ ALLOWED_GENRES = {
     "rock",
     "techno",
 }
+# Process-local fallback only -- see _acquire_ollama_slot below for when
+# this is actually used vs. the D6b distributed semaphore.
 _ollama_slots = BoundedSemaphore(max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "4")))))
+
+
+def _ollama_max_concurrency() -> int:
+    return max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "4"))))
+
+
+# D4: how long a call genuinely queues behind OLLAMA_MAX_CONCURRENCY's slots
+# before giving up and falling back to the deterministic parser -- was a
+# hardcoded 0.05s (a shed, not a queue: under load, nearly every request
+# skipped the model entirely rather than waiting its turn). Clamped the same
+# way OLLAMA_MAX_CONCURRENCY is just above.
+OLLAMA_QUEUE_WAIT_SECONDS = max(0.05, min(10.0, float(os.getenv("OLLAMA_QUEUE_WAIT_SECONDS", "2.0"))))
+
+# D6b: without this, each BACKEND_WORKERS replica enforced its own local
+# OLLAMA_MAX_CONCURRENCY independently, so the real concurrency against the
+# one shared Ollama instance became `OLLAMA_MAX_CONCURRENCY * replica_count`
+# -- silently defeating the whole point of the cap. A Redis sorted set holds
+# one entry per currently-held slot, scored by that slot's own lease expiry
+# (not by acquire time): acquiring atomically prunes expired leases before
+# checking/adding (see _OLLAMA_SEMAPHORE_ACQUIRE_LUA), so a replica that
+# crashes mid-call can never permanently shrink the cluster's real capacity
+# -- its slot self-expires once its lease runs out rather than needing an
+# explicit release that might never come. Used only when Redis is configured
+# and reachable; _acquire_ollama_slot falls back to the original
+# process-local _ollama_slots otherwise (same fail-open posture as every
+# other Redis-backed feature in this codebase).
+_OLLAMA_SEMAPHORE_KEY = "cuemix:ollama_semaphore"
+_OLLAMA_SEMAPHORE_POLL_SECONDS = 0.05
+# How long an acquired slot is leased for before it self-expires. The queue
+# wait was already spent *before* acquiring, so this only needs to cover the
+# actual model call: OLLAMA_TIMEOUT_SECONDS' own max (20s) plus slack for
+# scheduling/network jitter around the release call itself.
+_OLLAMA_LEASE_SECONDS = 30.0
+
+# Atomic prune-then-acquire: two replicas racing this at once can never both
+# see "room" and both add, since ZCARD is read and ZADD is written inside the
+# same EVAL. Returns 1 (acquired) or 0 (still full after pruning expired
+# leases).
+_OLLAMA_SEMAPHORE_ACQUIRE_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local holder = ARGV[3]
+local lease_expiry = tonumber(ARGV[4])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
+if redis.call('ZCARD', key) >= limit then
+    return 0
+end
+redis.call('ZADD', key, lease_expiry, holder)
+redis.call('EXPIRE', key, math.ceil(lease_expiry - now) + 5)
+return 1
+"""
+
+
+def _acquire_distributed_slot(redis_client: sync_redis.Redis, timeout_seconds: float) -> str | None:
+    """Polls the Redis-backed distributed semaphore until a slot frees up or
+    `timeout_seconds` elapses -- Redis has no native blocking-acquire
+    primitive, so this is a bounded poll loop. Returns the holder token to
+    release with, or None if the deadline passed without acquiring one (a
+    genuine shed, same as the local-semaphore timeout path)."""
+
+    holder = uuid4().hex
+    limit = _ollama_max_concurrency()
+    deadline = monotonic() + timeout_seconds
+    while True:
+        now = time()
+        acquired = redis_client.eval(
+            _OLLAMA_SEMAPHORE_ACQUIRE_LUA, 1, _OLLAMA_SEMAPHORE_KEY,
+            now, limit, holder, now + _OLLAMA_LEASE_SECONDS,
+        )
+        if acquired:
+            return holder
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return None
+        sleep(min(_OLLAMA_SEMAPHORE_POLL_SECONDS, remaining))
+
+
+def _release_distributed_slot(redis_client: sync_redis.Redis, holder: str) -> None:
+    try:
+        redis_client.zrem(_OLLAMA_SEMAPHORE_KEY, holder)
+    except (sync_redis.RedisError, OSError):
+        pass  # the lease self-expires regardless -- see _OLLAMA_LEASE_SECONDS
+
+
+def _acquire_ollama_slot(timeout_seconds: float):
+    """Returns a zero-arg release callback if a slot was acquired (the
+    Redis-backed distributed semaphore when Redis is configured and
+    reachable, else the original process-local BoundedSemaphore), or None
+    if `timeout_seconds` elapsed without acquiring one -- a genuine shed.
+    Callers must call the returned release callback exactly once, from a
+    finally block, once the slot is no longer needed."""
+
+    redis_client = get_sync_redis_client()
+    if redis_client is not None:
+        try:
+            holder = _acquire_distributed_slot(redis_client, timeout_seconds)
+        except (sync_redis.RedisError, OSError) as exc:
+            logger.warning(
+                "prompt_parser: distributed Ollama semaphore unavailable, "
+                "falling back to process-local: %s", exc,
+            )
+        else:
+            if holder is None:
+                return None
+            return lambda: _release_distributed_slot(redis_client, holder)
+
+    if not _ollama_slots.acquire(timeout=timeout_seconds):
+        return None
+    return _ollama_slots.release
+
+# Only create_session calls parse_prompt (see vibe.py/session_manager.py's
+# own _initial_intent) -- apply_feedback/advance_session/prepare_next reuse
+# the stored intent deterministically and never reach this module at all.
+# /sessions/start's client-side timeout is 45s (frontend sessionApi.js);
+# session_manager.AUDIO_RENDER_TIME_BUDGET_SECONDS already reserves up to
+# 25s of that for render retries. 15s is a conservative slice of the
+# remainder for this module's own queue-wait + actual model call combined --
+# deliberately not the whole ~20s left, since retrieval/DB overhead isn't
+# free either. Used only to clamp the *effective* queue wait below when an
+# operator's OLLAMA_TIMEOUT_SECONDS is high enough that the configured
+# OLLAMA_QUEUE_WAIT_SECONDS would otherwise risk pushing this stage past
+# what the request can actually afford -- see parse_prompt.
+_OLLAMA_STAGE_BUDGET_SECONDS = 15.0
 
 # Debug-panel observability only (routers/debug.py): the outcome of the most
 # recent actual Ollama call this process made. Never consulted by the parse
@@ -43,12 +187,92 @@ _ollama_slots = BoundedSemaphore(max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCUR
 _last_call_lock = Lock()
 _last_ollama_call: dict = {"at": None, "latency_ms": None, "ok": None}
 
+# Cumulative, process-level counters -- same lock as _last_ollama_call, same
+# "only real attempted calls update it" rule. Per-process, not per-cluster --
+# see get_cluster_ollama_stats() below (D6b) for the cross-replica
+# aggregate; this one stays useful even with that available, e.g. "is THIS
+# specific replica seeing timeouts." Latency is tracked as a running
+# count/sum/max (not a list) so memory stays flat no matter how many calls a
+# long-lived process makes.
+_ollama_stats: dict = {
+    "attempted": 0,
+    "succeeded": 0,
+    "timed_out": 0,
+    "shed": 0,
+    "latency_count": 0,
+    "latency_sum_ms": 0.0,
+    "latency_max_ms": 0.0,
+}
+
+# D6b: the cluster-wide counterpart to _ollama_stats above, a Redis hash
+# every replica increments so the debug panel can show one real cluster-wide
+# view instead of only whichever replica happened to serve that particular
+# GET /debug/pipeline request. Best-effort, fire-and-forget: a failed
+# increment here never affects the parse_prompt call it's describing (see
+# _record_ollama_call/_record_ollama_shed's own try/except), same fail-open
+# posture as the rest of this module's Redis usage.
+_OLLAMA_CLUSTER_STATS_KEY = "cuemix:ollama_stats"
+
+
+def _record_cluster_ollama_call(latency_ms: float, ok: bool) -> None:
+    redis_client = get_sync_redis_client()
+    if redis_client is None:
+        return
+    try:
+        redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "attempted", 1)
+        if ok:
+            redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "succeeded", 1)
+            redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "latency_count", 1)
+            redis_client.hincrbyfloat(_OLLAMA_CLUSTER_STATS_KEY, "latency_sum_ms", latency_ms)
+            # Best-effort high-watermark, not atomic against a concurrent
+            # writer on another replica -- a lost race here just means the
+            # displayed max briefly undercounts the true slowest call, not a
+            # correctness problem for anything that reads this value. An
+            # atomic version would need a Lua compare-and-set; not obviously
+            # worth it for a display-only "slowest call we've seen" metric.
+            current_max = float(redis_client.hget(_OLLAMA_CLUSTER_STATS_KEY, "latency_max_ms") or 0.0)
+            if latency_ms > current_max:
+                redis_client.hset(_OLLAMA_CLUSTER_STATS_KEY, "latency_max_ms", latency_ms)
+        else:
+            redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "timed_out", 1)
+    except (sync_redis.RedisError, OSError):
+        logger.debug("prompt_parser: cluster Ollama stats increment failed", exc_info=True)
+
+
+def _record_cluster_ollama_shed() -> None:
+    redis_client = get_sync_redis_client()
+    if redis_client is None:
+        return
+    try:
+        redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "shed", 1)
+    except (sync_redis.RedisError, OSError):
+        logger.debug("prompt_parser: cluster Ollama shed increment failed", exc_info=True)
+
 
 def _record_ollama_call(latency_ms: float, ok: bool) -> None:
     with _last_call_lock:
         _last_ollama_call["at"] = datetime.now(UTC).replace(tzinfo=None)
         _last_ollama_call["latency_ms"] = round(latency_ms, 1)
         _last_ollama_call["ok"] = ok
+        _ollama_stats["attempted"] += 1
+        if ok:
+            _ollama_stats["succeeded"] += 1
+            _ollama_stats["latency_count"] += 1
+            _ollama_stats["latency_sum_ms"] += latency_ms
+            _ollama_stats["latency_max_ms"] = max(_ollama_stats["latency_max_ms"], latency_ms)
+        else:
+            _ollama_stats["timed_out"] += 1
+    _record_cluster_ollama_call(latency_ms, ok)
+
+
+def _record_ollama_shed() -> None:
+    """The semaphore-acquire timeout expired before a request was even
+    issued -- distinct from `attempted`, which only counts calls that
+    actually reached Ollama (or timed out doing so)."""
+
+    with _last_call_lock:
+        _ollama_stats["shed"] += 1
+    _record_cluster_ollama_shed()
 
 
 def get_last_ollama_call() -> dict:
@@ -56,6 +280,78 @@ def get_last_ollama_call() -> dict:
 
     with _last_call_lock:
         return dict(_last_ollama_call)
+
+
+def get_ollama_stats() -> dict:
+    """Cumulative, per-process counters plus derived success rate / mean
+    latency. A copy under the lock, same reasoning as get_last_ollama_call.
+    See get_cluster_ollama_stats() for the cross-replica aggregate."""
+
+    with _last_call_lock:
+        stats = dict(_ollama_stats)
+    attempted = stats["attempted"]
+    stats["success_rate"] = (stats["succeeded"] / attempted) if attempted else None
+    latency_count = stats["latency_count"]
+    stats["mean_latency_ms"] = (
+        round(stats["latency_sum_ms"] / latency_count, 1) if latency_count else None
+    )
+    return stats
+
+
+def get_cluster_ollama_stats() -> dict | None:
+    """The same shape get_ollama_stats() returns (minus latency_max_ms,
+    which callers of get_ollama_stats() don't read either -- both compute
+    their derived fields from the same latency_count/latency_sum_ms pair),
+    aggregated across every replica via the Redis hash
+    _record_cluster_ollama_call/_record_cluster_ollama_shed write to. None
+    when Redis isn't configured or unreachable -- routers/debug.py falls
+    back to presenting only the per-process numbers in that case, the same
+    thing this whole module already did before D6b."""
+
+    redis_client = get_sync_redis_client()
+    if redis_client is None:
+        return None
+    try:
+        raw = redis_client.hgetall(_OLLAMA_CLUSTER_STATS_KEY)
+    except (sync_redis.RedisError, OSError):
+        return None
+    attempted = int(raw.get("attempted", 0))
+    succeeded = int(raw.get("succeeded", 0))
+    latency_count = int(raw.get("latency_count", 0))
+    latency_sum_ms = float(raw.get("latency_sum_ms", 0.0))
+    return {
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "timed_out": int(raw.get("timed_out", 0)),
+        "shed": int(raw.get("shed", 0)),
+        "success_rate": (succeeded / attempted) if attempted else None,
+        "mean_latency_ms": round(latency_sum_ms / latency_count, 1) if latency_count else None,
+    }
+
+
+def reset_ollama_stats() -> None:
+    """Test-only: clears cumulative counters (both the process-local ones
+    and, when Redis is configured, the cluster-wide Redis hash) so cases
+    don't leak into each other. Never called from application code."""
+
+    with _last_call_lock:
+        _ollama_stats.update(
+            {
+                "attempted": 0,
+                "succeeded": 0,
+                "timed_out": 0,
+                "shed": 0,
+                "latency_count": 0,
+                "latency_sum_ms": 0.0,
+                "latency_max_ms": 0.0,
+            }
+        )
+    redis_client = get_sync_redis_client()
+    if redis_client is not None:
+        try:
+            redis_client.delete(_OLLAMA_CLUSTER_STATS_KEY)
+        except (sync_redis.RedisError, OSError):
+            pass
 
 _HIGH_ENERGY_WORDS = {"energy", "energetic", "gym", "workout", "fast", "intense"}
 _LOW_ENERGY_WORDS = {"calm", "chill", "focus", "relax", "smooth", "sleep"}
@@ -252,12 +548,29 @@ def parse_prompt(prompt: str) -> PromptIntent:
     if not base_url or not model:
         return fallback
 
-    if not _ollama_slots.acquire(timeout=0.05):
+    timeout_seconds = max(0.5, min(20.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
+    # See _OLLAMA_STAGE_BUDGET_SECONDS's own docstring: normally a no-op
+    # (OLLAMA_QUEUE_WAIT_SECONDS's default plus OLLAMA_TIMEOUT_SECONDS's own
+    # default comfortably fit under the budget), this only actually clamps
+    # the wait down when an operator's configured OLLAMA_TIMEOUT_SECONDS
+    # eats far enough into the shared stage budget that the configured queue
+    # wait would risk pushing this call past what the request can afford.
+    queue_wait_seconds = min(
+        OLLAMA_QUEUE_WAIT_SECONDS, max(0.05, _OLLAMA_STAGE_BUDGET_SECONDS - timeout_seconds)
+    )
+    release_slot = _acquire_ollama_slot(queue_wait_seconds)
+    if release_slot is None:
+        _record_ollama_shed()
         return fallback
+    # Everything from here down runs only once a slot was actually acquired
+    # -- both _record_ollama_call and the release below live in this same
+    # try/finally, so every acquired call (success, an HTTP/validation
+    # failure, or a genuinely unexpected exception) always releases exactly
+    # once; the shed path above never acquired, so it has nothing to
+    # release.
     started = perf_counter()
     ok = False
     try:
-        timeout_seconds = max(0.5, min(20.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
         # Qwen3 models default to "thinking mode" on in Ollama, which emits a
         # hidden reasoning block before the real answer and adds real latency
         # to this classification-only call -- off by default here since
@@ -299,6 +612,6 @@ def parse_prompt(prompt: str) -> PromptIntent:
         return fallback
     finally:
         _record_ollama_call((perf_counter() - started) * 1000, ok)
-        _ollama_slots.release()
+        release_slot()
 
     return _apply_guardrails(intent, fallback)
