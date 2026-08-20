@@ -2,7 +2,15 @@ FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cd
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    NUMBA_CACHE_DIR=/tmp/numba_cache
+# NUMBA_CACHE_DIR: librosa's numba-jitted functions (e.g. core/notation.py)
+# default to caching compiled code next to their own source file. Under the
+# non-root USER below, site-packages isn't writable and --no-create-home
+# means $HOME doesn't exist either, so without this every analyze_audio()
+# call (catalog upload analysis AND external-track analysis) raised
+# "cannot cache function ...: no locator available" on first use. /tmp is
+# world-writable regardless of container user.
 
 WORKDIR /app
 

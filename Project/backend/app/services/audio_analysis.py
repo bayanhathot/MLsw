@@ -375,12 +375,21 @@ def analyze_audio(path: str, *, label: str) -> AnalysisResult:
 
     return AnalysisResult(
         bpm=round(tempo_bpm, 2),
-        bpm_confidence=round(bpm_confidence_value, 4),
+        # float(...) before round(): librosa/numpy return numpy.float64
+        # scalars here, and round() on a numpy scalar returns another numpy
+        # scalar, not a native float -- psycopg2 has no adapter for numpy
+        # scalar types and falls back to repr(), which under numpy>=2.0
+        # renders as "np.float64(...)" instead of a bare number, breaking
+        # the INSERT/UPDATE SQL outright. tempo_bpm above is already float()
+        # cast for the same reason; these three weren't, so a numpy.float64
+        # was silently reaching the DB layer until this analysis fetch was
+        # actually exercised.
+        bpm_confidence=round(float(bpm_confidence_value), 4),
         musical_key=musical_key,
         key_mode=key_mode,
         camelot=camelot_for(musical_key, key_mode),
-        key_confidence=round(key_confidence_value, 4),
-        integrated_loudness_lufs=loudness_lufs,
+        key_confidence=round(float(key_confidence_value), 4),
+        integrated_loudness_lufs=None if loudness_lufs is None else float(loudness_lufs),
         beat_grid=beat_grid,
         downbeat_grid=downbeat_grid,
         phrase_boundaries=phrase_boundaries,
@@ -581,6 +590,56 @@ def requeue_pending_analysis() -> int:
     if requeued:
         logger.warning(
             "audio_analysis: requeued %d catalog track(s) still analysis_status='pending' at startup",
+            requeued,
+        )
+    return requeued
+
+
+def requeue_pending_external_analysis() -> int:
+    """External-track counterpart to requeue_pending_analysis() above --
+    same crash/restart gap, same fix. external_tracks rows have no startup
+    recovery today: pipeline.external_track_cache.enrich_and_dispatch's own
+    Case C deliberately skips re-dispatch for any row already
+    analysis_status='pending' (see that module's docstring), so a row
+    stranded "pending" by a crash between "job queued" and "job completed"
+    is never retried by the normal request-driven path -- nothing else in
+    this codebase would ever finish it. Reuses the exact same reasoning
+    requeue_pending_analysis documents (analysis_status is only ever
+    written at a terminal branch, so "pending" always means "never
+    finished," never "might be mid-flight elsewhere").
+
+    A no-op query (zero rows) whenever AUDIUS_ANALYSIS_CACHE_ENABLED is
+    False, since no external_tracks row is ever created in that state."""
+
+    from app.services.pipeline.external_track_cache import AUDIUS_ANALYSIS_CACHE_ENABLED
+
+    if not AUDIUS_ANALYSIS_CACHE_ENABLED:
+        return 0
+
+    with db_module.SessionLocal() as db:
+        pending_ids = [
+            row_id
+            for (row_id,) in db.query(ExternalTrack.id)
+            .filter(ExternalTrack.analysis_status == "pending")
+            .all()
+        ]
+
+    requeued = 0
+    for external_track_id in pending_ids:
+        try:
+            upload_queue.upload_queue.submit_external_analysis(external_track_id)
+        except Full:
+            logger.warning(
+                "audio_analysis: queue full while requeuing pending external track %s at startup; "
+                "stays pending",
+                external_track_id,
+            )
+            continue
+        requeued += 1
+
+    if requeued:
+        logger.warning(
+            "audio_analysis: requeued %d external track(s) still analysis_status='pending' at startup",
             requeued,
         )
     return requeued

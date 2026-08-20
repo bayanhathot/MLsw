@@ -22,6 +22,22 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
+# Must run before anything transitively imports librosa/numba (both are
+# lazy-imported inside audio_analysis.analyze_audio, never at module import
+# time, so this is early enough). Overrides the Dockerfile's shared
+# NUMBA_CACHE_DIR=/tmp/numba_cache with a per-process path: a separate
+# process reading a *different* process's on-disk numba cache for the same
+# @jit(cache=True) function was reproduced crashing hard (SIGSEGV, RIP=0 --
+# a call through a stale/invalid compiled-function pointer), even though
+# concurrent threads within one process safely race the same first-compile
+# with no crash. This container's own BACKEND_WORKERS=1 (see
+# docker-compose.prod.yml) makes that specific cross-process path currently
+# unreachable in normal operation, but it costs nothing to close off
+# entirely rather than depend on that staying true.
+os.environ["NUMBA_CACHE_DIR"] = os.path.join(
+    os.environ.get("NUMBA_CACHE_DIR", "/tmp/numba_cache"), str(os.getpid())
+)
+
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,7 +61,7 @@ from app.routers.uploads import router as uploads_router
 from app.routers.social import router as social_router
 from app.routers.debug import router as debug_router
 from app.routers.realtime import router as realtime_router
-from app.services.audio_analysis import requeue_pending_analysis
+from app.services.audio_analysis import requeue_pending_analysis, requeue_pending_external_analysis
 from app.services.channel_hub import channel_hub
 
 # No logging.basicConfig/dictConfig existed anywhere in this backend before
@@ -83,6 +99,10 @@ async def _lifespan(_app: FastAPI):
     # alternative (fire-and-forget in the background) risks a request
     # racing a still-in-progress requeue.
     requeue_pending_analysis()
+    # External-track counterpart (a no-op query when AUDIUS_ANALYSIS_CACHE_ENABLED
+    # is False) -- see requeue_pending_external_analysis's own docstring for
+    # the crash/restart gap this closes.
+    requeue_pending_external_analysis()
     yield
     await channel_hub.stop_listener()
 

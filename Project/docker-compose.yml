@@ -57,6 +57,11 @@ x-backend-environment: &backend-environment
   ENABLE_COLD_SEED: ${ENABLE_COLD_SEED:-true}
   COLD_SEED_VERSION: ${COLD_SEED_VERSION:-v1}
   COLD_SEED_RANDOM_SEED: ${COLD_SEED_RANDOM_SEED:-2026}
+  # Gates live Audius audio fetch for the persistent analysis cache -- see
+  # Project/SECURITY.md's "Third-party compliance gates" section and
+  # docker-compose.prod.yml's own copy of this comment.
+  AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-false}
+  EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
 
 services:
   postgres:

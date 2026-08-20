@@ -16,8 +16,10 @@ import numpy as np
 import pytest
 
 from app.database.models.catalog import CatalogTrack
+from app.database.models.external_track import ExternalTrack
 from app.services import audio_analysis
 from app.services import upload_queue as uq_module
+from app.services.pipeline import external_track_cache as etc_module
 from app.services.audio_analysis import (
     _BARS_PER_PHRASE,
     _BEATS_PER_BAR,
@@ -89,6 +91,88 @@ def test_requeue_pending_analysis_continues_past_a_full_queue(db_session, monkey
     monkeypatch.setattr(uq_module.upload_queue, "submit_analysis", fake_submit_analysis)
 
     requeued = audio_analysis.requeue_pending_analysis()
+
+    assert requeued == 1
+    assert calls == [second.id]
+
+
+def _make_external_track(db_session, **overrides) -> ExternalTrack:
+    fields = {
+        "source": "audius",
+        "external_id": "stranded-1",
+        "title": "Stranded External Track",
+        "artist": "Test Artist",
+        "analysis_status": "pending",
+    }
+    fields.update(overrides)
+    row = ExternalTrack(**fields)
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+    return row
+
+
+def test_requeue_pending_external_analysis_resubmits_a_stranded_track(db_session, monkeypatch):
+    monkeypatch.setattr(etc_module, "AUDIUS_ANALYSIS_CACHE_ENABLED", True)
+    track = _make_external_track(db_session)
+
+    calls = []
+    monkeypatch.setattr(
+        uq_module.upload_queue, "submit_external_analysis", lambda track_id: calls.append(track_id)
+    )
+
+    requeued = audio_analysis.requeue_pending_external_analysis()
+
+    assert requeued == 1
+    assert calls == [track.id]
+
+
+def test_requeue_pending_external_analysis_is_noop_when_flag_disabled(db_session, monkeypatch):
+    monkeypatch.setattr(etc_module, "AUDIUS_ANALYSIS_CACHE_ENABLED", False)
+    _make_external_track(db_session)
+
+    calls = []
+    monkeypatch.setattr(
+        uq_module.upload_queue, "submit_external_analysis", lambda track_id: calls.append(track_id)
+    )
+
+    requeued = audio_analysis.requeue_pending_external_analysis()
+
+    assert requeued == 0
+    assert calls == []
+
+
+def test_requeue_pending_external_analysis_ignores_non_pending_rows(db_session, monkeypatch):
+    monkeypatch.setattr(etc_module, "AUDIUS_ANALYSIS_CACHE_ENABLED", True)
+    _make_external_track(db_session, external_id="completed-1", title="Completed", analysis_status="completed")
+    _make_external_track(db_session, external_id="failed-1", title="Failed", analysis_status="failed")
+
+    calls = []
+    monkeypatch.setattr(
+        uq_module.upload_queue, "submit_external_analysis", lambda track_id: calls.append(track_id)
+    )
+
+    requeued = audio_analysis.requeue_pending_external_analysis()
+
+    assert requeued == 0
+    assert calls == []
+
+
+def test_requeue_pending_external_analysis_continues_past_a_full_queue(db_session, monkeypatch):
+    monkeypatch.setattr(etc_module, "AUDIUS_ANALYSIS_CACHE_ENABLED", True)
+    first = _make_external_track(db_session, external_id="first-1", title="First")
+    second = _make_external_track(db_session, external_id="second-1", title="Second")
+
+    calls = []
+
+    def fake_submit_external_analysis(track_id):
+        if track_id == first.id:
+            raise Full
+        calls.append(track_id)
+
+    monkeypatch.setattr(uq_module.upload_queue, "submit_external_analysis", fake_submit_external_analysis)
+
+    requeued = audio_analysis.requeue_pending_external_analysis()
 
     assert requeued == 1
     assert calls == [second.id]

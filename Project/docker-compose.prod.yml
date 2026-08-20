@@ -49,6 +49,15 @@ x-backend-environment: &backend-environment
   # Not yet used by any app code -- purely additive infrastructure, see
   # app/core/redis_client.py.
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  # Gates live Audius audio fetch for the persistent analysis cache (BPM/
+  # key/Camelot/LUFS/beat grid/phrase boundaries) -- see Project/SECURITY.md's
+  # "Third-party compliance gates" section (risk accepted 2026-08-20) and
+  # app/services/pipeline/external_track_cache.py's own module docstring.
+  # Off by default even here; must also be set in this VM's persisted
+  # ~/cuemix-deploy/.env to take effect, since docker-compose only passes
+  # through variables it explicitly references.
+  AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-false}
+  EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
   # Cold-seeds a realistic ~50-user dataset on every deploy (see
   # app/coldseed/build.py) -- idempotent, so safe to leave on. Set to false
   # to opt out.
