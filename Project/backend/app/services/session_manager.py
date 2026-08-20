@@ -53,6 +53,7 @@ from app.services.pipeline.orchestrator import (
 )
 from app.services.pipeline.transition_planner import MAX_CROSSFADE_MS
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
+from app.services.admin_debug_events import publish_session_updated, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,7 @@ def _log_stage_latency(
     if pipeline_trace is not None:
         entry["resolution"] = pipeline_trace.get("_timing", {})
     logger.info(json.dumps(entry))
+    record_event(entry)
 
 
 def _staged_pass_through(rendered: object) -> tuple[bool, str | None]:
@@ -964,6 +966,9 @@ def _resolve_and_render(
             "crossfade_ms": transition.crossfade_ms,
             "style": transition.style,
             "notes": transition.notes,
+            "key_category": transition.key_category,
+            "phrase_aligned": transition.phrase_aligned,
+            "capped_by_reserved_window": transition.capped_by_reserved_window,
         },
         "audio_renderer": {
             "implementation": type(renderer).__name__,
@@ -1103,6 +1108,7 @@ def create_session(
     db.commit()
     db.refresh(session)
     notify_pipeline_debug_change()
+    publish_session_updated(session_id)
     _log_stage_latency("create_session", session_id, started, pipeline_trace)
     return serialize_session(session)
 
@@ -1231,6 +1237,7 @@ def apply_feedback(
     db.refresh(session)
     if resolved_again:
         notify_pipeline_debug_change()
+        publish_session_updated(session.id)
     _log_stage_latency("apply_feedback", session.id, started, resolved_pipeline_trace)
     return serialize_session(session)
 
@@ -1326,6 +1333,7 @@ def advance_session(
         db.commit()
         db.refresh(session)
         notify_pipeline_debug_change()
+        publish_session_updated(session.id)
         _log_stage_latency("advance_session", session.id, started, None)
         return serialize_session(session)
 
@@ -1355,6 +1363,7 @@ def advance_session(
             db.commit()
             db.refresh(session)
             notify_pipeline_debug_change()
+            publish_session_updated(session.id)
             _log_stage_latency("advance_session", session.id, started, None)
             return serialize_session(session)
 
@@ -1380,6 +1389,7 @@ def advance_session(
             db.commit()
             db.refresh(session)
             notify_pipeline_debug_change()
+            publish_session_updated(session.id)
             _log_stage_latency("advance_session", session.id, started, None)
             return serialize_session(session)
         # reserved_ms == 0 (nothing was reserved for this segment -- see
@@ -1433,6 +1443,7 @@ def advance_session(
     db.commit()
     db.refresh(session)
     notify_pipeline_debug_change()
+    publish_session_updated(session.id)
     _log_stage_latency("advance_session", session.id, started, pipeline_trace)
     return serialize_session(session)
 
@@ -1618,6 +1629,7 @@ def prepare_next(
             entry["beat_min_frontend_deadline"] = duration_ms <= _PREPARE_NEXT_MIN_FRONTEND_DEADLINE_MS
             entry["beat_client_timeout"] = duration_ms <= _PREPARE_NEXT_CLIENT_TIMEOUT_MS
         logger.info(json.dumps(entry))
+        record_event(entry)
 
 
 def stop_session(db: Session, session: DJSession) -> dict:

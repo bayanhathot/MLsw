@@ -60,6 +60,7 @@ from app.core.time import utc_now
 from app.database.models.external_track import ExternalTrack
 from app.schemas import Track
 from app.services import upload_queue
+from app.services.admin_debug_events import publish_external_track_updated
 from app.services.audio_analysis import ANALYSIS_VERSION, EXTERNAL_ANALYSIS_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ AUDIUS_ANALYSIS_CACHE_ENABLED = os.getenv("AUDIUS_ANALYSIS_CACHE_ENABLED", "fals
 
 
 def _dispatch(external_track_id: int) -> None:
+    publish_external_track_updated(external_track_id)
     try:
         upload_queue.upload_queue.submit_external_analysis(external_track_id)
     except Exception:
@@ -237,6 +239,7 @@ def verify_fingerprint(db: Session, track: Track, audio_sha256: str | None) -> N
     if row.analysis_attempt_count < EXTERNAL_ANALYSIS_MAX_ATTEMPTS:
         row.analysis_status = "pending"
         db.commit()
-        _dispatch(row.id)
+        _dispatch(row.id)  # also publishes external_track_updated
     else:
         db.commit()
+        publish_external_track_updated(row.id)

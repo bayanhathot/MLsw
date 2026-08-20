@@ -36,3 +36,30 @@ def pipeline_debug_enabled() -> bool:
     system."""
 
     return os.getenv("ENABLE_PIPELINE_DEBUG", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def debug_dashboard_enabled() -> bool:
+    """Explicit opt-in gate for the owner-only admin debug dashboard
+    (routers/admin_debug.py) -- off by default, same convention as
+    pipeline_debug_enabled/AUDIUS_ANALYSIS_CACHE_ENABLED, so it can be
+    killed instantly without a redeploy. This flag alone is not the access
+    control -- see debug_dashboard_owner_user_id below; both must pass."""
+
+    return os.getenv("DEBUG_DASHBOARD_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def debug_dashboard_owner_user_id() -> int | None:
+    """The one user ID authorized to reach the admin debug dashboard, tied
+    to a specific account rather than a new role/permission system (this
+    codebase's User model has no role/is_admin column at all -- see
+    pipeline_debug_enabled's own comment on that same tradeoff for the
+    other debug panel). None (never authorized) when unset or unparseable,
+    never a silent default."""
+
+    raw = os.getenv("DEBUG_DASHBOARD_OWNER_USER_ID", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None

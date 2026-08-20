@@ -225,13 +225,17 @@ class DeterministicTransitionPlanner(TransitionPlanner):
         actually reachable" reasoning applies to both."""
 
         if previous is None:
-            first_crossfade_ms = BASE_CROSSFADE_MS if prefers_smoother else 0
+            uncapped_first_crossfade_ms = BASE_CROSSFADE_MS if prefers_smoother else 0
+            first_crossfade_ms = uncapped_first_crossfade_ms
             if max_crossfade_ms is not None:
                 first_crossfade_ms = min(first_crossfade_ms, max_crossfade_ms)
             return TransitionPlan(
                 crossfade_ms=first_crossfade_ms,
                 style="crossfade" if (prefers_smoother and first_crossfade_ms > 0) else "cut",
                 notes="First track in this session/mix; nothing to blend from yet.",
+                key_category=None,
+                phrase_aligned=None,
+                capped_by_reserved_window=first_crossfade_ms < uncapped_first_crossfade_ms,
             )
 
         tempo_diff = (
@@ -277,10 +281,24 @@ class DeterministicTransitionPlanner(TransitionPlanner):
                     "ending -- a hard cut avoids presenting an off-phrase blend as "
                     "precisely timed."
                 ),
+                key_category=key_category,
+                phrase_aligned=False,
+                # The hard cut is forced by the missing phrase boundary, not
+                # by the reserved-window cap -- distinct causes, so this
+                # stays False even when max_crossfade_ms was also small.
+                capped_by_reserved_window=False,
             )
 
+        uncapped_crossfade_ms = crossfade_ms
         if max_crossfade_ms is not None:
             # Applied last, deliberately after the MIN_CROSSFADE_MS floor
             # above -- see this method's docstring.
             crossfade_ms = min(crossfade_ms, max_crossfade_ms)
-        return TransitionPlan(crossfade_ms=crossfade_ms, style="crossfade", notes=notes)
+        return TransitionPlan(
+            crossfade_ms=crossfade_ms,
+            style="crossfade",
+            notes=notes,
+            key_category=key_category,
+            phrase_aligned=True,
+            capped_by_reserved_window=crossfade_ms < uncapped_crossfade_ms,
+        )

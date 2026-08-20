@@ -8,11 +8,24 @@
  * WebSocket directly -- they just subscribe()/unsubscribe() channel names.
  */
 
+import { writable } from 'svelte/store';
+
 import { API_BASE_URL } from './api.js';
 import { authStore } from '../stores/authStore.js';
 
 const BASE_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 15_000;
+
+/**
+ * 'connecting' | 'open' | 'reconnecting' | 'closed' -- exposed so any
+ * consumer of this shared socket (e.g. the admin debug dashboard) can show
+ * a visible "reconnecting" state instead of silently going stale while a
+ * drop is being retried. 'reconnecting' specifically means "was open at
+ * least once, then dropped" -- the very first connect attempt is
+ * 'connecting', not 'reconnecting'.
+ * @type {import('svelte/store').Writable<'connecting'|'open'|'reconnecting'|'closed'>}
+ */
+export const connectionState = writable('closed');
 
 /** @typedef {{ onEvent: (type: string, data: any) => void, onResync?: () => void }} ChannelListener */
 
@@ -119,22 +132,28 @@ function connect() {
 	}
 	const url = realtimeWebSocketUrl();
 	if (!url) return;
+	connectionState.set(hasConnectedBefore ? 'reconnecting' : 'connecting');
 	try {
 		const nextSocket = new WebSocket(url);
 		socket = nextSocket;
 		nextSocket.onopen = () => {
 			reconnectDelay = BASE_RECONNECT_DELAY_MS;
+			connectionState.set('open');
 			flushAfterConnect();
 		};
 		nextSocket.onmessage = handleMessage;
 		nextSocket.onclose = () => {
 			if (socket === nextSocket) socket = null;
-			if (wantConnected) scheduleReconnect();
+			if (wantConnected) {
+				connectionState.set('reconnecting');
+				scheduleReconnect();
+			}
 		};
 		nextSocket.onerror = () => {
 			nextSocket.close();
 		};
 	} catch {
+		connectionState.set('reconnecting');
 		scheduleReconnect();
 	}
 }
@@ -144,6 +163,7 @@ function disconnect() {
 	clearReconnectTimer();
 	hasConnectedBefore = false;
 	reconnectDelay = BASE_RECONNECT_DELAY_MS;
+	connectionState.set('closed');
 	if (socket) {
 		const current = socket;
 		socket = null;

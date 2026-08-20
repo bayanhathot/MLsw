@@ -15,6 +15,7 @@ from app.schemas import (
     StopSessionRead,
 )
 from app.services import session_manager
+from app.services.admin_debug_events import record_event
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
     get_audius_candidate_retriever,
@@ -72,6 +73,15 @@ def start_session(
             renderer=renderer,
         )
     except NoMatchingCandidate as exc:
+        # The one true "nothing was ever created" case -- every other
+        # NoMatchingCandidate site is mid-session (session_manager.py),
+        # where the existing session/trace already stays queryable and
+        # doesn't need a separate failure record.
+        record_event({
+            "event": "session_create_failed",
+            "prompt": request.prompt,
+            "reason": str(exc),
+        })
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from None
 
 

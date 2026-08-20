@@ -60,6 +60,7 @@ from app.routers.profiles import router as profiles_router
 from app.routers.uploads import router as uploads_router
 from app.routers.social import router as social_router
 from app.routers.debug import router as debug_router
+from app.routers.admin_debug import router as admin_debug_router
 from app.routers.realtime import router as realtime_router
 from app.services.audio_analysis import requeue_pending_analysis, requeue_pending_external_analysis
 from app.services.channel_hub import channel_hub
@@ -195,6 +196,7 @@ app.include_router(social_router)
 app.include_router(catalog_router)
 app.include_router(media_router)
 app.include_router(debug_router)
+app.include_router(admin_debug_router)
 app.include_router(realtime_router)
 
 

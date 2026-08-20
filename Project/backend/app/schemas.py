@@ -628,6 +628,21 @@ class TransitionPlan(BaseModel):
     crossfade_ms: int = Field(ge=0)
     style: Literal["crossfade", "cut"]
     notes: str
+    # Structured decision factors DeterministicTransitionPlanner.plan()
+    # already computes internally but previously only folded into the free-
+    # text `notes` string above -- surfaced as their own fields so the admin
+    # debug dashboard (and any other caller) can read the actual comparison
+    # results without parsing prose. None where the comparison didn't happen
+    # at all (key_category/phrase_aligned are both None for the first-track
+    # case -- see plan()'s own docstring).
+    key_category: str | None = None
+    phrase_aligned: bool | None = None
+    # Whether max_crossfade_ms (the reserved-region ceiling, see plan()'s
+    # docstring) actually reduced crossfade_ms below what tempo/key/smoother
+    # scoring alone would have produced -- distinct from crossfade_ms==0,
+    # which can also happen via the hard-cut/no-phrase-boundary path with no
+    # cap involved at all.
+    capped_by_reserved_window: bool = False
 
 
 class RenderedAudio(BaseModel):
@@ -743,6 +758,63 @@ class OllamaHealthRead(BaseModel):
 class PipelineDebugRead(BaseModel):
     ollama: OllamaHealthRead
     sessions: list[SessionPipelineDebugRead]
+
+
+class ExternalTrackDebugRead(BaseModel):
+    """Read-only view of one external_tracks row for the owner-only admin
+    debug dashboard (routers/admin_debug.py) -- deliberately a curated
+    subset, not every column: no audio_sha256 (an integrity fingerprint,
+    not something this view's stated purpose -- finding/diagnosing a
+    track -- needs), no beat_grid_json/downbeat_grid_json/
+    phrase_boundaries_json (large arrays with no debugging value in a
+    table row)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    source: str
+    external_id: str
+    title: str
+    artist: str
+    album: str | None = None
+    analysis_status: Literal["pending", "completed", "failed", "not_applicable"]
+    analysis_attempt_count: int
+    analysis_last_failed_at: datetime | None = None
+    analyzed_at: datetime | None = None
+    is_stale: bool
+    bpm: float | None = None
+    musical_key: str | None = None
+    camelot: str | None = None
+    integrated_loudness_lufs: float | None = None
+    segment_method: str | None = None
+    last_seen_at: datetime
+    last_verified_at: datetime | None = None
+    created_at: datetime
+
+
+class AdminDebugEventRead(BaseModel):
+    """One entry from the admin debug dashboard's in-memory recent-activity
+    ring buffer (services/admin_debug_events.py) -- the raw structured
+    event dict every entry already is (session_stage_latency,
+    prepare_next_latency, session_create_failed), passed through as-is
+    rather than re-typed field by field, since new event `event` kinds can
+    be added at their call site without a schema change here."""
+
+    model_config = ConfigDict(extra="allow")
+
+    event: str
+
+
+class AdminDebugSessionsRead(BaseModel):
+    sessions: list[SessionPipelineDebugRead]
+
+
+class AdminDebugExternalTracksRead(BaseModel):
+    tracks: list[ExternalTrackDebugRead]
+
+
+class AdminDebugEventsRead(BaseModel):
+    events: list[AdminDebugEventRead]
 
 
 class CatalogTrackRead(BaseModel):

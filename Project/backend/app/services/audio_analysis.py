@@ -38,6 +38,7 @@ from app.database import database as db_module
 from app.database.models.catalog import CatalogTrack
 from app.database.models.external_track import ExternalTrack
 from app.services import upload_queue
+from app.services.admin_debug_events import publish_external_track_updated
 from app.services.pipeline.catalog_retriever import CATALOG_AUDIO_SUBDIR
 
 logger = logging.getLogger(__name__)
@@ -491,6 +492,7 @@ def analyze_external_track(external_track_id: int) -> None:
             row.analysis_attempt_count += 1
             row.analysis_last_failed_at = utc_now()
             db.commit()
+            publish_external_track_updated(external_track_id)
             return
 
         # Reuses audio_renderer._download -- the same bounded, multi-hop-
@@ -507,6 +509,7 @@ def analyze_external_track(external_track_id: int) -> None:
             row.analysis_attempt_count += 1
             row.analysis_last_failed_at = utc_now()
             db.commit()
+            publish_external_track_updated(external_track_id)
             return
 
         tmp_path: str | None = None
@@ -521,6 +524,7 @@ def analyze_external_track(external_track_id: int) -> None:
             row.analysis_attempt_count += 1
             row.analysis_last_failed_at = utc_now()
             db.commit()
+            publish_external_track_updated(external_track_id)
             return
         finally:
             # Runs on every exit path -- success, the except above, and any
@@ -542,6 +546,7 @@ def analyze_external_track(external_track_id: int) -> None:
         # set just above is, by definition, current again.
         row.is_stale = False
         db.commit()
+        publish_external_track_updated(external_track_id)
 
 
 def requeue_pending_analysis() -> int:
