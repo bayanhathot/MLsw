@@ -21,10 +21,11 @@ x-backend-environment: &backend-environment
   CATALOG_AUDIO_MAX_MB_LOSSLESS: ${CATALOG_AUDIO_MAX_MB_LOSSLESS:-100}
   CATALOG_BATCH_PRIORITY_DECAY_EVERY: ${CATALOG_BATCH_PRIORITY_DECAY_EVERY:-3}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
-  # Internal AI-DJ pipeline / Ollama debug panel. Off by default; keep it off
-  # unless an operator is actively debugging, even though it also requires a
-  # logged-in user.
-  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-false}
+  # Internal AI-DJ pipeline / Ollama debug panel (requires a logged-in user).
+  # Enabled for the course test deployment, matching local dev and the other
+  # two debug-visibility flags below -- this VM isn't serving real production
+  # traffic yet, so debug mode stays on by default everywhere.
+  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-true}
   # Ollama is the sole LLM option and the production default: fully local,
   # no hosted-API key to provision. Set VIBE_LLM_PROVIDER=none to skip the
   # LLM step entirely instead.

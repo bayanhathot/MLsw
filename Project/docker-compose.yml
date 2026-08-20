@@ -50,7 +50,9 @@ x-backend-environment: &backend-environment
   CATALOG_AUDIO_MAX_MB_LOSSLESS: ${CATALOG_AUDIO_MAX_MB_LOSSLESS:-100}
   CATALOG_BATCH_PRIORITY_DECAY_EVERY: ${CATALOG_BATCH_PRIORITY_DECAY_EVERY:-3}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
-  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-false}
+  # Debug mode is on by default everywhere right now (local and prod) --
+  # see docker-compose.prod.yml's copy of this comment for why.
+  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-true}
   # Cold-seeds a realistic ~50-user dataset on every deploy (see
   # app/coldseed/build.py) -- idempotent, so safe to leave on. Set to false
   # to opt out.
@@ -60,11 +62,11 @@ x-backend-environment: &backend-environment
   # Gates live Audius audio fetch for the persistent analysis cache -- see
   # Project/SECURITY.md's "Third-party compliance gates" section and
   # docker-compose.prod.yml's own copy of this comment.
-  AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-false}
+  AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-true}
   EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
   # Gates the admin debug dashboard -- see docker-compose.prod.yml's own
   # copy of this comment.
-  DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-false}
+  DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-true}
 
 services:
   postgres:

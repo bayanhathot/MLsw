@@ -47,6 +47,13 @@ if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
   esac
   set_managed_env DEBUG_DASHBOARD_ENABLED "${MANAGED_DEBUG_DASHBOARD_ENABLED}"
 fi
+if [ -n "${MANAGED_ENABLE_PIPELINE_DEBUG:-}" ]; then
+  case "${MANAGED_ENABLE_PIPELINE_DEBUG}" in
+    true|false) ;;
+    *) echo "MANAGED_ENABLE_PIPELINE_DEBUG must be true or false" >&2; exit 1 ;;
+  esac
+  set_managed_env ENABLE_PIPELINE_DEBUG "${MANAGED_ENABLE_PIPELINE_DEBUG}"
+fi
 
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 "${compose[@]}" config --quiet
@@ -79,6 +86,9 @@ if [ -n "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED:-}" ]; then
 fi
 if [ -n "${MANAGED_DEBUG_DASHBOARD_ENABLED:-}" ]; then
   verify_managed_env DEBUG_DASHBOARD_ENABLED "${MANAGED_DEBUG_DASHBOARD_ENABLED}"
+fi
+if [ -n "${MANAGED_ENABLE_PIPELINE_DEBUG:-}" ]; then
+  verify_managed_env ENABLE_PIPELINE_DEBUG "${MANAGED_ENABLE_PIPELINE_DEBUG}"
 fi
 
 # Ensure the local LLM refinement model is present. Read OLLAMA_MODEL out of

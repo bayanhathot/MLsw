@@ -600,6 +600,7 @@ jobs:
       # recreated backend received them.
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
+      PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -620,7 +621,7 @@ jobs:
             https://*) ;;
             *) echo "PUBLIC_BASE_URL must start with https://" >&2; exit 1 ;;
           esac
-          for name in PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED PRODUCTION_DEBUG_DASHBOARD_ENABLED; do
+          for name in PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED PRODUCTION_DEBUG_DASHBOARD_ENABLED PRODUCTION_ENABLE_PIPELINE_DEBUG; do
             case "${!name}" in
               true|false) ;;
               *) echo "${name} must be true or false" >&2; exit 1 ;;
@@ -673,7 +674,7 @@ jobs:
           FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       # --retry-all-errors is required, not optional: on a first-ever deploy
       # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and
@@ -720,6 +721,7 @@ jobs:
     env:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
+      PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
     steps:
       - name: Check out the rollback ref
         uses: actions/checkout@v4
@@ -747,7 +749,7 @@ jobs:
             echo "rollback_sha must be a 7-40 character hex commit SHA, got: ${ROLLBACK_SHA}" >&2
             exit 1
           fi
-          for name in PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED PRODUCTION_DEBUG_DASHBOARD_ENABLED; do
+          for name in PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED PRODUCTION_DEBUG_DASHBOARD_ENABLED PRODUCTION_ENABLE_PIPELINE_DEBUG; do
             case "${!name}" in
               true|false) ;;
               *) echo "${name} must be true or false" >&2; exit 1 ;;
@@ -801,7 +803,7 @@ jobs:
           frontend_image="ghcr.io/${owner}/cuemix-frontend:${{ inputs.rollback_sha }}"
           echo "Rolling back to ${backend_image} / ${frontend_image}"
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       - name: Verify the public TLS database health endpoint
         env:
