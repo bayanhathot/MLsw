@@ -109,6 +109,12 @@ ALLOWED_TYPES = {
     "audio/wav": ("audio", ".wav", _ATTACHMENT_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024),
     "audio/flac": ("audio", ".flac", _ATTACHMENT_AUDIO_MAX_MB_LOSSLESS * 1024 * 1024),
 }
+# Any decoded upload whose overall level (pydub's own AudioSegment.dBFS)
+# falls below this is rejected as unusable -- catches both true digital
+# silence (dBFS is -inf there) and any real near-silent file (dither
+# noise, a muted room, a bad export) that a plain `rms == 0` check would
+# have let straight through.
+_SILENT_UPLOAD_FLOOR_DBFS = -50.0
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / "uploads"))
 # Where submit() durably parks raw bytes before a worker has even looked at
 # them -- inside UPLOAD_DIR so it shares that volume's persistence, but its
@@ -259,8 +265,20 @@ def _validate_decodable_audio(data: bytes, extension: str) -> dict:
         raise ValueError("Could not decode this file as playable audio.") from exc
     if len(segment) < 1000:
         raise ValueError("Audio is too short to be a usable track (minimum 1 second).")
-    if segment.rms == 0:
-        raise ValueError("Audio appears to be silent.")
+
+    # segment.rms == 0 only ever catches perfect digital silence -- any real
+    # near-silent file (dither noise, a muted room, a bad export) has
+    # rms > 0 and slipped through. segment.dBFS is pydub's own correctly
+    # normalized level (20 * log10(rms / max_possible_amplitude), -inf when
+    # rms is exactly 0) -- comparing that directly against a fixed floor
+    # catches both true silence (-inf < -50 is True, no special-casing
+    # needed) and anything merely too quiet to be a usable track.
+    if segment.dBFS < _SILENT_UPLOAD_FLOOR_DBFS:
+        raise ValueError(
+            "Audio appears to be silent or too quiet to be a usable track "
+            f"(measured level is below {_SILENT_UPLOAD_FLOOR_DBFS:.0f} dBFS)."
+        )
+
     if segment.frame_rate <= 0 or segment.channels <= 0:
         raise ValueError("Audio has an invalid sample rate or channel count.")
     return {

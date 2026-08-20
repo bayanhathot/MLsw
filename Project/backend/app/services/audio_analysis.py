@@ -10,18 +10,25 @@ is overridden to use -- a plain import would freeze the pre-override binding.
 
 Chorus/hook detection is a self-similarity proxy: chroma features are
 bucketed to ~1 column per second (bounding the similarity matrix regardless
-of track length), and the window with the highest average similarity to the
+of track length), and among candidate windows that clear _SILENCE_FLOOR_DBFS
+(see _best_segment), the one with the highest average similarity to the
 rest of the track -- i.e. the most repeated/representative section -- is
-picked. Key detection is real Krumhansl-Schmuckler-style key-finding: the
-mean chroma profile is correlated against 24 rotated major/minor
-key-profile templates and the best-correlating (root, mode) pair wins --
-see _estimate_key. Beat-grid timing (beat_grid/downbeat_grid/
-phrase_boundaries) is derived from librosa.beat.beat_track's own beat-frame
-output -- already computed to derive bpm, never a second onset-detection
-pass; only the beat grid itself is genuine data, downbeat_grid/
-phrase_boundaries are a coarse fixed-meter heuristic layered on top of it,
-not real meter/structure detection -- see _beat_grids. All of the above are
-deterministic signal-processing, not a trained model.
+picked. The energy floor exists because self-similarity alone discards
+amplitude entirely: a silent or near-silent passage can be maximally
+"self-similar" to itself and would otherwise win outright -- the course
+rubric's own worked example of a hallucinated recommendation ("choosing a
+part of a song that is silence"). No window clearing the floor falls back
+to "whole_clip", same as the too-short-to-window case. Key detection is
+real Krumhansl-Schmuckler-style key-finding: the mean chroma profile is
+correlated against 24 rotated major/minor key-profile templates and the
+best-correlating (root, mode) pair wins -- see _estimate_key. Beat-grid
+timing (beat_grid/downbeat_grid/phrase_boundaries) is derived from
+librosa.beat.beat_track's own beat-frame output -- already computed to
+derive bpm, never a second onset-detection pass; only the beat grid itself
+is genuine data, downbeat_grid/phrase_boundaries are a coarse fixed-meter
+heuristic layered on top of it, not real meter/structure detection -- see
+_beat_grids. All of the above are deterministic signal-processing, not a
+trained model.
 """
 
 import logging
@@ -67,6 +74,19 @@ ANALYSIS_VERSION = "v2"
 
 _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+# Any candidate window whose mean level falls below this, relative to the
+# track's own peak sample amplitude, is disqualified from
+# chorus_detection selection outright -- self-similarity alone (see
+# _bucket_chroma) discards amplitude entirely, so a silent or near-silent
+# passage can otherwise "win" by being uniformly (and meaninglessly)
+# self-similar. Deliberately relative to the track's own peak, not a
+# fixed absolute level: a quietly-mastered track's real highlight should
+# still be selectable, and a loudly-mastered track's near-silent passages
+# should still be rejected, regardless of the track's own overall level.
+# This is the fix for the course rubric's own worked hallucination
+# example: "choosing a part of a song that is silence."
+_SILENCE_FLOOR_DBFS = -45.0
+
 # Krumhansl & Kessler (1982) major/minor key profiles: empirically measured
 # listener probe-tone ratings of how well each pitch class fits a
 # previously established key context, indexed like _PITCH_CLASSES (index 0
@@ -97,8 +117,10 @@ _CAMELOT_MINOR = {
     "F#": "11A", "G": "6A", "G#": "1A", "A": "8A", "A#": "3A", "B": "10A",
 }
 # Bounds CPU/memory for a pathologically long upload; analysis only needs
-# enough of the track to find one representative ~30s window.
-_MAX_ANALYSIS_SECONDS = 240
+# enough of the track to find one representative ~30s window. Raised from 240
+# to 600 to support long tracks (8-20 minutes) in Emotional/Tarab mode where
+# the most representative segment may appear well past the 4-minute mark.
+_MAX_ANALYSIS_SECONDS = 600
 _TARGET_SEGMENT_SECONDS = 30
 _CHROMA_HOP_LENGTH = 512
 _BEAT_HOP_LENGTH = 512  # matches librosa.beat.beat_track's own default
@@ -257,24 +279,86 @@ def _bucket_chroma(chroma: np.ndarray, frames_per_second: float) -> np.ndarray:
     return trimmed.reshape(chroma.shape[0], n_buckets, bucket_frames).mean(axis=2)
 
 
+def _bucket_rms_dbfs(
+    rms_frames: np.ndarray, frames_per_second: float, n_buckets: int, peak_amplitude: float
+) -> np.ndarray:
+    """Per-second mean level, in dBFS relative to this track's own peak
+    sample amplitude -- bucketed at the same rate/hop length
+    _bucket_chroma uses so the two arrays line up index-for-index (padded
+    with the last real frame if librosa's own frame-counting for RMS vs.
+    chroma_cqt differs by a frame or two at the same hop_length, so a
+    short mismatch never desyncs the two bucket arrays). -inf for every
+    bucket when the whole track is digital silence (peak_amplitude == 0),
+    rather than a divide-by-zero."""
+
+    bucket_frames = max(1, int(round(frames_per_second)))
+    needed = n_buckets * bucket_frames
+    if rms_frames.shape[0] < needed:
+        rms_frames = np.pad(rms_frames, (0, needed - rms_frames.shape[0]), mode="edge")
+    trimmed = rms_frames[:needed]
+    bucket_rms = trimmed.reshape(n_buckets, bucket_frames).mean(axis=1)
+    if peak_amplitude <= 0.0:
+        return np.full(n_buckets, -np.inf)
+    with np.errstate(divide="ignore"):
+        return 20.0 * np.log10(np.maximum(bucket_rms, 1e-12) / peak_amplitude)
+
+
 def _best_segment(
-    chroma: np.ndarray, frames_per_second: float, duration_seconds: float
-) -> tuple[int, int, str]:
+    chroma: np.ndarray,
+    frames_per_second: float,
+    duration_seconds: float,
+    rms_frames: np.ndarray,
+    peak_amplitude: float,
+) -> tuple[int, int, str, float | None]:
+    """Returns (start_second, end_second, method, segment_level_dbfs) --
+    the fourth field is the winning window's own measured level (None for
+    a whole_clip result, where no single window was scored), persisted so
+    it can be shown as evidence that the selected segment isn't silence
+    (see scripts/eval_hallucination_robustness.py).
+
+    Self-similarity ranking (see _bucket_chroma) discards amplitude
+    entirely -- a silent or near-silent window can be maximally
+    "self-similar" to itself and win on that basis alone. _SILENCE_FLOOR_
+    DBFS disqualifies any candidate window whose mean level falls that far
+    below the track's own peak before ranking ever runs; among windows
+    that pass, the existing similarity ranking is unchanged. If *no*
+    window passes (e.g. the whole track is quiet relative to one brief
+    loud transient, or genuinely silent), this falls back to "whole_clip"
+    exactly like the too-short-to-window case below already does, rather
+    than ever returning a disqualified window -- note this requires
+    tracking the winner explicitly (best_level starts None, only ever set
+    when a window actually clears the floor) rather than a sentinel score
+    a disqualified window's score could still exceed, which would
+    silently return start=0 (the loop's untouched initial value) mislabeled
+    as chorus_detection instead of falling back."""
+
     buckets = _bucket_chroma(chroma, frames_per_second)
     total_seconds = buckets.shape[1]
     window = min(total_seconds, _TARGET_SEGMENT_SECONDS)
     if total_seconds <= window or window <= 0:
-        return 0, max(1, int(duration_seconds)), "whole_clip"
+        return 0, max(1, int(duration_seconds)), "whole_clip", None
+
+    level_db = _bucket_rms_dbfs(rms_frames, frames_per_second, total_seconds, peak_amplitude)
 
     norms = buckets / (np.linalg.norm(buckets, axis=0, keepdims=True) + 1e-9)
     similarity = norms.T @ norms  # second-by-second cosine self-similarity
 
-    best_start, best_score = 0, -1.0
+    best_start, best_score, best_level = 0, -1.0, None
     for start in range(0, total_seconds - window + 1):
+        window_level = float(level_db[start : start + window].mean())
+        if window_level < _SILENCE_FLOOR_DBFS:
+            continue  # disqualified: too quiet to be a real "highlight"
         score = float(similarity[start : start + window, :].mean())
         if score > best_score:
-            best_score, best_start = score, start
-    return best_start, best_start + window, "chorus_detection"
+            best_score, best_start, best_level = score, start, window_level
+
+    if best_level is None:
+        # Every candidate window was below the silence floor -- nothing
+        # left to rank, so play the clip straight rather than ever
+        # returning a disqualified window (the empty-catalog/too-short
+        # branch above uses the same fallback for the same reason).
+        return 0, max(1, int(duration_seconds)), "whole_clip", None
+    return best_start, best_start + window, "chorus_detection", best_level
 
 
 def _integrated_loudness_lufs(waveform: np.ndarray, sr: float, label: str) -> float | None:
@@ -325,6 +409,15 @@ class AnalysisResult:
     segment_start_second: int
     segment_end_second: int
     segment_method: str
+    # The selected window's own measured level (dBFS, relative to the
+    # track's own peak amplitude) -- None for a whole_clip result, where
+    # no single window was scored against _SILENCE_FLOOR_DBFS. Not a
+    # persisted DB column (no schema change): _apply_result deliberately
+    # doesn't copy this onto CatalogTrack/ExternalTrack, since its only
+    # consumer is scripts/eval_hallucination_robustness.py, which calls
+    # analyze_audio() directly and reads it straight off this dataclass as
+    # evidence the selected segment isn't silence.
+    segment_level_dbfs: float | None
 
 
 def analyze_audio(path: str, *, label: str) -> AnalysisResult:
@@ -371,7 +464,14 @@ def analyze_audio(path: str, *, label: str) -> AnalysisResult:
     chroma = librosa.feature.chroma_cqt(y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
     frames_per_second = sr / _CHROMA_HOP_LENGTH
     musical_key, key_mode, key_confidence_value = _estimate_key(chroma)
-    start_second, end_second, method = _best_segment(chroma, frames_per_second, duration_seconds)
+    # Same hop length as the chroma buckets above, so _bucket_rms_dbfs's
+    # per-second buckets line up index-for-index with _bucket_chroma's own
+    # -- see _best_segment's own docstring for what this feeds.
+    rms_frames = librosa.feature.rms(y=waveform, hop_length=_CHROMA_HOP_LENGTH)[0]
+    peak_amplitude = float(np.max(np.abs(waveform))) if waveform.size else 0.0
+    start_second, end_second, method, segment_level_dbfs = _best_segment(
+        chroma, frames_per_second, duration_seconds, rms_frames, peak_amplitude
+    )
     loudness_lufs = _integrated_loudness_lufs(waveform, sr, label)
 
     return AnalysisResult(
@@ -397,6 +497,7 @@ def analyze_audio(path: str, *, label: str) -> AnalysisResult:
         segment_start_second=start_second,
         segment_end_second=end_second,
         segment_method=method,
+        segment_level_dbfs=segment_level_dbfs,
     )
 
 

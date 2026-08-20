@@ -14,6 +14,7 @@ from queue import Full
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 from app.database.models.catalog import CatalogTrack
 from app.database.models.external_track import ExternalTrack
@@ -23,10 +24,15 @@ from app.services.pipeline import external_track_cache as etc_module
 from app.services.audio_analysis import (
     _BARS_PER_PHRASE,
     _BEATS_PER_BAR,
+    _CHROMA_HOP_LENGTH,
     _MAJOR_KEY_PROFILE,
     _MINOR_KEY_PROFILE,
     _PITCH_CLASSES,
+    _SILENCE_FLOOR_DBFS,
+    _TARGET_SEGMENT_SECONDS,
     _beat_grids,
+    _best_segment,
+    _bucket_chroma,
     _estimate_key,
     camelot_for,
 )
@@ -364,3 +370,151 @@ class _FrameToTimeStub:
     @staticmethod
     def frames_to_time(frames, sr, hop_length):
         return np.array([])
+
+
+# --- Energy floor in segment selection (_best_segment) --------------------
+
+
+def _chroma_rms_peak(signal: np.ndarray, sr: int):
+    """Real librosa extraction (chroma_cqt + rms), at the exact hop length
+    _best_segment expects its two inputs bucketed at -- the same call
+    sequence analyze_audio() itself runs, just without loading a file."""
+
+    import librosa
+
+    chroma = librosa.feature.chroma_cqt(y=signal, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
+    frames_per_second = sr / _CHROMA_HOP_LENGTH
+    rms_frames = librosa.feature.rms(y=signal, hop_length=_CHROMA_HOP_LENGTH)[0]
+    peak_amplitude = float(np.max(np.abs(signal))) if signal.size else 0.0
+    return chroma, frames_per_second, rms_frames, peak_amplitude
+
+
+def test_best_segment_never_selects_a_near_silent_region_over_a_loud_one():
+    # Deliberately adversarial for chroma-similarity-only ranking: the loud
+    # region is harmonically *varied* (an arpeggio, so only moderately
+    # self-similar to itself), while the quiet region is a single sustained
+    # tone -- maximally self-similar, but far too quiet to be a real
+    # highlight. Confirmed below that pure similarity (no energy floor)
+    # actually picks a window inside the quiet region for this exact
+    # signal, so this isn't a strawman -- it's the failure mode
+    # _SILENCE_FLOOR_DBFS exists to close.
+    sr = 22050
+    loud_seconds = 40
+    quiet_seconds = 40
+    t_loud = np.linspace(0, loud_seconds, int(sr * loud_seconds), endpoint=False)
+    freqs = 220.0 * (2 ** (np.floor(t_loud * 2) % 12 / 12))
+    loud = (0.8 * np.sin(2 * np.pi * freqs * t_loud)).astype(np.float32)
+    t_quiet = np.linspace(0, quiet_seconds, int(sr * quiet_seconds), endpoint=False)
+    quiet = (0.0003 * np.sin(2 * np.pi * 220.0 * t_quiet)).astype(np.float32)
+    signal = np.concatenate([loud, quiet])
+    duration_seconds = len(signal) / sr
+
+    chroma, frames_per_second, rms_frames, peak_amplitude = _chroma_rms_peak(signal, sr)
+
+    # What pure chroma self-similarity alone (no energy floor) would pick --
+    # proves the scenario is genuinely adversarial, not incidentally safe.
+    buckets = _bucket_chroma(chroma, frames_per_second)
+    total_seconds = buckets.shape[1]
+    window = min(total_seconds, _TARGET_SEGMENT_SECONDS)
+    norms = buckets / (np.linalg.norm(buckets, axis=0, keepdims=True) + 1e-9)
+    similarity = norms.T @ norms
+    naive_start, naive_score = 0, -1.0
+    for start in range(0, total_seconds - window + 1):
+        score = float(similarity[start : start + window, :].mean())
+        if score > naive_score:
+            naive_score, naive_start = score, start
+    assert naive_start >= loud_seconds, (
+        "test setup didn't reproduce the vulnerability: pure similarity "
+        "should have picked a window entirely inside the quiet region"
+    )
+
+    start, end, method, level = _best_segment(
+        chroma, frames_per_second, duration_seconds, rms_frames, peak_amplitude
+    )
+
+    assert method == "chorus_detection"
+    assert level is not None
+    assert level >= _SILENCE_FLOOR_DBFS
+    # The energy floor actually changed the outcome versus naive similarity.
+    assert start != naive_start
+
+
+def test_best_segment_falls_back_to_whole_clip_when_the_entire_track_is_silent():
+    sr = 22050
+    duration_seconds = 90.0
+    signal = np.zeros(int(sr * duration_seconds), dtype=np.float32)
+
+    chroma, frames_per_second, rms_frames, peak_amplitude = _chroma_rms_peak(signal, sr)
+
+    start, end, method, level = _best_segment(
+        chroma, frames_per_second, duration_seconds, rms_frames, peak_amplitude
+    )
+
+    assert method == "whole_clip"
+    assert start == 0
+    assert end == int(duration_seconds)
+    assert level is None
+
+
+def test_best_segment_still_ranks_normally_among_windows_that_all_pass_the_floor():
+    # A real, uniformly-loud signal with varying harmonic content -- proves
+    # the floor doesn't change behavior when every candidate window is
+    # legitimately audible, only when some aren't.
+    sr = 22050
+    duration_seconds = 60.0
+    t = np.linspace(0, duration_seconds, int(sr * duration_seconds), endpoint=False)
+    freqs = 220.0 * (2 ** (np.floor(t * 0.5) % 12 / 12))
+    signal = (0.7 * np.sin(2 * np.pi * freqs * t)).astype(np.float32)
+
+    chroma, frames_per_second, rms_frames, peak_amplitude = _chroma_rms_peak(signal, sr)
+
+    start, end, method, level = _best_segment(
+        chroma, frames_per_second, duration_seconds, rms_frames, peak_amplitude
+    )
+
+    assert method == "chorus_detection"
+    assert level is not None and level >= _SILENCE_FLOOR_DBFS
+    assert end - start == min(int(duration_seconds), _TARGET_SEGMENT_SECONDS)
+
+
+# --- Long-track analysis window cap (_MAX_ANALYSIS_SECONDS) ---------------
+
+
+def test_analyze_audio_can_select_a_highlight_past_the_old_four_minute_cap(tmp_path):
+    # Regression guard for the original _MAX_ANALYSIS_SECONDS=240 bug:
+    # librosa.load's own duration= truncated every downstream call
+    # (chroma, beat tracking, _best_segment) to the first 4 minutes, so a
+    # highlight anywhere past 4:00 -- routine for the product's own
+    # Emotional/Tarab mode -- could never be selected, full stop. 280s
+    # total (past the old 240s cap, within the new 600s one): 250s of a
+    # fast-pitch-drifting filler (deliberately low self-similarity within
+    # any 30s window) followed by a 30s tight, perfectly repeating loop
+    # (maximally self-similar) starting at 250s -- unambiguously the
+    # "best segment" on chroma-similarity grounds alone, reachable only if
+    # analyze_audio actually looked past 4:00.
+    sr = 22050
+    filler_seconds = 250
+    highlight_seconds = 30
+
+    t_filler = np.linspace(0, filler_seconds, int(sr * filler_seconds), endpoint=False)
+    freq_drift = 220.0 * (2 ** (np.floor(t_filler / 3.0) % 12 / 12))
+    filler = (0.5 * np.sin(2 * np.pi * freq_drift * t_filler)).astype(np.float32)
+
+    loop_seconds = 1.0
+    t_loop = np.linspace(0, loop_seconds, int(sr * loop_seconds), endpoint=False)
+    loop = (0.7 * np.sin(2 * np.pi * 440.0 * t_loop)).astype(np.float32)
+    highlight = np.tile(loop, int(highlight_seconds / loop_seconds))
+
+    signal = np.concatenate([filler, highlight]).astype(np.float32)
+    path = tmp_path / "long_track.wav"
+    sf.write(str(path), signal, sr)
+
+    result = audio_analysis.analyze_audio(str(path), label="long track test")
+
+    assert result.segment_method == "chorus_detection"
+    # The winning window must start at/after the old 240s cap -- proof the
+    # highlight (which only exists past 250s) was actually reachable, not
+    # just that *some* window won.
+    assert result.segment_start_second >= 240
+    assert result.segment_level_dbfs is not None
+    assert result.segment_level_dbfs >= audio_analysis._SILENCE_FLOOR_DBFS

@@ -1076,6 +1076,59 @@ def test_segment_selector_uses_whole_clip_for_tracks_without_completed_analysis(
     assert segment.end_second == 90
 
 
+def test_segment_selector_trims_silence_padding_off_a_local_whole_clip_fallback(db_session, tmp_path):
+    # Silence -> real tone -> silence, with no completed analysis for this
+    # catalog row (analysis_status stays "pending") -- exercises the exact
+    # whole-clip fallback path (requirement 3: a silent lead-in/outro must
+    # not play as the whole "segment"), not the chorus_detection path
+    # step 1's own energy floor already covers.
+    from pydub.generators import Sine
+
+    lead_silence = AudioSegment.silent(duration=5000, frame_rate=22050)
+    tone = Sine(440, sample_rate=22050).to_audio_segment(duration=20000).apply_gain(-3)
+    tail_silence = AudioSegment.silent(duration=5000, frame_rate=22050)
+    clip = lead_silence + tone + tail_silence
+    total_seconds = len(clip) // 1000  # 30
+
+    path = tmp_path / "padded.wav"
+    clip.export(path, format="wav")
+
+    row = CatalogTrack(
+        title="Padded", artist="Someone", storage_name="padded.wav", content_type="audio/wav",
+        duration_seconds=total_seconds, analysis_status="pending",
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+
+    selector = LibrosaSegmentSelector()
+    track = _track(
+        source="catalog", catalog_track_id=row.id, duration_seconds=total_seconds,
+        local_path=str(path),
+    )
+    segment = selector.select(db_session, track)
+
+    assert segment.method == "whole_clip"
+    # Trimmed inward from the untrimmed (0, 30) on both ends, landing close
+    # to the real 5s/25s tone boundaries (a few hundred ms of slack is
+    # fine -- detect_leading_silence works in 10ms chunks, not sample-exact).
+    assert 4 <= segment.start_second <= 6
+    assert 24 <= segment.end_second <= 26
+    assert segment.end_second > segment.start_second
+
+
+def test_segment_selector_whole_clip_fallback_is_untrimmed_without_a_local_path(db_session):
+    # An Audius (external) track's audio isn't on disk at session-resolution
+    # time -- this must stay exactly today's untrimmed behavior, never a
+    # network fetch just to scan for silence.
+    selector = LibrosaSegmentSelector()
+    track = _track(local_path=None, duration_seconds=90)
+    segment = selector.select(db_session, track)
+    assert segment.method == "whole_clip"
+    assert segment.start_second == 0
+    assert segment.end_second == 90
+
+
 def test_segment_selector_reads_cached_analysis_for_completed_catalog_tracks(db_session):
     row = CatalogTrack(
         title="Analyzed", artist="Someone", storage_name="x.wav", content_type="audio/wav",

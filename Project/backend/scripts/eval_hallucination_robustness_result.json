@@ -1,0 +1,91 @@
+{
+  "pass_count": 6,
+  "total_count": 6,
+  "pass_rate": 1.0,
+  "cases": [
+    {
+      "case_id": "nonexistent_track",
+      "label": "Nonexistent/invented track name",
+      "passed": true,
+      "detail": "Correctly reported no match via NoMatchingCandidate, invented nothing: No catalog or audius_multi_query candidate matched this request closely enough, and the catalog had nothing left to serve as a last resort either.",
+      "evidence": {
+        "exception": "No catalog or audius_multi_query candidate matched this request closely enough, and the catalog had nothing left to serve as a last resort either."
+      }
+    },
+    {
+      "case_id": "silent_upload",
+      "label": "Silent upload",
+      "passed": true,
+      "detail": "Correctly rejected: Audio appears to be silent or too quiet to be a usable track (measured level is below -50 dBFS).",
+      "evidence": {
+        "dBFS": null,
+        "error": "Audio appears to be silent or too quiet to be a usable track (measured level is below -50 dBFS)."
+      }
+    },
+    {
+      "case_id": "near_silent_upload",
+      "label": "Near-silent upload (~-60 dBFS noise)",
+      "passed": true,
+      "detail": "Correctly rejected: Audio appears to be silent or too quiet to be a usable track (measured level is below -50 dBFS).",
+      "evidence": {
+        "dBFS": -60.20599913279624,
+        "error": "Audio appears to be silent or too quiet to be a usable track (measured level is below -50 dBFS)."
+      }
+    },
+    {
+      "case_id": "corrupt_file",
+      "label": "Corrupt/truncated file",
+      "passed": true,
+      "detail": "Correctly rejected: Audio is too short to be a usable track (minimum 1 second).",
+      "evidence": {
+        "error": "Audio is too short to be a usable track (minimum 1 second)."
+      }
+    },
+    {
+      "case_id": "unavailable_audius_url",
+      "label": "Unavailable Audius URL",
+      "passed": true,
+      "detail": "Degraded gracefully to a pass-through (reason: download_failed_http_400)",
+      "evidence": {
+        "is_pass_through": true,
+        "fallback_reason": "download_failed_http_400"
+      }
+    },
+    {
+      "case_id": "malformed_llm_response",
+      "label": "Malformed/malicious LLM JSON response",
+      "passed": true,
+      "detail": "Every malformed/malicious response degraded to the safe deterministic fallback, no injected field reached the returned intent",
+      "evidence": {
+        "attempts": [
+          {
+            "attempt": "{\"mood\": \"chill\", \"energy\": \"low\", oops this is not json}}}",
+            "ok": true,
+            "intent": {
+              "mood": "chill",
+              "energy": "low",
+              "vocals": "neutral",
+              "genres": [],
+              "artist": null,
+              "artist_mode": "none",
+              "search_query": "play something chill"
+            }
+          },
+          {
+            "attempt": "{\"mood\": \"chill\", \"energy\": \"low\", \"vocals\": \"less\", \"genres\": [], \"search_query",
+            "ok": true,
+            "intent": {
+              "mood": "chill",
+              "energy": "low",
+              "vocals": "neutral",
+              "genres": [],
+              "artist": null,
+              "artist_mode": "none",
+              "search_query": "play something chill"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

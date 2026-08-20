@@ -332,6 +332,44 @@ def test_upload_rejects_silent_audio(client):
     assert "silent" in response.json()["detail"].lower()
 
 
+def test_upload_rejects_near_silent_low_level_noise_audio(client):
+    # A real near-silent file (dither noise, a muted room, a bad export)
+    # has rms > 0 and slipped straight through the old `segment.rms == 0`
+    # check -- this is the regression guard for that gap. Built from real
+    # numpy noise, not synthetic zeros, scaled to roughly -60 dBFS (well
+    # under _SILENT_UPLOAD_FLOOR_DBFS's -50 floor), exported to a real wav.
+    import numpy as np
+    from pydub import AudioSegment
+
+    register_and_login(client)
+    sr = 22050
+    duration_seconds = 2.0
+    rng = np.random.default_rng(seed=0)
+    noise = rng.normal(0.0, 1.0, int(sr * duration_seconds))
+    # Scale so RMS amplitude sits at roughly -60 dBFS relative to 16-bit
+    # full scale (32767): target_rms = 32767 * 10**(-60/20).
+    target_rms = 32767 * (10 ** (-60 / 20))
+    scaled = noise / (np.sqrt(np.mean(noise**2)) + 1e-9) * target_rms
+    samples = np.clip(scaled, -32768, 32767).astype(np.int16)
+    segment = AudioSegment(
+        samples.tobytes(), frame_rate=sr, sample_width=2, channels=1
+    )
+    assert segment.dBFS < -50, f"test fixture isn't actually near-silent: {segment.dBFS} dBFS"
+
+    buf = io.BytesIO()
+    segment.export(buf, format="wav")
+    response = client.post(
+        "/catalog/tracks",
+        data={"title": "Near Silent Noise", "album": "Test Album", "artist": "The Testers"},
+        files={"file": ("near_silent.wav", buf.getvalue(), "audio/wav")},
+    )
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"].lower()
+    # Same class of rejection as true silence (silent/too quiet), not a
+    # different, unrelated error (e.g. a decode failure).
+    assert "silent" in detail or "quiet" in detail
+
+
 def test_upload_rejects_an_unsupported_audio_format(client):
     register_and_login(client)
     response = client.post(
