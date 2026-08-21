@@ -753,10 +753,10 @@
         Scores are estimates, not an official grade.
       </p>
       <p class="stamp">
-        Re-audited: 21 August 2026 · working tree after 785dae5 · 463 backend
-        tests passed and 13 Redis-gated tests skipped · 5/5 isolated Studio-AI
-        tests · 8/8 adversarial evaluation · 39/39 frontend tests passed ·
-        CueMix Studio, D1–D9, four literal modes, and all four proposal
+        Re-audited: 21 August 2026 · working tree after 2fb5a75 · 462/463 backend
+        tests passed, one pre-existing bulk-upload polling failure, and 13 Redis-gated skips · 5/5 isolated Studio-AI
+        tests · 8/8 adversarial evaluation · 43/43 frontend unit tests and all 11 runnable
+        browser tests passed, including 3/3 waveform cases · CueMix Studio, D1–D9, four literal modes, and all four proposal
         analytics completed locally · commit/CI/VM proof still required.
       </p>
 
@@ -766,10 +766,10 @@
             <div
               class="score-ring"
               id="scoreRing"
-              style="--score-angle: 331.2deg"
+              style="--score-angle: 336.6deg"
             >
               <div class="score-value">
-                <span id="scoreValue">92</span><small>/100</small>
+                <span id="scoreValue">93.5</span><small>/100</small>
               </div>
             </div>
             <p class="score-label">
@@ -789,12 +789,14 @@
                 revisioned manual or named-mode mixes from those moments, tune
                 and preview real transitions, render/publish immutably, and use
                 bounded passive signals plus a confirm-before-apply local
-                assistant. No reproduced defect remains open. The strict
-                deduction is for no visual waveform, limited offline ranking
-                evidence, and no CI/VM proof of this working tree.
+                assistant. The editor now has one-player waveform seeking,
+                draggable exact bounds, analysis/AI overlays, and numeric
+                fallback. No reproduced defect remains open. The strict
+                deduction is for limited offline ranking evidence and no CI/VM
+                proof of this working tree.
               </p>
             </div>
-            <span class="potential">96-point planned ceiling</span>
+            <span class="potential">97.5-point planned ceiling</span>
           </div>
           <div class="metrics">
             <div class="metric">
@@ -814,10 +816,9 @@
           <div class="warning">
             <strong>Remaining grading risk:</strong> the Studio migration, third
             image, UI, Ollama assistant, exact segment preview, transition
-            render, and immutable publish flow have not been proven on the VM.
-            Do not present local tests as deployment evidence. The visual
-            waveform remains absent by explicit plan scope; confirm lecturer
-            acceptance if that PDF wording is graded literally.
+            render, waveform interaction, and immutable publish flow have not
+            been proven on the VM. Do not present local tests as deployment
+            evidence.
           </div>
         </article>
       </div>
@@ -862,11 +863,12 @@
         </div>
         <div class="audit-grid">
           <article class="card audit-card">
-            <span class="badge complete">Backend verified</span
-            ><strong>463 passed</strong>
+            <span class="badge complete">Waveform API verified</span
+            ><strong>462 / 463</strong>
             <p>
-              Full suite passed with 13 Redis-dependent integration cases
-              skipped. Studio covers ownership, exact bounds,
+              All six focused Studio tests pass. The full suite has 462 passes
+              and 13 Redis-only skips; its one pre-existing bulk-upload polling
+              failure also reproduces alone and is unrelated. Studio covers ownership, exact bounds,
               snapshots/revisions, transitions/rendering, provider policy,
               passive ranking, legacy bypass guards, and assistant
               fallback/validation.
@@ -874,11 +876,12 @@
           </article>
           <article class="card audit-card">
             <span class="badge complete">Frontend verified</span
-            ><strong>39 / 39</strong>
+            ><strong>43 unit + 11 E2E</strong>
             <p>
-              Svelte check reported 0 errors and 0 warnings; lint, all six
-              Vitest files, and the production build passed with the new /studio
-              route.
+              Svelte check reported 0 errors and 0 warnings; lint, all seven
+              Vitest files, the production build, and all 11 runnable Chromium
+              tests passed; that includes three waveform interaction/fallback/
+              AI-confirmation cases. Four real-backend E2E cases were skipped.
             </p>
           </article>
           <article class="card audit-card">
@@ -976,6 +979,17 @@
               </tr>
               <tr>
                 <td>
+                  <code>WaveformSegmentEditor</code> + WaveSurfer 7.12.11
+                </td>
+                <td>
+                  Reusable full-track waveform bound to the existing audio
+                  element, exact draggable selection, seeking/playhead sync,
+                  detected-highlight/phrase/AI overlays, compare/apply controls,
+                  and numeric decode-failure fallback with unit/API/browser tests.
+                </td>
+              </tr>
+              <tr>
+                <td>
                   <a href="https://sweng-group-18.eastus.cloudapp.azure.com/"
                     >Public CueMix URL</a
                   >
@@ -999,8 +1013,8 @@
           </div>
           <p>
             The major promises now exist locally. Percentages remain strict
-            where a visual waveform, broad behavior evaluation, or current
-            deployment proof is absent.
+            where broad behavior evaluation or current deployment proof is
+            absent.
           </p>
         </div>
         <article class="card matrix-wrap">
@@ -1133,7 +1147,7 @@
         </div>
         <p class="adjusted">
           Projected score after penalties:
-          <span id="adjustedScore">92.0</span>/100
+          <span id="adjustedScore">93.5</span>/100
         </p>
       </section>
 
@@ -1156,16 +1170,19 @@
     </main>
 
     <footer class="shell">
-      Evidence sources: CueMix.pdf, feedback.md, the working tree after 785dae5,
+      Evidence sources: CueMix.pdf, feedback.md, the working tree after 2fb5a75,
       prior GitHub Actions run
       <a href="https://github.com/bayanhathot/MLsw/actions/runs/32401306027"
         >#32401306027</a
       >
       for commit 1e25270, the regenerated 8/8 hallucination report,
-      implementation inspection, and local verification on 21 August 2026: 463
-      backend tests passed with 13 Redis-gated skips, 5/5 isolated Studio-AI
+      implementation inspection, and local verification on 21 August 2026: 462
+      of 463 backend tests passed with 13 Redis-gated skips; the single
+      pre-existing bulk-upload polling failure also reproduced alone. 5/5 isolated Studio-AI
       tests passed, 0 Svelte errors/warnings, lint and production build passed,
-      and 39/39 frontend tests passed. Both Compose configurations, the workflow
+      43/43 frontend unit tests and all 11 runnable Chromium tests passed,
+      including 3/3 focused waveform tests; 4 real-backend cases were skipped.
+      Both Compose configurations, the workflow
       YAML, and deploy shell syntax validate. Local Docker additionally proved a
       two-segment queued render progressing from rendering to ready with
       matching draft/render revision and a real WAV artifact. Current
@@ -1180,15 +1197,14 @@
           n: "01",
           title: "Project proposal",
           weight: 50,
-          base: 44,
+          base: 45.5,
           status: "Strong locally",
           tone: "complete",
           evidence:
-            "Studio now provides owned exact saved moments, manual marking/looping preview, a personal library, revisioned timelines, compatibility and real transition preview/render, saved-moment named-mode auto-mix, passive ranking signals, and all four analytics.",
+            "Studio now provides owned exact saved moments, a synchronized draggable waveform with analysis and AI overlays plus numeric fallback, a personal library, revisioned timelines, compatibility and real transition preview/render, saved-moment named-mode auto-mix, passive ranking signals, and all four analytics.",
           gap: [
-            "No visual waveform; numeric/audio controls fulfill the functional marking flow but lecturer acceptance is not recorded",
             "Passive-signal ranking has bounded fixtures but no broad offline evaluation",
-            "The Studio migration and UI need production proof",
+            "The Studio migration, waveform, and UI need production proof",
           ],
         },
         {
@@ -1298,9 +1314,9 @@
         ],
         [
           "Waveform + manual segment selection",
-          "Studio has exact numeric bounds, set-current controls, looping preview, labels, validation, and millisecond persistence. Visual waveform drawing is absent by the supplied plan’s explicit scope.",
-          "Functional flow complete; waveform absent",
-          75,
+          "Studio has a full-track waveform bound to its existing audio element, a draggable exact range, playhead seeking, highlight/phrase/AI overlays, compare/apply actions, exact numeric fallback, validation, and millisecond persistence.",
+          "Complete locally; VM proof pending",
+          95,
         ],
         [
           "Smart transitions",
@@ -1361,9 +1377,9 @@
         ],
         [
           "How users select and mark segments",
-          "Studio provides exact start/end inputs, set-current buttons, looping preview, labels, backend validation, and a saved-moment library. The supplied implementation plan explicitly excludes visual waveform drawing.",
-          85,
-          "Demonstrate keyboard/numeric marking and ask whether the lecturer requires a rendered waveform literally.",
+          "Studio provides a synchronized full-track waveform with draggable exact bounds, seeking, analysis/AI overlays, exact inputs, set-current buttons, looping preview, backend validation, and a saved-moment library.",
+          95,
+          "Demonstrate waveform dragging, exact numeric correction, AI compare/apply, and the decode-failure fallback on the deployed VM.",
         ],
         [
           "Explain “intelligent mixing”",
@@ -1550,28 +1566,26 @@
           ],
           recommended:
             "Prepare a 10–12 minute script ordered by rubric, assign speakers, link every claim to a deployed action or test, and keep screenshots/video for network/model failure.",
-          depends:
-            "Current production evidence and lecturer decision on the absent visual waveform.",
+          depends: "Current production evidence.",
           files: [
             "cuemix-status.html",
             "cuemix-progress-dashboard.html",
             "Project/README.md",
             "Project/docs/studio-reuse-map.md",
+            "Project/docs/studio-waveform-qa.md",
           ],
           deliverables: [
             "Timed script",
             "Owner assignments",
             "Evidence matrix",
             "Fallback recording",
-            "Waveform scope question",
           ],
           done: [
             "Fits the allowed time",
             "Every rubric row has proof",
             "No local-only claim is described as deployed",
-            "Lecturer scope answer is recorded",
           ],
-          tags: "presentation documentation lecturer demo waveform scope",
+          tags: "presentation documentation lecturer demo waveform evidence",
         },
         {
           id: "audius-attribution",

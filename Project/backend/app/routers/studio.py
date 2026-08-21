@@ -48,12 +48,24 @@ from app.services.pipeline.interfaces import (
 router = APIRouter(prefix="/studio", tags=["studio"])
 
 
+def _phrase_boundaries_ms(values: list | None, duration_ms: int) -> list[int]:
+    """Expose persisted analysis markers in Studio's canonical millisecond unit."""
+    return sorted(
+        {
+            max(0, min(duration_ms, round(float(value) * 1000)))
+            for value in (values or [])
+            if isinstance(value, (int, float))
+        }
+    )
+
+
 def _studio_enabled() -> None:
     if os.getenv("STUDIO_ENABLED", "true").strip().lower() not in {"1", "true", "yes"}:
         raise HTTPException(status_code=404, detail="Studio not found.")
 
 
 def _catalog_read(row: CatalogTrack) -> StudioTrackRead:
+    duration_ms = row.duration_seconds * 1000
     return StudioTrackRead(
         source_type="catalog",
         source_track_id=str(row.id),
@@ -62,7 +74,7 @@ def _catalog_read(row: CatalogTrack) -> StudioTrackRead:
         album=row.album,
         genre=row.genre,
         vibe=row.vibe_label,
-        duration_ms=row.duration_seconds * 1000,
+        duration_ms=duration_ms,
         audio_url=public_api_url(f"/catalog/tracks/{row.id}/audio"),
         cover_url=(
             public_api_url(f"/catalog/tracks/{row.id}/cover")
@@ -72,6 +84,9 @@ def _catalog_read(row: CatalogTrack) -> StudioTrackRead:
         analysis_status=row.analysis_status,
         suggested_start_ms=(row.segment_start_second or 0) * 1000,
         suggested_end_ms=(row.segment_end_second or row.duration_seconds) * 1000,
+        phrase_boundaries_ms=_phrase_boundaries_ms(row.phrase_boundaries_json, duration_ms),
+        min_segment_ms=studio_service.MIN_SEGMENT_MS,
+        max_segment_ms=studio_service.MAX_SEGMENT_MS,
         bpm=row.bpm,
         musical_key=row.musical_key,
         camelot=row.camelot,
@@ -80,6 +95,7 @@ def _catalog_read(row: CatalogTrack) -> StudioTrackRead:
 
 def _external_read(row: ExternalTrack) -> StudioTrackRead:
     metadata = row.provider_metadata_json or {}
+    duration_ms = row.duration_sec * 1000
     return StudioTrackRead(
         source_type="audius",
         source_track_id=row.external_id,
@@ -88,12 +104,15 @@ def _external_read(row: ExternalTrack) -> StudioTrackRead:
         album=row.album,
         genre=row.genre,
         vibe=metadata.get("vibe"),
-        duration_ms=row.duration_sec * 1000,
+        duration_ms=duration_ms,
         audio_url=public_api_url(f"/studio/tracks/audius/{row.external_id}/audio"),
         cover_url=metadata.get("cover_url"),
         analysis_status=row.analysis_status,
         suggested_start_ms=(row.segment_start_second or 0) * 1000,
         suggested_end_ms=(row.segment_end_second or min(30, row.duration_sec)) * 1000,
+        phrase_boundaries_ms=_phrase_boundaries_ms(row.phrase_boundaries_json, duration_ms),
+        min_segment_ms=studio_service.MIN_SEGMENT_MS,
+        max_segment_ms=studio_service.MAX_SEGMENT_MS,
         bpm=row.bpm,
         musical_key=row.musical_key,
         camelot=row.camelot,

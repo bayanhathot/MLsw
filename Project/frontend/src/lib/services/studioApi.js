@@ -18,6 +18,11 @@ export function normalizeStudioTrack(value) {
 		analysisStatus: raw.analysis_status ?? null,
 		suggestedStartMs: raw.suggested_start_ms == null ? null : Number(raw.suggested_start_ms),
 		suggestedEndMs: raw.suggested_end_ms == null ? null : Number(raw.suggested_end_ms),
+		phraseBoundariesMs: Array.isArray(raw.phrase_boundaries_ms)
+			? raw.phrase_boundaries_ms.map(Number).filter(Number.isFinite)
+			: [],
+		minSegmentMs: Number(raw.min_segment_ms || 1000),
+		maxSegmentMs: Number(raw.max_segment_ms || raw.duration_ms || 300000),
 		bpm: raw.bpm == null ? null : Number(raw.bpm),
 		musicalKey: raw.musical_key ?? null,
 		camelot: raw.camelot ?? null

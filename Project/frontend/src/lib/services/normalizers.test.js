@@ -68,7 +68,10 @@ describe('backend response adapters', () => {
 			duration_ms: 123456,
 			audio_url: '/api/studio/tracks/audius/abc/audio',
 			suggested_start_ms: 1234,
-			suggested_end_ms: 5432
+			suggested_end_ms: 5432,
+			phrase_boundaries_ms: [1000, 2000],
+			min_segment_ms: 750,
+			max_segment_ms: 45000
 		});
 		const segment = normalizeSavedSegment({
 			id: 4,
@@ -88,7 +91,10 @@ describe('backend response adapters', () => {
 			sourceType: 'audius',
 			durationMs: 123456,
 			suggestedStartMs: 1234,
-			suggestedEndMs: 5432
+			suggestedEndMs: 5432,
+			phraseBoundariesMs: [1000, 2000],
+			minSegmentMs: 750,
+			maxSegmentMs: 45000
 		});
 		expect(track.audioUrl).toBe('/api/studio/tracks/audius/abc/audio');
 		expect(segment).toMatchObject({ startMs: 1234, endMs: 5432, label: 'Exact hook' });

@@ -4,6 +4,7 @@
 	import { tick } from 'svelte';
 
 	import AutoMixModeSelector from '$lib/components/AutoMixModeSelector.svelte';
+	import WaveformSegmentEditor from '$lib/components/WaveformSegmentEditor.svelte';
 	import {
 		addSegmentToMix,
 		autoMixFromSaved,
@@ -26,6 +27,7 @@
 		updateStudioTransition
 	} from '$lib/services/studioApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
+	import { normalizeWaveformRange } from '$lib/utils/waveform.js';
 
 	let loaded = $state(false);
 	let busy = $state('');
@@ -51,7 +53,7 @@
 	let autoMode = $state(null);
 
 	/** @type {HTMLAudioElement|undefined} */
-	let audioElement;
+	let audioElement = $state();
 	let previewUrl = $state('');
 	let previewStartMs = $state(0);
 	let previewEndMs = $state(0);
@@ -67,6 +69,7 @@
 	let assistantMessages = $state([]);
 	/** @type {import('$lib/types.js').StudioAssistantRecommendation|null} */
 	let recommendation = $state(null);
+	let compareNextAi = $state(true);
 	/** @type {number|null} */
 	let activeSavedSegmentId = $state(null);
 	/** @type {number|null} */
@@ -85,6 +88,14 @@
 		})
 	);
 	let selectionDurationMs = $derived(Math.max(0, Math.round((endSeconds - startSeconds) * 1000)));
+	let editingSelectedTrack = $derived(
+		Boolean(
+			selectedTrack &&
+			previewUrl &&
+			previewUrl === /** @type {import('$lib/types.js').StudioTrack} */ (selectedTrack).audioUrl
+		)
+	);
+	let waveformMarkers = $derived(buildWaveformMarkers());
 
 	$effect(() => {
 		if ($authStore.status === 'guest') void goto(resolve('/login'));
@@ -124,10 +135,9 @@
 	async function chooseTrack(track) {
 		selectedTrack = track;
 		activeSavedSegmentId = null;
-		startSeconds = (track.suggestedStartMs || 0) / 1000;
-		endSeconds = Math.min(
-			track.durationMs / 1000,
-			(track.suggestedEndMs || Math.min(track.durationMs, 30_000)) / 1000
+		setSelectionMs(
+			track.suggestedStartMs || 0,
+			track.suggestedEndMs || Math.min(track.durationMs, 30_000)
 		);
 		segmentLabel = `${track.title} moment`;
 		await cueAudio(
@@ -170,11 +180,89 @@
 	}
 
 	function setStartHere() {
-		startSeconds = Math.min(currentMs / 1000, Math.max(0, endSeconds - 0.5));
+		setSelectionMs(currentMs, Math.round(endSeconds * 1000), 'start');
 	}
 
 	function setEndHere() {
-		endSeconds = Math.max(currentMs / 1000, startSeconds + 0.5);
+		setSelectionMs(Math.round(startSeconds * 1000), currentMs, 'end');
+	}
+
+	/** @param {number} startMs @param {number} endMs @param {'start'|'end'|'range'} [anchor] */
+	function setSelectionMs(startMs, endMs, anchor = 'range') {
+		const duration = selectedTrack?.durationMs || Math.max(startMs, endMs, 1);
+		const normalized = normalizeWaveformRange(
+			startMs,
+			endMs,
+			duration,
+			selectedTrack?.minSegmentMs || 1000,
+			selectedTrack?.maxSegmentMs || duration,
+			anchor
+		);
+		startSeconds = normalized.startMs / 1000;
+		endSeconds = normalized.endMs / 1000;
+		if (selectedTrack && previewUrl === selectedTrack.audioUrl) {
+			previewStartMs = normalized.startMs;
+			previewEndMs = normalized.endMs;
+		}
+	}
+
+	/** @param {number} positionMs */
+	function seekFromWaveform(positionMs) {
+		if (!audioElement) return;
+		const bounded = Math.max(0, Math.min(selectedTrack?.durationMs || positionMs, positionMs));
+		audioElement.currentTime = bounded / 1000;
+		currentMs = bounded;
+	}
+
+	function buildWaveformMarkers() {
+		if (!selectedTrack) return [];
+		/** @type {{kind:string,startMs:number,endMs?:number,label:string}[]} */
+		const markers = (selectedTrack.phraseBoundariesMs || []).map((value) => ({
+			kind: 'phrase',
+			startMs: value,
+			label: ''
+		}));
+		if (
+			selectedTrack.suggestedStartMs != null &&
+			selectedTrack.suggestedEndMs != null &&
+			selectedTrack.suggestedEndMs > selectedTrack.suggestedStartMs
+		) {
+			markers.push({
+				kind: 'highlight',
+				startMs: selectedTrack.suggestedStartMs,
+				endMs: selectedTrack.suggestedEndMs,
+				label: 'Detected highlight'
+			});
+		}
+		const recommendationCandidateId = recommendation?.candidate_id;
+		const candidate = recommendationCandidateId
+			? savedSegments.find((segment) => segment.id === recommendationCandidateId)
+			: null;
+		if (
+			candidate &&
+			candidate.sourceType === selectedTrack.sourceType &&
+			candidate.sourceTrackId === selectedTrack.sourceTrackId &&
+			recommendation?.proposed_start_ms != null &&
+			recommendation?.proposed_end_ms != null
+		) {
+			markers.push({
+				kind: 'ai',
+				startMs: recommendation.proposed_start_ms,
+				endMs: recommendation.proposed_end_ms,
+				label: 'AI suggestion'
+			});
+		}
+		return markers;
+	}
+
+	/** @param {number} value */
+	function handleWaveformStart(value) {
+		setSelectionMs(value, Math.round(endSeconds * 1000), 'start');
+	}
+
+	/** @param {number} value */
+	function handleWaveformEnd(value) {
+		setSelectionMs(Math.round(startSeconds * 1000), value, 'end');
 	}
 
 	async function saveSelection() {
@@ -199,11 +287,44 @@
 		}
 	}
 
-	/** @param {import('$lib/types.js').SavedSegment} segment @param {boolean} [replay] */
-	async function previewSaved(segment, replay = false) {
+	/**
+	 * @param {import('$lib/types.js').SavedSegment} segment
+	 * @param {boolean} [replay]
+	 * @param {boolean} [autoplay]
+	 */
+	async function previewSaved(segment, replay = false, autoplay = true) {
 		activeSavedSegmentId = segment.id;
 		skipReportedSegmentId = null;
-		await cueAudio(segment.sourceAudioUrl, segment.startMs, segment.endMs);
+		const knownTrack = tracks.find(
+			(track) =>
+				track.sourceType === segment.sourceType && track.sourceTrackId === segment.sourceTrackId
+		);
+		selectedTrack =
+			knownTrack ||
+			/** @type {import('$lib/types.js').StudioTrack} */ ({
+				sourceType: segment.sourceType,
+				sourceTrackId: segment.sourceTrackId,
+				title: segment.title,
+				artist: segment.artist,
+				album: segment.album,
+				genre: segment.genre,
+				vibe: segment.vibe,
+				durationMs: segment.trackDurationMs,
+				audioUrl: segment.sourceAudioUrl,
+				coverUrl: segment.coverUrl,
+				analysisStatus: null,
+				suggestedStartMs: null,
+				suggestedEndMs: null,
+				phraseBoundariesMs: [],
+				minSegmentMs: 1000,
+				maxSegmentMs: Math.min(300000, segment.trackDurationMs),
+				bpm: segment.bpm,
+				musicalKey: segment.musicalKey,
+				camelot: segment.camelot
+			});
+		setSelectionMs(segment.startMs, segment.endMs);
+		segmentLabel = segment.label;
+		await cueAudio(segment.sourceAudioUrl, segment.startMs, segment.endMs, autoplay);
 		if (replay) void recordStudioBehavior('segment_replay', segment.id).catch(() => {});
 	}
 
@@ -400,6 +521,7 @@
 				activeSavedSegmentId
 			);
 			recommendation = result.recommendation;
+			compareNextAi = true;
 			assistantMessages = [
 				...assistantMessages,
 				/** @type {{role:'assistant',content:string}} */ ({
@@ -428,6 +550,7 @@
 					end_ms: recommendation.proposed_end_ms
 				});
 				savedSegments = savedSegments.map((row) => (row.id === updated.id ? updated : row));
+				await previewSaved(updated, false, false);
 			} else if (
 				recommendation.recommendation_type === 'mix_order' &&
 				activeMix &&
@@ -456,6 +579,56 @@
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Recommendation was rejected.';
 		}
+	}
+
+	async function playAiRecommendation() {
+		if (
+			!recommendation?.candidate_id ||
+			recommendation.proposed_start_ms == null ||
+			recommendation.proposed_end_ms == null
+		)
+			return;
+		const candidate = savedSegments.find((segment) => segment.id === recommendation?.candidate_id);
+		if (!candidate) return;
+		if (
+			!selectedTrack ||
+			selectedTrack.sourceType !== candidate.sourceType ||
+			selectedTrack.sourceTrackId !== candidate.sourceTrackId
+		) {
+			await previewSaved(candidate, false, false);
+		}
+		await cueAudio(
+			candidate.sourceAudioUrl,
+			recommendation.proposed_start_ms,
+			recommendation.proposed_end_ms
+		);
+	}
+
+	async function compareRecommendation() {
+		if (compareNextAi) {
+			await playAiRecommendation();
+			notice = 'Playing the AI suggestion. Press Compare again to hear your range.';
+		} else if (selectedTrack) {
+			await cueAudio(
+				selectedTrack.audioUrl,
+				Math.round(startSeconds * 1000),
+				Math.round(endSeconds * 1000)
+			);
+			notice = 'Playing your current range.';
+		}
+		compareNextAi = !compareNextAi;
+	}
+
+	async function keepMine() {
+		recommendation = null;
+		compareNextAi = true;
+		if (!selectedTrack) return;
+		await cueAudio(
+			selectedTrack.audioUrl,
+			Math.round(startSeconds * 1000),
+			Math.round(endSeconds * 1000),
+			false
+		);
 	}
 
 	/** @param {number|null|undefined} ms */
@@ -571,8 +744,26 @@
 				onseeked={handleTimeUpdate}
 				onpause={handlePreviewPause}
 			></audio>
+			{#if selectedTrack && editingSelectedTrack}
+				<WaveformSegmentEditor
+					media={audioElement}
+					audioUrl={selectedTrack.audioUrl}
+					durationMs={selectedTrack.durationMs}
+					startMs={Math.round(startSeconds * 1000)}
+					endMs={Math.round(endSeconds * 1000)}
+					currentTimeMs={currentMs}
+					minDurationMs={selectedTrack.minSegmentMs}
+					maxDurationMs={selectedTrack.maxSegmentMs}
+					analysisMarkers={waveformMarkers}
+					onStartChange={handleWaveformStart}
+					onEndChange={handleWaveformEnd}
+					onSeek={seekFromWaveform}
+				/>
+			{:else if selectedTrack}
+				<p class="waveform-away">The waveform returns when you play or edit the selected track.</p>
+			{/if}
 			<div class="time-readout">
-				<strong>{formatTime(currentMs)}</strong><span
+				<strong data-testid="studio-current-time">{formatTime(currentMs)}</strong><span
 					>/ {formatTime(selectedTrack?.durationMs || previewEndMs)}</span
 				>
 			</div>
@@ -581,12 +772,31 @@
 					>Start (seconds)<input
 						type="number"
 						min="0"
-						step="0.1"
-						bind:value={startSeconds}
+						step="0.001"
+						value={startSeconds}
+						data-testid="segment-start-input"
+						oninput={(event) =>
+							setSelectionMs(
+								Math.round(Number(event.currentTarget.value) * 1000),
+								Math.round(endSeconds * 1000),
+								'start'
+							)}
 					/></label
 				><button onclick={setStartHere}>Set current as start</button>
 				<label
-					>End (seconds)<input type="number" min="0" step="0.1" bind:value={endSeconds} /></label
+					>End (seconds)<input
+						type="number"
+						min="0"
+						step="0.001"
+						value={endSeconds}
+						data-testid="segment-end-input"
+						oninput={(event) =>
+							setSelectionMs(
+								Math.round(startSeconds * 1000),
+								Math.round(Number(event.currentTarget.value) * 1000),
+								'end'
+							)}
+					/></label
 				><button onclick={setEndHere}>Set current as end</button>
 			</div>
 			<div class="duration-card">
@@ -663,12 +873,17 @@
 								>{recommendation.reason_tags.join(' · ')}</small
 							>{/if}
 						<div class="row-actions">
+							{#if recommendation.recommendation_type === 'segment_bounds'}
+								<button onclick={playAiRecommendation}>Play AI</button><button
+									onclick={compareRecommendation}>Compare</button
+								>
+							{/if}
 							<button
 								class="accent"
 								disabled={recommendation.recommendation_type === 'unavailable' ||
 									recommendation.recommendation_type === 'explanation'}
 								onclick={applyRecommendation}>Apply after validation</button
-							><button onclick={() => (recommendation = null)}>Keep mine</button>
+							><button onclick={keepMine}>Keep Mine</button>
 						</div>
 					</article>{/if}
 			{/if}
@@ -1115,6 +1330,15 @@
 	}
 	.guard-note {
 		line-height: 1.5;
+	}
+	.waveform-away {
+		margin: 8px 0 14px;
+		padding: 10px;
+		border: 1px dashed #29415f;
+		border-radius: 12px;
+		color: #7f94b0;
+		font-size: 11px;
+		text-align: center;
 	}
 	.assistant-panel.collapsed {
 		align-self: start;

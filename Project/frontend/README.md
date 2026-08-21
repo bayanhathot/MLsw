@@ -22,7 +22,9 @@ The production image serves the static build with unprivileged Nginx. Nginx prox
 - `/library` — authenticated draft generation, editing, publishing, and saved mixes.
 - `/studio` — authenticated exact-moment library, manual mix timeline,
   transition controls/previews, immutable revision publishing, saved-moment
-  auto-mix, and confirm-before-apply AI suggestions. No waveform is rendered.
+  auto-mix, a synchronized draggable waveform with analysis/AI overlays, and
+  confirm-before-apply AI suggestions. Exact numeric controls remain available
+  as the accessible/mobile and waveform-error fallback.
 - `/community` — Friends / Explore / Discussions / People: posts, anonymous mode, attachments, comments, reversible votes, and the social graph.
 - `/messages` — authenticated direct messages, attachments, durable notifications, and live notification refresh.
 - `/users/[username]` — public listener profiles; `/profile` is the authenticated owner view with Music Identity analytics.

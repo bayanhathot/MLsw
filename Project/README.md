@@ -63,7 +63,7 @@ docker compose exec -e ENABLE_COLD_SEED=true backend python -m app.seed
 | Catalog track upload with async BPM/key/segment analysis | Implemented |
 | Fuzzy artist-name catalog search (Postgres pg_trgm, pure-Python fallback) | Implemented |
 | Mix library, publishing, likes, saves | Implemented |
-| CueMix Studio: exact saved moments, manual timeline, transition preview, render/publish, saved-segment auto-mix | Implemented; waveform display is explicitly out of scope |
+| CueMix Studio: waveform-assisted exact saved moments, manual timeline, transition preview, render/publish, saved-segment auto-mix | Implemented locally |
 | Studio AI assistant | Implemented as an isolated, internal, fail-open service sharing Ollama + Redis; recommendations require user confirmation |
 | Community: Friends/Explore/Discussions/People, posts/comments/votes, mix sharing, attachments | Implemented |
 | Public profiles, mutual friends, friend-only DMs, live/durable notifications, block/report | Implemented |
@@ -104,6 +104,16 @@ have deterministic compatibility factors and real audio previews. A render is
 tied to one revision and runs on the existing bounded media queue; publishing
 requires the current revision and makes that version immutable. Editing
 continues by duplicating it into a new draft.
+
+The segment editor renders a full-track WaveSurfer waveform against Studio's
+existing audio element. Its draggable selection, playhead seeking, exact
+numeric fields, and set-current buttons share one millisecond range. Persisted
+highlight/phrase analysis appears as overlays, and grounded assistant bounds
+can be played, compared, applied, or rejected without silently replacing the
+user's selection. The server remains authoritative for ownership and bounds;
+the numeric controls remain usable if waveform loading or decoding fails.
+The ownership contract and deployment acceptance matrix are recorded in
+[docs/studio-waveform-qa.md](docs/studio-waveform-qa.md).
 
 Audius moments can be saved, arranged, previewed, and privately rendered, but
 provider audio cannot be republished as a CueMix-owned public asset. Public

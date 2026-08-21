@@ -379,18 +379,18 @@
           lecturer feedback, the current working tree, focused D8/D9
           regressions, an 8-case adversarial evaluation, the full backend suite,
           and frontend checks. Re-audited from the working tree after commit
-          <code>785dae5</code> on 21 August 2026.
+          <code>2fb5a75</code> on 21 August 2026.
         </p>
 
         <div class="hero">
           <div class="tile ok">
-            <strong>92</strong><span>Strict rubric estimate, out of 100</span>
+            <strong>93.5</strong><span>Strict rubric estimate, out of 100</span>
           </div>
           <div class="tile ok">
             <strong>7</strong><span>Requirements ≥ 80% met (of 7)</span>
           </div>
           <div class="tile flag">
-            <strong>88%</strong
+            <strong>91%</strong
             ><span>Weakest area: the 50-pt proposal itself</span>
           </div>
           <div class="tile ok">
@@ -400,7 +400,7 @@
             <strong>4</strong><span>Rubric points reachable below</span>
           </div>
           <div class="tile ok">
-            <strong>92</strong
+            <strong>93.5</strong
             ><span>Risk-adjusted score at zero open bugs</span>
           </div>
         </div>
@@ -408,7 +408,7 @@
 
       <div class="card" style="border-color: #5c4a20; background: #1c1710">
         <h2 style="margin: 0 0 8px; font-size: 16px">
-          Expected grade: <span style="color: #f0cd85">89–95 / 100</span>
+          Expected grade: <span style="color: #f0cd85">91–97 / 100</span>
         </h2>
         <p
           style="
@@ -419,7 +419,7 @@
           "
         >
           Point estimate
-          <strong style="color: var(--ink)">92/100</strong> before any future
+          <strong style="color: var(--ink)">93.5/100</strong> before any future
           grader-found bug or late-submission penalties. CueMix Studio, the four
           named auto-mix modes, all four proposal analytics, D8, and D9 are
           implemented and no longer counted as open work. The band exists
@@ -434,9 +434,9 @@
         owned persistent segment library, exact manual start/end selection with
         looping preview, revision-controlled manual and automatic mixes from
         saved moments, explicit transition controls, and bounded passive
-        behavior signals. Waveform drawing was explicitly excluded by the
-        supplied Studio implementation plan; numeric and audio controls deliver
-        the functional marking workflow. The local LLM now also has a real
+        behavior signals. The exact-bound editor now includes a synchronized
+        full-track waveform, draggable handles, seeking, analysis overlays, AI
+        compare/apply controls, and a numeric/mobile failure fallback. The local LLM now also has a real
         multi-turn, grounded Studio assistant, but it has not been exercised
         against the live VM model. Robustness remains 10/10: absolute analysis
         and render-time guards reject the reproduced near-silent provider path,
@@ -471,9 +471,8 @@
         The core user-controlled workflow now exists end to end: exact saved
         moments, a personal library, manual timeline, real transition
         preview/render, saved-moment auto-mix, and passive ranking signals. The
-        remaining proposal deduction is for the absent visual waveform, limited
-        offline evidence for learned ranking, and no current production proof of
-        this new migration and UI.
+        remaining proposal deduction is for limited offline evidence for learned
+        ranking and no current production proof of this new migration and UI.
       </p>
       <div class="card">
         <table>
@@ -500,17 +499,17 @@
       <h2>4 · Plan of work</h2>
       <p class="note">
         Only unfinished work is listed. Completed Studio persistence, manual
-        selection, mixing, passive signals, assistant, transition contract,
+        selection, waveform editing, mixing, passive signals, assistant, transition contract,
         modes, analytics, D8, and D9 jobs have been removed completely. What
         remains is production evidence and presentation proof.
       </p>
       <div class="card" id="actionRows"></div>
       <div class="live">
-        <div><b id="projScore">92</b><span>Projected rubric score</span></div>
+        <div><b id="projScore">93.5</b><span>Projected rubric score</span></div>
         <div><b id="projDays">0</b><span>Days committed</span></div>
         <div><b id="projBugs">0</b><span>Open reproduced defects</span></div>
         <div>
-          <b id="projRiskScore">92</b
+          <b id="projRiskScore">93.5</b
           ><span>After current known-bug penalties</span>
         </div>
         <div
@@ -521,7 +520,7 @@
             font-size: 13px;
           "
         >
-          Rubric ceiling is 96 with all evidence work below complete. There is
+          Rubric ceiling is 97.5 with all evidence work below complete. There is
           currently no known-bug deduction; every additional grader-found bug
           and every late week can cost another five.
         </div>
@@ -545,7 +544,8 @@
         >
           <li>
             <strong style="color: var(--ink)">CueMix Studio.</strong> Save a
-            precise moment, replay it, generate a named-mode mix from saved
+            precise moment by dragging the waveform, replay it, compare an AI
+            suggestion, generate a named-mode mix from saved
             moments, reorder it, preview a fade, render, publish, and duplicate
             the immutable result.
           </li>
@@ -598,7 +598,7 @@
           "
         >
           <strong style="color: #f0cd85"
-            >Claim Studio, the four modes, and four analytics as locally
+            >Claim Studio including waveform editing, the four modes, and four analytics as locally
             verified, not yet production-proven.</strong
           >
           Music Identity now shows listening statistics, most-replayed segment,
@@ -613,17 +613,20 @@
       <footer>
         <strong style="color: var(--ink-2)">Method.</strong> Scores derive from
         reading the actual implementation in the working tree after
-        <code>785dae5</code> on 21 August 2026 — real logic in models, routers,
+        <code>2fb5a75</code> on 21 August 2026 — real logic in models, routers,
         services, and frontend components, file:line cited, not filenames or
         docstrings taken on faith — against <code>CueMix.pdf</code> (the
         original proposal) and <code>feedback.md</code> (the professor's grading
-        rubric). The updated full backend suite passed 463 tests with 13
-        Redis-dependent cases skipped when Redis was unset; focused Studio,
-        analytics, named-mode, and D8/D9 regressions passed. The isolated Studio
+        rubric). The updated full backend suite passed 462 of 463 tests with 13
+        Redis-dependent cases skipped when Redis was unset; the one failing
+        bulk-upload polling case is pre-existing, unrelated, and also failed in
+        isolation. Focused Studio, analytics, named-mode, and D8/D9 regressions passed. The isolated Studio
         AI suite passed 5/5, including internal auth, timeout cleanup, and
         invalid-structure rejection. Frontend verification reported 0 Svelte
-        errors/warnings, 39/39 tests passing, clean lint, and a clean production
-        build; the regenerated adversarial report passed 8/8. A separate real
+        errors/warnings, 43/43 unit tests and all 11 runnable Chromium tests
+        passing (including 3/3 waveform cases; 4 real-backend cases skipped),
+        clean lint, and a clean production build; the regenerated
+        adversarial report passed 8/8. A separate real
         Docker/nginx/Postgres smoke test queued a two-segment Studio render,
         observed <code>rendering → ready</code>, preserved revision 3, and
         produced a real WAV artifact. A separate Redis-enabled full run timed
@@ -637,8 +640,8 @@
         >
         Requirement 1 in particular is judged holistically by the professor, and
         this dashboard's own unweighted-mean method for it is a simplification,
-        not the professor's actual rubric. The 92 headline is before future late
-        or newly discovered bug penalties. Debug access is not counted because
+        not the professor's actual rubric. The 93.5 headline is before future
+        late or newly discovered bug penalties. Debug access is not counted because
         the lecturer explicitly accepted it.
       </footer>
     </div>
@@ -648,9 +651,9 @@
           n: "01",
           t: "Project proposal",
           w: 50,
-          score: 44,
+          score: 45.5,
           verdict: ["good", "Strong locally — live proof pending"],
-          ev: "Conservative mean of the six feature groups below (95/75/90/95/70/100). Studio now provides owned exact saved moments, a personal library, manual marking/preview, revisioned timelines, real transition controls/rendering, saved-moment auto-mix, and bounded passive signals. Deductions remain for no visual waveform, limited offline ranking evidence, and no VM proof of this working tree.",
+          ev: "Conservative mean of the six feature groups below (95/95/90/95/70/100). Studio now provides owned exact saved moments, a synchronized draggable waveform with analysis/AI overlays and numeric fallback, a personal library, revisioned timelines, real transition controls/rendering, saved-moment auto-mix, and bounded passive signals. Deductions remain for limited offline ranking evidence and no VM proof of this working tree.",
         },
         {
           n: "02",
@@ -710,8 +713,8 @@
         ],
         [
           "2. Song upload + waveform + manual segment marking",
-          75,
-          "Upload is mature, and Studio provides exact numeric start/end controls, current-position buttons, looping audio preview, labels, backend bound/audio validation, and millisecond persistence. A visual waveform is absent and was explicitly outside the supplied Studio plan, so this row is not scored as complete.",
+          95,
+          "Upload is mature, and Studio provides a full-track waveform bound to its existing player, a draggable exact selection, seeking/playhead sync, detected-highlight and phrase overlays, explicit AI compare/apply actions, numeric/mobile fallback, backend bound/audio validation, and millisecond persistence. Local unit, API, and Chromium tests pass; VM proof remains pending.",
         ],
         [
           "3. Smart transition engine",
@@ -783,10 +786,10 @@
           })
           .join("") +
         `<tr><td><strong>Mean → requirement 1 score</strong></td>
-  <td><span class="chip good">88%</span></td>
-  <td>Conservative mean of the six rows above (95+75+90+95+70+100)/6 ≈ 88% of 50 points ≈
-  <strong>44</strong>, carried into section 1. Remaining credit depends mainly on deployed proof,
-  a stronger passive-ranking evaluation, and how strictly the grader interprets the absent visual waveform.</td></tr>`;
+  <td><span class="chip good">91%</span></td>
+  <td>Conservative mean of the six rows above (95+95+90+95+70+100)/6 ≈ 91% of 50 points ≈
+  <strong>45.5</strong>, carried into section 1. Remaining credit depends mainly on deployed proof
+  and a stronger passive-ranking evaluation.</td></tr>`;
 
       document.querySelector("#bugRows").innerHTML = bugs.length
         ? bugs

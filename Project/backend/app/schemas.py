@@ -223,6 +223,9 @@ class StudioTrackRead(BaseModel):
     analysis_status: str | None = None
     suggested_start_ms: int | None = None
     suggested_end_ms: int | None = None
+    phrase_boundaries_ms: list[int] = Field(default_factory=list)
+    min_segment_ms: int = Field(gt=0)
+    max_segment_ms: int = Field(gt=0)
     bpm: float | None = None
     musical_key: str | None = None
     camelot: str | None = None

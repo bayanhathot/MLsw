@@ -30,6 +30,9 @@
  * @property {string|null} analysisStatus
  * @property {number|null} suggestedStartMs
  * @property {number|null} suggestedEndMs
+ * @property {number[]} phraseBoundariesMs
+ * @property {number} minSegmentMs
+ * @property {number} maxSegmentMs
  * @property {number|null} bpm
  * @property {string|null} musicalKey
  * @property {string|null} camelot

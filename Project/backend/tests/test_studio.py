@@ -76,6 +76,9 @@ def test_saved_segment_persists_validates_bounds_and_enforces_ownership(
     search = client.get("/studio/tracks/search?q=Studio Source")
     assert search.status_code == 200
     assert search.json()[0]["suggested_start_ms"] == 10_000
+    assert search.json()[0]["phrase_boundaries_ms"] == [0, 16_000, 32_000, 48_000]
+    assert search.json()[0]["min_segment_ms"] == studio_service.MIN_SEGMENT_MS
+    assert search.json()[0]["max_segment_ms"] == studio_service.MAX_SEGMENT_MS
 
     saved = _save(client, track.id, 1234, 5432, "Exact hook")
     assert saved["start_ms"] == 1234
