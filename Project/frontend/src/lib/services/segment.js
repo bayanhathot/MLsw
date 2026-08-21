@@ -15,6 +15,13 @@ function text(value, fallback = '') {
 	return typeof value === 'string' && value.trim() ? value : fallback;
 }
 
+/** @param {unknown} value */
+function nullableNumber(value) {
+	if (value === null || value === undefined || value === '') return null;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
  * @param {Record<string, any>} segment
  * @param {number} index
@@ -33,6 +40,9 @@ export function normalizeSegment(segment, index) {
 		transitionToNext: text(segment.transitionToNext ?? segment.transition_to_next, 'crossfade'),
 		source: text(segment.source),
 		sourceTrackId: text(segment.sourceTrackId ?? segment.source_track_id),
+		trackDurationSeconds: nullableNumber(
+			segment.trackDurationSeconds ?? segment.track_duration_seconds
+		),
 		genre: text(segment.genre),
 		vibe: text(segment.vibe)
 	};

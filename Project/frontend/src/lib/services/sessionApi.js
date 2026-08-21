@@ -2,6 +2,7 @@
 
 import { apiRequest, backendMediaUrl } from './api.js';
 import { normalizeSegment } from './segment.js';
+import { isAutoMixMode } from '../constants/autoMixModes.js';
 
 /**
  * @param {unknown} value
@@ -43,6 +44,7 @@ export function normalizeSession(value, fallbackPrompt) {
 	return {
 		id: text(raw.id ?? raw.session_id, String(raw.mix_id ?? raw.id ?? '')),
 		prompt: text(raw.prompt, fallbackPrompt),
+		mode: isAutoMixMode(raw.mode) ? raw.mode : null,
 		vibeLabel,
 		nowPlaying,
 		audioUrl: backendMediaUrl(text(raw.audioUrl ?? raw.audio_url, firstSegment?.audioUrl || '')),
@@ -66,12 +68,12 @@ export function normalizeSession(value, fallbackPrompt) {
 }
 
 /**
- * @param {{ prompt: string, signal?: AbortSignal }} params
+ * @param {{ prompt: string, mode?: import('../types.js').AutoMixMode | null, signal?: AbortSignal }} params
  */
-export async function startSession({ prompt, signal }) {
+export async function startSession({ prompt, mode = null, signal }) {
 	const response = await apiRequest('/sessions/start', {
 		method: 'POST',
-		body: JSON.stringify({ prompt }),
+		body: JSON.stringify({ prompt, mode }),
 		// Runs the full pipeline (VibeUnderstander -> CandidateRetriever ->
 		// SegmentSelector -> TransitionPlanner -> AudioRenderer); the Ollama
 		// stage alone can take up to OLLAMA_TIMEOUT_SECONDS before falling

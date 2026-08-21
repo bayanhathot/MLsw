@@ -28,6 +28,7 @@ def create_test_mix(db_session, owner_id, *, published=True):
             transition_to_next="crossfade",
             source="audius",
             source_track_id="nova-1",
+            track_duration_seconds=180,
             genre="Electronic",
             vibe="Late Night",
         ),
@@ -42,6 +43,7 @@ def create_test_mix(db_session, owner_id, *, published=True):
             transition_to_next="end",
             source="audius",
             source_track_id="echo-1",
+            track_duration_seconds=240,
             genre="Hip-Hop",
             vibe="Energetic",
         ),
@@ -78,11 +80,20 @@ def test_new_user_music_identity_is_private_by_default(client, db_session):
     body = response.json()
     assert body["is_public"] is False
     assert body["summary"]["total_listening_seconds"] == 0
+    assert body["segment_analytics"] == {
+        "most_replayed_segment": None,
+        "average_segment_length_seconds": None,
+        "time_saved_seconds": 0,
+        "segment_play_count": 0,
+        "time_saved_play_count": 0,
+    }
     assert body["artists"] == []
     assert body["listening_dna"]["status"] == "not_generated"
 
 
-def test_listening_event_is_server_resolved_idempotent_and_aggregated(client, db_session):
+def test_listening_event_is_server_resolved_idempotent_and_aggregated(
+    client, db_session
+):
     user = register_and_login(client)
     mix, segments = create_test_mix(db_session, user["id"])
 
@@ -91,6 +102,7 @@ def test_listening_event_is_server_resolved_idempotent_and_aggregated(client, db
     assert first.json()["artist_name"] == "Nova"
     assert first.json()["genre"] == "Electronic"
     assert first.json()["completion_ratio"] == 0.6667
+    assert first.json()["track_duration_seconds"] == 180
 
     # Retrying the same client event is idempotent rather than double-counted.
     duplicate = post_event(client, mix, segments[0], 30, "evt-music-001", skipped=True)
@@ -109,11 +121,52 @@ def test_listening_event_is_server_resolved_idempotent_and_aggregated(client, db
     assert identity["artists"][0]["percentage"] == 83.3
     assert identity["summary"]["top_genre"]["name"] == "Electronic"
     assert identity["summary"]["top_vibe"]["name"] == "Late Night"
+    assert identity["segment_analytics"] == {
+        "most_replayed_segment": {
+            "segment_id": segments[0].id,
+            "title": "Blue Hour",
+            "artist": "Nova",
+            "start_second": 0,
+            "end_second": 45,
+            "play_count": 2,
+            "replay_count": 1,
+            "seconds_listened": 75,
+        },
+        "average_segment_length_seconds": 45.0,
+        "time_saved_seconds": 510,
+        "segment_play_count": 3,
+        "time_saved_play_count": 3,
+    }
     assert identity["listening_trend"]
     assert identity["recent_listening"][0]["kind"] == "mix"
 
+    # Every new proposal metric uses the exact same period filter as the
+    # established Music Identity totals. Moving one of the replayed events
+    # outside 30 days removes the replay winner and its time-saved amount.
+    first_row = (
+        db_session.query(ListeningEvent)
+        .filter_by(client_event_id="evt-music-001")
+        .one()
+    )
+    first_row.started_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        days=40
+    )
+    db_session.commit()
 
-def test_listening_event_rejects_foreign_draft_and_mismatched_segment(client, second_client, db_session):
+    recent = client.get("/users/me/music-identity?period=30d").json()
+    assert recent["summary"]["total_listening_seconds"] == 60
+    assert recent["segment_analytics"] == {
+        "most_replayed_segment": None,
+        "average_segment_length_seconds": 45.0,
+        "time_saved_seconds": 360,
+        "segment_play_count": 2,
+        "time_saved_play_count": 2,
+    }
+
+
+def test_listening_event_rejects_foreign_draft_and_mismatched_segment(
+    client, second_client, db_session
+):
     owner = register_and_login(client)
     other = register_and_login(second_client, "bob", "bob@example.com")
     draft, segments = create_test_mix(db_session, owner["id"], published=False)
@@ -172,7 +225,9 @@ def test_listening_event_rejects_future_timestamps(client, db_session):
     assert db_session.query(ListeningEvent).filter_by(user_id=user["id"]).count() == 0
 
 
-def test_public_music_identity_privacy_and_public_profile_never_expose_email(client, second_client, db_session):
+def test_public_music_identity_privacy_and_public_profile_never_expose_email(
+    client, second_client, db_session
+):
     alice = register_and_login(client)
     mix, segments = create_test_mix(db_session, alice["id"])
     assert post_event(client, mix, segments[0], 20, "evt-public-001").status_code == 201
@@ -191,9 +246,7 @@ def test_public_music_identity_privacy_and_public_profile_never_expose_email(cli
     assert "email" not in public_profile.json()
     assert public_profile.json()["music_identity_public"] is False
 
-    changed = client.patch(
-        "/users/me/music-identity/privacy", json={"is_public": True}
-    )
+    changed = client.patch("/users/me/music-identity/privacy", json={"is_public": True})
     assert changed.status_code == 200
     assert changed.json()["is_public"] is True
 
@@ -204,13 +257,21 @@ def test_public_music_identity_privacy_and_public_profile_never_expose_email(cli
     assert body["music_identity"]["summary"]["total_listening_seconds"] == 20
     assert "email" not in str(body).lower()
 
-    assert client.patch(
-        "/users/me/music-identity/privacy", json={"is_public": False}
-    ).json()["is_public"] is False
-    assert second_client.get("/users/alice/music-identity").json()["music_identity"] is None
+    assert (
+        client.patch(
+            "/users/me/music-identity/privacy", json={"is_public": False}
+        ).json()["is_public"]
+        is False
+    )
+    assert (
+        second_client.get("/users/alice/music-identity").json()["music_identity"]
+        is None
+    )
 
 
-def test_session_playback_can_be_recorded_without_client_supplied_track_metadata(client):
+def test_session_playback_can_be_recorded_without_client_supplied_track_metadata(
+    client,
+):
     register_and_login(client)
     session = client.post("/sessions/start", json={"prompt": "high energy gym"}).json()
     response = client.post(

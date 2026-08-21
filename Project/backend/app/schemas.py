@@ -7,6 +7,7 @@ never reach the service layer.
 """
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -26,6 +27,7 @@ class UserCreate(BaseModel):
     @classmethod
     def normalize_email(cls, value: EmailStr) -> str:
         return str(value).strip().lower()
+
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -60,8 +62,18 @@ class NonBlankModel(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class AutoMixMode(StrEnum):
+    """The four literal auto-mix modes promised by the project proposal."""
+
+    WORKOUT = "workout"
+    RELAXATION = "relaxation"
+    EMOTIONAL_TARAB = "emotional_tarab"
+    PARTY = "party"
+
+
 class StartSessionRequest(NonBlankModel):
     prompt: str = Field(min_length=1, max_length=300)
+    mode: AutoMixMode | None = None
 
 
 class SessionFeedbackRequest(NonBlankModel):
@@ -86,6 +98,7 @@ class ReasoningRead(BaseModel):
 class SessionRead(BaseModel):
     id: str
     prompt: str
+    mode: AutoMixMode | None = None
     status: Literal["playing", "stopped"]
     vibeLabel: str
     audioUrl: str
@@ -113,6 +126,7 @@ class PrepareNextRead(BaseModel):
 
 class StartMixRequest(NonBlankModel):
     prompt: str = Field(min_length=1, max_length=300)
+    mode: AutoMixMode | None = None
 
 
 class MixSegmentRead(BaseModel):
@@ -129,6 +143,7 @@ class MixSegmentRead(BaseModel):
     transition_to_next: str
     source: str
     source_track_id: str
+    track_duration_seconds: int | None = None
     genre: str | None = None
     vibe: str | None = None
 
@@ -147,6 +162,7 @@ class MixRead(BaseModel):
     session_id: str
     title: str
     prompt: str
+    mode: AutoMixMode | None = None
     description: str | None = None
     cover_url: str | None = None
     status: str
@@ -289,7 +305,9 @@ class ProfileUpdate(BaseModel):
     def normalize_genres(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        cleaned = list(dict.fromkeys(item.strip().lower() for item in value if item.strip()))
+        cleaned = list(
+            dict.fromkeys(item.strip().lower() for item in value if item.strip())
+        )
         if len(cleaned) != len(value):
             raise ValueError("Genres must be nonblank and unique.")
         if any(len(item) > 40 for item in cleaned):
@@ -305,7 +323,9 @@ class ProfileStatsRead(BaseModel):
 
 
 class ListeningEventCreate(NonBlankModel):
-    client_event_id: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
+    client_event_id: str = Field(
+        min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$"
+    )
     session_id: str | None = Field(default=None, max_length=48)
     mix_id: int | None = Field(default=None, ge=1)
     segment_id: int | None = Field(default=None, ge=1)
@@ -380,6 +400,25 @@ class TrackMetricRead(BaseModel):
     percentage: float
 
 
+class MostReplayedSegmentRead(BaseModel):
+    segment_id: int | None = None
+    title: str
+    artist: str
+    start_second: int
+    end_second: int
+    play_count: int
+    replay_count: int
+    seconds_listened: int
+
+
+class SegmentAnalyticsRead(BaseModel):
+    most_replayed_segment: MostReplayedSegmentRead | None = None
+    average_segment_length_seconds: float | None = None
+    time_saved_seconds: int = 0
+    segment_play_count: int = 0
+    time_saved_play_count: int = 0
+
+
 class MusicIdentitySummaryRead(BaseModel):
     total_listening_seconds: int
     top_artist: MusicMetricRead | None = None
@@ -396,6 +435,7 @@ class MusicIdentityRead(BaseModel):
     visibility: Literal["private", "friends", "public"] = "private"
     period: Literal["7d", "30d", "6m", "all"] = "all"
     summary: MusicIdentitySummaryRead
+    segment_analytics: SegmentAnalyticsRead
     artists: list[MusicMetricRead]
     genres: list[MusicMetricRead]
     vibes: list[MusicMetricRead]
@@ -489,7 +529,6 @@ class ConversationRead(BaseModel):
     last_message: str
     last_message_at: datetime
     unread_count: int
-
 
 
 class NotificationRead(BaseModel):
@@ -744,6 +783,12 @@ class OllamaLastCallRead(BaseModel):
     at: datetime | None = None
     latency_ms: float | None = None
     ok: bool | None = None
+    outcome: (
+        Literal[
+            "success", "timeout", "http_error", "invalid_response", "unexpected_error"
+        ]
+        | None
+    ) = None
 
 
 class OllamaStatsRead(BaseModel):
@@ -755,6 +800,9 @@ class OllamaStatsRead(BaseModel):
     attempted: int
     succeeded: int
     timed_out: int
+    http_errors: int
+    invalid_responses: int
+    unexpected_errors: int
     shed: int
     success_rate: float | None = None
     mean_latency_ms: float | None = None

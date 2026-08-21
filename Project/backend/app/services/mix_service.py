@@ -15,7 +15,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database.models.mix import Mix, MixSegment
 from app.database.models.mix_social import MixLike, SavedMix
-from app.schemas import PromptIntent, SelectedSegment, Track, TransitionPlan
+from app.schemas import (
+    AutoMixMode,
+    PromptIntent,
+    SelectedSegment,
+    Track,
+    TransitionPlan,
+)
+from app.services.pipeline.catalog_retriever import last_resort_tracks
 from app.services.pipeline.interfaces import (
     AudioRenderer,
     CandidateRetriever,
@@ -23,8 +30,11 @@ from app.services.pipeline.interfaces import (
     TransitionPlanner,
     VibeUnderstander,
 )
-from app.services.pipeline.catalog_retriever import last_resort_tracks
-from app.services.pipeline.orchestrator import NoMatchingCandidate, retrieve_candidates_with_fallback
+from app.services.pipeline.orchestrator import (
+    NoMatchingCandidate,
+    retrieve_candidates_with_fallback,
+)
+from app.services.prompt_parser import apply_auto_mix_mode
 
 MAX_MIX_TRACKS = 5
 
@@ -86,10 +96,16 @@ def create_mix(
     selector: SegmentSelector,
     planner: TransitionPlanner,
     renderer: AudioRenderer,
+    mode: AutoMixMode | None = None,
 ) -> Mix:
-    intent = vibe.understand(prompt)
+    intent = apply_auto_mix_mode(vibe.understand(prompt), mode)
     tracks = _retrieve_with_fallback(
-        db, intent, retriever, fallback_retriever, limit=MAX_MIX_TRACKS, viewer_id=owner_id
+        db,
+        intent,
+        retriever,
+        fallback_retriever,
+        limit=MAX_MIX_TRACKS,
+        viewer_id=owner_id,
     )
 
     segments = [selector.select(db, track) for track in tracks]
@@ -107,6 +123,7 @@ def create_mix(
         owner_id=owner_id,
         title=prompt[:120],
         prompt=prompt,
+        mode=mode.value if mode else None,
         status="draft",
         cover_url=tracks[0].cover_url,
     )
@@ -114,7 +131,9 @@ def create_mix(
     try:
         db.flush()
         position = 0
-        for index, (segment, (start_second, end_second)) in enumerate(zip(kept_segments, offsets)):
+        for index, (segment, (start_second, end_second)) in enumerate(
+            zip(kept_segments, offsets)
+        ):
             if end_second <= start_second:
                 continue
             position += 1
@@ -131,11 +150,13 @@ def create_mix(
                     end_second=end_second,
                     transition_to_next=(
                         "crossfade"
-                        if not rendered.is_pass_through and index < len(kept_segments) - 1
+                        if not rendered.is_pass_through
+                        and index < len(kept_segments) - 1
                         else "end"
                     ),
                     source=track.source[:50],
                     source_track_id=str(track.source_track_id)[:255],
+                    track_duration_seconds=max(0, int(track.duration_seconds)),
                     genre=(track.genre or None),
                     vibe=(track.vibe_label or track.vibe or intent.mood or None),
                 )
@@ -157,7 +178,9 @@ def get_mix(db: Session, mix_id: int) -> Mix | None:
     )
 
 
-def set_membership(db: Session, model, mix_id: int, user_id: int, enabled: bool) -> None:
+def set_membership(
+    db: Session, model, mix_id: int, user_id: int, enabled: bool
+) -> None:
     existing = db.query(model).filter_by(mix_id=mix_id, user_id=user_id).first()
     if enabled and existing is None:
         try:

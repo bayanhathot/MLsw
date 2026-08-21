@@ -19,6 +19,33 @@ _DEMO_WAV_BYTES = (
 # explicitly overrides that with _patch_audius (below).
 
 
+def test_session_mode_is_typed_applied_and_persisted(client, db_session):
+    response = client.post(
+        "/sessions/start",
+        json={"prompt": "quiet ambient background", "mode": "workout"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "workout"
+    row = db_session.get(DJSession, body["id"])
+    assert row.mode == "workout"
+    intent = PromptIntent.model_validate(row.intent_json)
+    assert intent.mood == "energetic"
+    assert intent.energy == "high"
+    assert intent.vocals == "neutral"
+    assert intent.genres == ["electronic", "hip-hop", "rock"]
+    assert row.pipeline_trace_json["vibe_understander"]["auto_mix_mode"] == "workout"
+
+
+def test_session_rejects_an_unknown_auto_mix_mode(client):
+    response = client.post(
+        "/sessions/start",
+        json={"prompt": "anything", "mode": "study"},
+    )
+    assert response.status_code == 422
+
+
 def _wassouf_tracks():
     """Three distinct real-shaped Audius candidates for one named artist --
     enough to prove a session rotates through more than one when advancing,
@@ -87,7 +114,8 @@ def _patch_audius(monkeypatch, tracks):
         lambda prompt, limit=5: tracks,
     )
     monkeypatch.setattr(
-        "app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None)
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (_DEMO_WAV_BYTES, None),
     )
 
 
@@ -103,7 +131,9 @@ def _disable_reservation(monkeypatch):
     monkeypatch.setattr(session_manager, "RESERVED_TRANSITION_MS", 0)
 
 
-def test_session_is_unique_persistent_and_feedback_changes_selection(client, db_session):
+def test_session_is_unique_persistent_and_feedback_changes_selection(
+    client, db_session
+):
     first = client.post("/sessions/start", json={"prompt": "smooth focus music"})
     second = client.post("/sessions/start", json={"prompt": "smooth focus music"})
     assert first.status_code == second.status_code == 200
@@ -122,24 +152,37 @@ def test_session_is_unique_persistent_and_feedback_changes_selection(client, db_
     assert feedback.json()["selectedFeedback"] == "More energy"
     assert feedback.json()["vibeLabel"] == "Gym energy"
     assert client.post(f"/sessions/{session_id}/stop").status_code == 200
-    assert client.post(
-        f"/sessions/{session_id}/feedback", json={"feedback": "Smoother"}
-    ).status_code == 409
+    assert (
+        client.post(
+            f"/sessions/{session_id}/feedback", json={"feedback": "Smoother"}
+        ).status_code
+        == 409
+    )
 
 
 def test_session_validation_and_unknown_ids(client):
     assert client.post("/sessions/start", json={"prompt": "   "}).status_code == 422
-    assert client.post("/sessions/nope/feedback", json={"feedback": "Good vibe"}).status_code == 404
+    assert (
+        client.post(
+            "/sessions/nope/feedback", json={"feedback": "Good vibe"}
+        ).status_code
+        == 404
+    )
     assert client.post("/sessions/nope/stop").status_code == 404
 
 
-def test_owned_session_is_private_and_preference_is_remembered(client, second_client, db_session):
+def test_owned_session_is_private_and_preference_is_remembered(
+    client, second_client, db_session
+):
     user = register_and_login(client)
     session = client.post("/sessions/start", json={"prompt": "anything"}).json()
     assert second_client.get(f"/sessions/{session['id']}").status_code == 403
-    assert second_client.post(
-        f"/sessions/{session['id']}/feedback", json={"feedback": "Less vocals"}
-    ).status_code == 403
+    assert (
+        second_client.post(
+            f"/sessions/{session['id']}/feedback", json={"feedback": "Less vocals"}
+        ).status_code
+        == 403
+    )
     response = client.post(
         f"/sessions/{session['id']}/feedback", json={"feedback": "Less vocals"}
     )
@@ -153,7 +196,12 @@ def test_owned_session_is_private_and_preference_is_remembered(client, second_cl
     # "less_vocals" biases the next neutral prompt's intent toward low
     # energy + fewer vocals, which lands on the same "focus" catalog bucket
     # the old hardcoded PREFERENCE_TRACKS mapping pointed it at.
-    assert client.post("/sessions/start", json={"prompt": "a balanced mix"}).json()["vibeLabel"] == "Deep work focus"
+    assert (
+        client.post("/sessions/start", json={"prompt": "a balanced mix"}).json()[
+            "vibeLabel"
+        ]
+        == "Deep work focus"
+    )
 
 
 def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
@@ -192,7 +240,9 @@ def test_preference_is_not_applied_when_the_new_prompt_names_an_artist(
     assert row.intent_json["energy"] == "medium"
 
 
-def test_preference_is_not_applied_when_the_new_prompt_sets_explicit_energy(client, db_session):
+def test_preference_is_not_applied_when_the_new_prompt_sets_explicit_energy(
+    client, db_session
+):
     # Same scoping rule from the other direction: a prompt with its own
     # explicit energy word is never neutral either, so a learned
     # more_energy preference must not override what this prompt actually
@@ -204,7 +254,9 @@ def test_preference_is_not_applied_when_the_new_prompt_sets_explicit_energy(clie
     assert preference.feedback == "more_energy"
     assert preference.score > 0
 
-    chill = client.post("/sessions/start", json={"prompt": "chill vibes for reading"}).json()
+    chill = client.post(
+        "/sessions/start", json={"prompt": "chill vibes for reading"}
+    ).json()
     row = db_session.query(DJSession).filter_by(id=chill["id"]).one()
     assert row.intent_json["energy"] == "low"
 
@@ -227,21 +279,29 @@ def test_feedback_mutates_intent_but_never_touches_original_intent(client, db_se
     assert row.original_intent_json["energy"] == "medium"
 
 
-def test_create_session_skips_a_candidate_whose_audio_cannot_be_rendered(client, monkeypatch, db_session):
+def test_create_session_skips_a_candidate_whose_audio_cannot_be_rendered(
+    client, monkeypatch, db_session
+):
     # A track that ranks first but whose audio genuinely can't be fetched
     # (e.g. Audius returning a 4xx for that specific track) must not become
     # a dead pass-through -- the next-ranked candidate should be tried
     # instead, same as if the first one simply hadn't been offered.
     tracks = [
         {
-            "title": "Broken Track", "artist": "Artist A",
-            "audio_url": "https://audio.example/broken", "source_track_id": "broken-1",
-            "duration": 100, "source": "audius",
+            "title": "Broken Track",
+            "artist": "Artist A",
+            "audio_url": "https://audio.example/broken",
+            "source_track_id": "broken-1",
+            "duration": 100,
+            "source": "audius",
         },
         {
-            "title": "Good Track", "artist": "Artist B",
-            "audio_url": "https://audio.example/good", "source_track_id": "good-1",
-            "duration": 100, "source": "audius",
+            "title": "Good Track",
+            "artist": "Artist B",
+            "audio_url": "https://audio.example/good",
+            "source_track_id": "good-1",
+            "duration": 100,
+            "source": "audius",
         },
     ]
     monkeypatch.setattr(
@@ -265,7 +325,10 @@ def test_create_session_skips_a_candidate_whose_audio_cannot_be_rendered(client,
     assert audio_trace["is_pass_through"] is False
     assert len(audio_trace["skipped_tracks"]) == 1
     assert audio_trace["skipped_tracks"][0]["source_track_id"] == "broken-1"
-    assert audio_trace["skipped_tracks"][0]["fallback_reason"] == "download_failed_http_403"
+    assert (
+        audio_trace["skipped_tracks"][0]["fallback_reason"]
+        == "download_failed_http_403"
+    )
 
 
 def test_create_session_enriches_and_dispatches_analysis_for_a_new_audius_candidate(
@@ -285,13 +348,19 @@ def test_create_session_enriches_and_dispatches_analysis_for_a_new_audius_candid
         "app.services.pipeline.audius_retriever.search_tracks",
         lambda prompt, limit=5: [
             {
-                "title": "Never Seen Before", "artist": "Someone New",
-                "audio_url": "https://audio.example/unseen-1", "source_track_id": "unseen-1",
-                "duration": 100, "source": "audius",
+                "title": "Never Seen Before",
+                "artist": "Someone New",
+                "audio_url": "https://audio.example/unseen-1",
+                "source_track_id": "unseen-1",
+                "duration": 100,
+                "source": "audius",
             },
         ],
     )
-    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None))
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (_DEMO_WAV_BYTES, None),
+    )
     dispatched = []
     monkeypatch.setattr(
         "app.services.upload_queue.upload_queue.submit_external_analysis",
@@ -301,7 +370,11 @@ def test_create_session_enriches_and_dispatches_analysis_for_a_new_audius_candid
     session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
     assert session["nowPlaying"]["title"] == "Never Seen Before"
 
-    row = db_session.query(ExternalTrack).filter_by(source="audius", external_id="unseen-1").first()
+    row = (
+        db_session.query(ExternalTrack)
+        .filter_by(source="audius", external_id="unseen-1")
+        .first()
+    )
     assert row is not None
     assert row.analysis_status == "pending"
     assert dispatched == [row.id]
@@ -322,26 +395,47 @@ def test_create_session_gives_a_previously_analyzed_audius_track_real_segment_da
     from app.services.pipeline import external_track_cache
 
     monkeypatch.setattr(external_track_cache, "AUDIUS_ANALYSIS_CACHE_ENABLED", True)
-    db_session.add(ExternalTrack(
-        source="audius", external_id="already-analyzed-1", title="Known Track", artist="Known Artist",
-        analysis_status="completed", analysis_version="v2",
-        bpm=118.0, bpm_confidence=0.85, musical_key="G", key_mode="major", camelot="9B",
-        key_confidence=0.7, integrated_loudness_lufs=-13.0,
-        beat_grid_json=[0.5], downbeat_grid_json=[0.5], phrase_boundaries_json=[0.5],
-        segment_start_second=5, segment_end_second=35, segment_method="chorus_detection",
-    ))
+    db_session.add(
+        ExternalTrack(
+            source="audius",
+            external_id="already-analyzed-1",
+            title="Known Track",
+            artist="Known Artist",
+            analysis_status="completed",
+            analysis_version="v3",
+            bpm=118.0,
+            bpm_confidence=0.85,
+            musical_key="G",
+            key_mode="major",
+            camelot="9B",
+            key_confidence=0.7,
+            integrated_loudness_lufs=-13.0,
+            beat_grid_json=[0.5],
+            downbeat_grid_json=[0.5],
+            phrase_boundaries_json=[0.5],
+            segment_start_second=5,
+            segment_end_second=35,
+            segment_method="chorus_detection",
+        )
+    )
     db_session.commit()
     monkeypatch.setattr(
         "app.services.pipeline.audius_retriever.search_tracks",
         lambda prompt, limit=5: [
             {
-                "title": "Known Track", "artist": "Known Artist",
+                "title": "Known Track",
+                "artist": "Known Artist",
                 "audio_url": "https://audio.example/already-analyzed-1",
-                "source_track_id": "already-analyzed-1", "duration": 100, "source": "audius",
+                "source_track_id": "already-analyzed-1",
+                "duration": 100,
+                "source": "audius",
             },
         ],
     )
-    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None))
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (_DEMO_WAV_BYTES, None),
+    )
 
     session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
     assert session["nowPlaying"]["title"] == "Known Track"
@@ -370,9 +464,12 @@ def test_create_session_rescues_a_render_with_the_catalog_when_every_audius_cand
     # dead.
     tracks = [
         {
-            "title": f"Broken {i}", "artist": "Artist",
-            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
-            "duration": 100, "source": "audius",
+            "title": f"Broken {i}",
+            "artist": "Artist",
+            "audio_url": f"https://audio.example/broken-{i}",
+            "source_track_id": f"broken-{i}",
+            "duration": 100,
+            "source": "audius",
         }
         for i in range(5)
     ]
@@ -418,9 +515,12 @@ def test_create_session_rejects_rather_than_serves_a_dead_pass_through_when_noth
     # NoMatchingCandidate/422 rather than ever handed a dead URL.
     tracks = [
         {
-            "title": f"Broken {i}", "artist": "Nancy Ajram",
-            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
-            "duration": 100, "source": "audius",
+            "title": f"Broken {i}",
+            "artist": "Nancy Ajram",
+            "audio_url": f"https://audio.example/broken-{i}",
+            "source_track_id": f"broken-{i}",
+            "duration": 100,
+            "source": "audius",
         }
         for i in range(5)
     ]
@@ -447,9 +547,12 @@ def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monke
     monkeypatch.setattr(session_manager, "AUDIO_RENDER_RETRY_LIMIT", 2)
     tracks = [
         {
-            "title": f"Broken {i}", "artist": "Nancy Ajram",
-            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
-            "duration": 100, "source": "audius",
+            "title": f"Broken {i}",
+            "artist": "Nancy Ajram",
+            "audio_url": f"https://audio.example/broken-{i}",
+            "source_track_id": f"broken-{i}",
+            "duration": 100,
+            "source": "audius",
         }
         for i in range(5)
     ]
@@ -479,7 +582,9 @@ def test_audio_render_retry_limit_still_caps_attempts_when_lowered(client, monke
     assert len(download_calls) == 2  # capped, not all 5 candidates tried
 
 
-def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(client, monkeypatch):
+def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(
+    client, monkeypatch
+):
     # A genuinely unreachable source can hang for the full remote timeout on
     # every single attempt, unlike a fast-failing HTTP error -- the shared
     # wall-clock budget must still cut retries short well before
@@ -487,9 +592,12 @@ def test_audio_render_time_budget_stops_retries_even_under_the_count_cap(client,
     monkeypatch.setattr(session_manager, "AUDIO_RENDER_TIME_BUDGET_SECONDS", 0.0)
     tracks = [
         {
-            "title": f"Broken {i}", "artist": "Nancy Ajram",
-            "audio_url": f"https://audio.example/broken-{i}", "source_track_id": f"broken-{i}",
-            "duration": 100, "source": "audius",
+            "title": f"Broken {i}",
+            "artist": "Nancy Ajram",
+            "audio_url": f"https://audio.example/broken-{i}",
+            "source_track_id": f"broken-{i}",
+            "duration": 100,
+            "source": "audius",
         }
         for i in range(5)
     ]
@@ -526,14 +634,20 @@ def test_a_previously_known_broken_track_is_skipped_without_a_download_attempt(
 
     tracks = [
         {
-            "title": "Previously Broken", "artist": "Artist A",
-            "audio_url": "https://audio.example/broken", "source_track_id": "broken-1",
-            "duration": 100, "source": "audius",
+            "title": "Previously Broken",
+            "artist": "Artist A",
+            "audio_url": "https://audio.example/broken",
+            "source_track_id": "broken-1",
+            "duration": 100,
+            "source": "audius",
         },
         {
-            "title": "Good Track", "artist": "Artist B",
-            "audio_url": "https://audio.example/good", "source_track_id": "good-1",
-            "duration": 100, "source": "audius",
+            "title": "Good Track",
+            "artist": "Artist B",
+            "audio_url": "https://audio.example/good",
+            "source_track_id": "good-1",
+            "duration": 100,
+            "source": "audius",
         },
     ]
     monkeypatch.setattr(
@@ -577,7 +691,9 @@ def test_a_previously_known_broken_track_is_skipped_without_a_download_attempt(
     ]
 
 
-def test_a_render_failure_persists_a_known_broken_track_row(client, monkeypatch, db_session):
+def test_a_render_failure_persists_a_known_broken_track_row(
+    client, monkeypatch, db_session
+):
     # The flip side: when AudioRenderer genuinely fails on a candidate
     # during a normal resolution, that failure must be persisted so a
     # *future* resolution (this session or another) can skip it outright.
@@ -585,14 +701,20 @@ def test_a_render_failure_persists_a_known_broken_track_row(client, monkeypatch,
 
     tracks = [
         {
-            "title": "Broken Track", "artist": "Artist A",
-            "audio_url": "https://audio.example/broken", "source_track_id": "broken-1",
-            "duration": 100, "source": "audius",
+            "title": "Broken Track",
+            "artist": "Artist A",
+            "audio_url": "https://audio.example/broken",
+            "source_track_id": "broken-1",
+            "duration": 100,
+            "source": "audius",
         },
         {
-            "title": "Good Track", "artist": "Artist B",
-            "audio_url": "https://audio.example/good", "source_track_id": "good-1",
-            "duration": 100, "source": "audius",
+            "title": "Good Track",
+            "artist": "Artist B",
+            "audio_url": "https://audio.example/good",
+            "source_track_id": "good-1",
+            "duration": 100,
+            "source": "audius",
         },
     ]
     monkeypatch.setattr(
@@ -609,12 +731,16 @@ def test_a_render_failure_persists_a_known_broken_track_row(client, monkeypatch,
 
     client.post("/sessions/start", json={"prompt": "chill lofi beats"})
 
-    row = db_session.query(KnownBrokenTrack).filter_by(track_key="audius:broken-1").one()
+    row = (
+        db_session.query(KnownBrokenTrack).filter_by(track_key="audius:broken-1").one()
+    )
     assert row.fallback_reason == "download_failed_http_403"
     assert row.failure_count == 1
 
 
-def test_known_broken_track_past_its_ttl_is_tried_again(client, monkeypatch, db_session):
+def test_known_broken_track_past_its_ttl_is_tried_again(
+    client, monkeypatch, db_session
+):
     from datetime import timedelta
 
     from app.core.time import utc_now
@@ -623,9 +749,12 @@ def test_known_broken_track_past_its_ttl_is_tried_again(client, monkeypatch, db_
 
     tracks = [
         {
-            "title": "Old News", "artist": "Artist A",
-            "audio_url": "https://audio.example/oldnews", "source_track_id": "old-1",
-            "duration": 100, "source": "audius",
+            "title": "Old News",
+            "artist": "Artist A",
+            "audio_url": "https://audio.example/oldnews",
+            "source_track_id": "old-1",
+            "duration": 100,
+            "source": "audius",
         },
     ]
     monkeypatch.setattr(
@@ -633,7 +762,9 @@ def test_known_broken_track_past_its_ttl_is_tried_again(client, monkeypatch, db_
         lambda prompt, limit=5: tracks,
     )
 
-    stale_at = utc_now() - timedelta(seconds=known_broken_tracks.KNOWN_BROKEN_TRACK_TTL_SECONDS + 60)
+    stale_at = utc_now() - timedelta(
+        seconds=known_broken_tracks.KNOWN_BROKEN_TRACK_TTL_SECONDS + 60
+    )
     db_session.add(
         KnownBrokenTrack(
             track_key="audius:old-1",
@@ -648,16 +779,20 @@ def test_known_broken_track_past_its_ttl_is_tried_again(client, monkeypatch, db_
     db_session.commit()
 
     monkeypatch.setattr(
-        "app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None)
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (_DEMO_WAV_BYTES, None),
     )
 
     session = client.post("/sessions/start", json={"prompt": "chill lofi beats"}).json()
     assert session["nowPlaying"]["title"] == "Old News"
 
 
-def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(client, monkeypatch):
+def test_named_artist_with_no_catalog_or_audius_match_is_reported_plainly(
+    client, monkeypatch
+):
     monkeypatch.setattr(
-        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [],
     )
     response = client.post(
         "/sessions/start",
@@ -690,7 +825,10 @@ def test_named_artist_absent_from_the_catalog_falls_back_to_audius(
     # section 8), so the fallback retriever's name is "audius_multi_query", not
     # the older single-query retriever's plain "audius".
     assert session.retriever_name == "audius_multi_query"
-    assert session.pipeline_trace_json["candidate_retriever"]["name"] == "audius_multi_query"
+    assert (
+        session.pipeline_trace_json["candidate_retriever"]["name"]
+        == "audius_multi_query"
+    )
     assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is True
 
 
@@ -740,7 +878,9 @@ def test_when_audius_also_finds_nothing_the_catalogs_own_weak_match_still_serves
     assert session.pipeline_trace_json["candidate_retriever"]["fell_back"] is False
 
 
-def test_advance_continues_without_input_and_rotates_through_candidates(client, monkeypatch):
+def test_advance_continues_without_input_and_rotates_through_candidates(
+    client, monkeypatch
+):
     _patch_audius(monkeypatch, _wassouf_tracks())
     _disable_reservation(monkeypatch)
     session = client.post(
@@ -765,7 +905,9 @@ def test_advance_continues_without_input_and_rotates_through_candidates(client, 
     assert looped.json()["nowPlaying"]["title"] in seen_titles
 
 
-def test_advance_persists_played_artists_alongside_played_track_keys(client, monkeypatch, db_session):
+def test_advance_persists_played_artists_alongside_played_track_keys(
+    client, monkeypatch, db_session
+):
     # Validates the migration + session_manager wiring: played_artists_json
     # must grow in lockstep with played_track_keys_json (same length, same
     # cap), since it's what recent_artists is built from on the next
@@ -780,11 +922,15 @@ def test_advance_persists_played_artists_alongside_played_track_keys(client, mon
     client.post(f"/sessions/{session['id']}/advance")
 
     row = db_session.query(DJSession).filter_by(id=session["id"]).one()
-    assert row.played_artists_json == ["George Wassouf"] * len(row.played_track_keys_json)
+    assert row.played_artists_json == ["George Wassouf"] * len(
+        row.played_track_keys_json
+    )
     assert len(row.played_artists_json) == len(row.played_track_keys_json) == 3
 
 
-def test_advance_reuses_the_cached_candidate_pool_when_intent_is_unchanged(client, monkeypatch):
+def test_advance_reuses_the_cached_candidate_pool_when_intent_is_unchanged(
+    client, monkeypatch
+):
     # 10 candidates -- comfortably more than _CANDIDATE_POOL_REFRESH_THRESHOLD
     # (3) even after a couple of advances, so this isolates "does an
     # unchanged intent reuse the cache" from the separate exhaustion-refresh
@@ -805,7 +951,9 @@ def test_advance_reuses_the_cached_candidate_pool_when_intent_is_unchanged(clien
     assert calls["count"] == 1
 
 
-def test_advance_refreshes_the_pool_once_fresh_candidates_drop_below_threshold(client, monkeypatch):
+def test_advance_refreshes_the_pool_once_fresh_candidates_drop_below_threshold(
+    client, monkeypatch
+):
     # Exactly 3 candidates (== _CANDIDATE_POOL_REFRESH_THRESHOLD): after the
     # first one plays at creation, only 2 unplayed candidates remain in the
     # cached pool -- below the threshold -- so the very next advance() must
@@ -902,7 +1050,9 @@ def test_advance_consumes_a_valid_prepared_item_without_calling_the_retriever_ag
     assert row.prepared_next_json is None  # consumed and cleared
 
 
-def test_advance_does_a_real_resolution_when_no_prepared_item_exists(client, monkeypatch, db_session):
+def test_advance_does_a_real_resolution_when_no_prepared_item_exists(
+    client, monkeypatch, db_session
+):
     _patch_audius(monkeypatch, _wassouf_tracks())
     _disable_reservation(monkeypatch)
     calls = _count_retrieve_calls(monkeypatch)
@@ -919,7 +1069,9 @@ def test_advance_does_a_real_resolution_when_no_prepared_item_exists(client, mon
     assert calls["count"] == 2
 
 
-def test_advance_does_a_real_resolution_when_the_prepared_item_has_expired(client, monkeypatch):
+def test_advance_does_a_real_resolution_when_the_prepared_item_has_expired(
+    client, monkeypatch
+):
     # Reservation deliberately left on here (unlike most of this file's
     # other prepared-item tests): prepare-next only ever prepares a
     # *bridge* out of a real reserved tail, so proving "an expired bridge
@@ -1032,7 +1184,9 @@ def test_feedback_that_changes_energy_clears_prepared_next_and_forces_real_resol
     assert calls["count"] == 2
 
 
-def test_calling_prepare_next_twice_in_a_row_does_not_duplicate_retrieval_work(client, monkeypatch):
+def test_calling_prepare_next_twice_in_a_row_does_not_duplicate_retrieval_work(
+    client, monkeypatch
+):
     _patch_audius(monkeypatch, _wassouf_tracks())
     calls = _count_retrieve_calls(monkeypatch)
     session = client.post(
@@ -1092,7 +1246,9 @@ def test_prepare_next_discards_its_result_if_the_session_is_stopped_while_it_is_
         db_session.commit()
         return result
 
-    monkeypatch.setattr(session_manager, "_resolve_and_render", resolve_then_stop_concurrently)
+    monkeypatch.setattr(
+        session_manager, "_resolve_and_render", resolve_then_stop_concurrently
+    )
 
     response = client.post(f"/sessions/{session_id}/prepare-next")
     assert response.status_code == 200
@@ -1122,7 +1278,9 @@ def test_prepare_next_discards_its_result_if_intent_changes_while_it_is_in_fligh
         result = original_resolve(*args, **kwargs)
         concurrent_row = db_session.query(DJSession).filter_by(id=session_id).one()
         mutated_intent = dict(concurrent_row.intent_json)
-        mutated_intent["energy"] = "low" if mutated_intent["energy"] != "low" else "high"
+        mutated_intent["energy"] = (
+            "low" if mutated_intent["energy"] != "low" else "high"
+        )
         mutated_energy["value"] = mutated_intent["energy"]
         concurrent_row.intent_json = mutated_intent
         concurrent_row.prepared_next_json = None
@@ -1139,7 +1297,9 @@ def test_prepare_next_discards_its_result_if_intent_changes_while_it_is_in_fligh
 
     row = db_session.query(DJSession).filter_by(id=session_id).one()
     db_session.refresh(row)
-    assert row.intent_json["energy"] == mutated_energy["value"]  # the concurrent mutation stuck
+    assert (
+        row.intent_json["energy"] == mutated_energy["value"]
+    )  # the concurrent mutation stuck
     assert row.prepared_next_json is None
 
 
@@ -1178,7 +1338,9 @@ def test_advance_rejects_a_prepared_item_already_played_by_a_concurrent_advance(
         db_session.commit()
         return result
 
-    monkeypatch.setattr(session_manager, "_resolve_and_render", resolve_then_advance_concurrently)
+    monkeypatch.setattr(
+        session_manager, "_resolve_and_render", resolve_then_advance_concurrently
+    )
 
     prep = client.post(f"/sessions/{session_id}/prepare-next")
     assert prep.status_code == 200
@@ -1218,7 +1380,9 @@ def test_advance_rejects_a_prepared_item_already_played_by_a_concurrent_advance(
     assert calls["count"] == 1
 
 
-def test_smoother_feedback_invalidates_an_already_prepared_item(client, monkeypatch, db_session):
+def test_smoother_feedback_invalidates_an_already_prepared_item(
+    client, monkeypatch, db_session
+):
     # "smoother" leaves intent.energy/vocals (and so the retrieval
     # fingerprint) unchanged while still replacing now_playing -- unlike
     # "more energy"/"less vocals", advance_session's fingerprint check alone
@@ -1239,12 +1403,15 @@ def test_smoother_feedback_invalidates_an_already_prepared_item(client, monkeypa
     prepared_audio_url = row.prepared_next_json["now_playing"]["audio_url"]
 
     feedback = client.post(
-        f"/sessions/{session_id}/feedback", json={"feedback": "Smoother transitions please"}
+        f"/sessions/{session_id}/feedback",
+        json={"feedback": "Smoother transitions please"},
     )
     assert feedback.status_code == 200
 
     db_session.refresh(row)
-    assert row.prepared_next_json is None  # invalidated despite the unchanged fingerprint
+    assert (
+        row.prepared_next_json is None
+    )  # invalidated despite the unchanged fingerprint
 
     response = client.post(f"/sessions/{session_id}/advance")
     assert response.status_code == 200
@@ -1288,7 +1455,9 @@ def test_advance_never_serves_a_prepared_item_whose_track_key_was_already_played
 
     response = client.post(f"/sessions/{session['id']}/advance")
     assert response.status_code == 200
-    assert response.json()["audioUrl"] != "https://stale.example/should-not-be-served.wav"
+    assert (
+        response.json()["audioUrl"] != "https://stale.example/should-not-be-served.wav"
+    )
     assert calls["count"] == 2  # a real resolution ran, not the fast path
 
     db_session.refresh(row)
@@ -1325,7 +1494,9 @@ def test_prepare_next_deletes_the_rendered_file_when_its_result_is_discarded(
         db_session.commit()
         return result
 
-    monkeypatch.setattr(session_manager, "_resolve_and_render", resolve_then_stop_concurrently)
+    monkeypatch.setattr(
+        session_manager, "_resolve_and_render", resolve_then_stop_concurrently
+    )
 
     response = client.post(f"/sessions/{session_id}/prepare-next")
     assert response.status_code == 200
@@ -1340,7 +1511,9 @@ def test_prepare_next_deletes_the_rendered_file_when_its_result_is_discarded(
 
 
 def test_advance_rejects_a_stopped_session(client):
-    session = client.post("/sessions/start", json={"prompt": "smooth focus music"}).json()
+    session = client.post(
+        "/sessions/start", json={"prompt": "smooth focus music"}
+    ).json()
     assert client.post(f"/sessions/{session['id']}/stop").status_code == 200
     response = client.post(f"/sessions/{session['id']}/advance")
     assert response.status_code == 409
@@ -1360,14 +1533,17 @@ def test_advance_leaves_session_unchanged_when_nothing_matches(client, monkeypat
     # never in the catalog either -- advance must not error out a live
     # session, just leave it exactly where it was.
     monkeypatch.setattr(
-        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [],
     )
     response = client.post(f"/sessions/{session['id']}/advance")
     assert response.status_code == 200
     assert response.json()["nowPlaying"]["title"] == session["nowPlaying"]["title"]
 
 
-def test_advance_leaves_session_unchanged_on_an_unanticipated_pipeline_error(client, monkeypatch):
+def test_advance_leaves_session_unchanged_on_an_unanticipated_pipeline_error(
+    client, monkeypatch
+):
     # "Zero interruptions" must hold even for a genuinely unexpected bug in
     # the pipeline (a DB error, a bad assumption, anything not already
     # anticipated as NoMatchingCandidate) -- advance must still return 200
@@ -1381,7 +1557,9 @@ def test_advance_leaves_session_unchanged_on_an_unanticipated_pipeline_error(cli
     def boom(*args, **kwargs):
         raise RuntimeError("simulated unexpected pipeline failure")
 
-    monkeypatch.setattr("app.services.pipeline.segment_selector.LibrosaSegmentSelector.select", boom)
+    monkeypatch.setattr(
+        "app.services.pipeline.segment_selector.LibrosaSegmentSelector.select", boom
+    )
     response = client.post(f"/sessions/{session['id']}/advance")
     assert response.status_code == 200
     assert response.json()["nowPlaying"]["title"] == session["nowPlaying"]["title"]
@@ -1403,7 +1581,9 @@ def test_feedback_keeps_using_audius_on_every_re_resolution(client, monkeypatch)
     assert feedback.json()["nowPlaying"]["artist"] == "George Wassouf"
 
 
-def test_feedback_self_heals_from_the_catalogs_own_weak_match_to_audius(client, monkeypatch, db_session):
+def test_feedback_self_heals_from_the_catalogs_own_weak_match_to_audius(
+    client, monkeypatch, db_session
+):
     """Requirement: self-healing re-resolution still works under the local
     catalog's new primary role. A session that started on the catalog's own
     weak (mood_bucket-only) match -- Audius had nothing then -- must pick
@@ -1460,10 +1640,20 @@ def test_reasoning_and_next_direction_reflect_feedback_history(client):
 def _slow_candidates(count):
     return [
         Track(
-            source="audius", source_track_id=f"slow-{index}", title=f"Slow {index}", artist="Artist",
-            album=None, audio_url=f"https://audio.example/slow-{index}", cover_url=None,
-            duration_seconds=180, genre=None, vibe=None, vibe_label=None, tags=None,
-            catalog_track_id=None, local_path=None,
+            source="audius",
+            source_track_id=f"slow-{index}",
+            title=f"Slow {index}",
+            artist="Artist",
+            album=None,
+            audio_url=f"https://audio.example/slow-{index}",
+            cover_url=None,
+            duration_seconds=180,
+            genre=None,
+            vibe=None,
+            vibe_label=None,
+            tags=None,
+            catalog_track_id=None,
+            local_path=None,
         )
         for index in range(count)
     ]
@@ -1477,7 +1667,10 @@ def test_try_render_ranked_candidates_stops_early_once_remaining_budget_cant_fit
     # new attempts once the shared deadline can't plausibly fit another
     # one, rather than trying every candidate regardless.
     from app.schemas import StagedRender, StagedTrackRender
-    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+    from app.services.pipeline.dependencies import (
+        get_segment_selector,
+        get_transition_planner,
+    )
 
     monkeypatch.setattr(session_manager, "_MAX_SINGLE_ATTEMPT_SECONDS", 0.2)
 
@@ -1491,44 +1684,72 @@ def test_try_render_ranked_candidates_stops_early_once_remaining_budget_cant_fit
             time.sleep(self.delay_seconds)
             return StagedTrackRender(
                 body=StagedRender(
-                    audio_url=segment.track.audio_url, duration_ms=1000,
-                    is_pass_through=True, fallback_reason="simulated_slow_failure",
+                    audio_url=segment.track.audio_url,
+                    duration_ms=1000,
+                    is_pass_through=True,
+                    fallback_reason="simulated_slow_failure",
                 ),
             )
 
     renderer = _SlowFailingRenderer(delay_seconds=0.15)
     deadline = time.monotonic() + 0.3  # only room for ~2 attempts at 0.15s each
 
-    track, segment, transition, rendered, skipped, timings = session_manager._try_render_ranked_candidates(
-        db_session, _slow_candidates(6), get_segment_selector(), get_transition_planner(), renderer,
-        previous_segment=None, prefers_smoother=False, deadline=deadline,
+    track, segment, transition, rendered, skipped, timings = (
+        session_manager._try_render_ranked_candidates(
+            db_session,
+            _slow_candidates(6),
+            get_segment_selector(),
+            get_transition_planner(),
+            renderer,
+            previous_segment=None,
+            prefers_smoother=False,
+            deadline=deadline,
+        )
     )
 
     assert renderer.calls < 6  # did not try every candidate
-    assert any(entry["fallback_reason"] == "insufficient_time_remaining" for entry in skipped)
+    assert any(
+        entry["fallback_reason"] == "insufficient_time_remaining" for entry in skipped
+    )
 
 
-def test_try_render_ranked_candidates_always_tries_at_least_the_first_candidate(monkeypatch, db_session):
+def test_try_render_ranked_candidates_always_tries_at_least_the_first_candidate(
+    monkeypatch, db_session
+):
     # Even if the deadline has *already* passed before this function is
     # even called, it must still try once -- it has to return something.
     from app.schemas import StagedRender, StagedTrackRender
-    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+    from app.services.pipeline.dependencies import (
+        get_segment_selector,
+        get_transition_planner,
+    )
 
-    monkeypatch.setattr(session_manager, "_MAX_SINGLE_ATTEMPT_SECONDS", 999)  # never "enough" remaining
+    monkeypatch.setattr(
+        session_manager, "_MAX_SINGLE_ATTEMPT_SECONDS", 999
+    )  # never "enough" remaining
 
     class _InstantRenderer:
         def render_track_transition(self, segment, *, resume_offset_ms, reserved_ms):
             return StagedTrackRender(
                 body=StagedRender(
-                    audio_url=segment.track.audio_url, duration_ms=1000, is_pass_through=False,
+                    audio_url=segment.track.audio_url,
+                    duration_ms=1000,
+                    is_pass_through=False,
                 ),
             )
 
     already_expired_deadline = time.monotonic() - 10
-    track, segment, transition, rendered, skipped, timings = session_manager._try_render_ranked_candidates(
-        db_session, _slow_candidates(1), get_segment_selector(), get_transition_planner(),
-        _InstantRenderer(), previous_segment=None, prefers_smoother=False,
-        deadline=already_expired_deadline,
+    track, segment, transition, rendered, skipped, timings = (
+        session_manager._try_render_ranked_candidates(
+            db_session,
+            _slow_candidates(1),
+            get_segment_selector(),
+            get_transition_planner(),
+            _InstantRenderer(),
+            previous_segment=None,
+            prefers_smoother=False,
+            deadline=already_expired_deadline,
+        )
     )
     assert track.source_track_id == "slow-0"
 
@@ -1547,8 +1768,10 @@ class _AlwaysPassThroughRenderer:
 
         return StagedTrackRender(
             body=StagedRender(
-                audio_url=segment.track.audio_url, duration_ms=1000,
-                is_pass_through=True, fallback_reason="simulated_unavailable",
+                audio_url=segment.track.audio_url,
+                duration_ms=1000,
+                is_pass_through=True,
+                fallback_reason="simulated_unavailable",
             ),
         )
 
@@ -1558,20 +1781,33 @@ class _FixedCandidateRetriever:
         self.name = name
         self._tracks = tracks
 
-    def retrieve(self, db, intent, *, limit=5, recent_artists=frozenset(), viewer_id=None):
+    def retrieve(
+        self, db, intent, *, limit=5, recent_artists=frozenset(), viewer_id=None
+    ):
         return list(self._tracks)
 
 
 def _dead_track(source, index):
     return Track(
-        source=source, source_track_id=f"{source}-dead-{index}", title=f"Dead {index}",
-        artist="Artist", album=None, audio_url=f"https://audio.example/{source}-dead-{index}",
-        cover_url=None, duration_seconds=180, genre=None, vibe=None, vibe_label=None,
-        catalog_track_id=None, local_path=None,
+        source=source,
+        source_track_id=f"{source}-dead-{index}",
+        title=f"Dead {index}",
+        artist="Artist",
+        album=None,
+        audio_url=f"https://audio.example/{source}-dead-{index}",
+        cover_url=None,
+        duration_seconds=180,
+        genre=None,
+        vibe=None,
+        vibe_label=None,
+        catalog_track_id=None,
+        local_path=None,
     )
 
 
-def test_resolve_and_render_raises_rather_than_returning_a_dead_pass_through(db_session):
+def test_resolve_and_render_raises_rather_than_returning_a_dead_pass_through(
+    db_session,
+):
     # D1: with the primary, the one rescue attempt, and the last-resort
     # catalog tier (session_manager._resolve_and_render's real last_resort_
     # tracks call -- it self-heals an empty catalog table with the 4 seeded
@@ -1583,25 +1819,46 @@ def test_resolve_and_render_raises_rather_than_returning_a_dead_pass_through(db_
     import pytest
 
     from app.schemas import PromptIntent
-    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+    from app.services.pipeline.dependencies import (
+        get_segment_selector,
+        get_transition_planner,
+    )
     from app.services.pipeline.orchestrator import NoMatchingCandidate
 
     intent = PromptIntent(
-        mood="balanced", energy="medium", vocals="neutral", genres=[],
-        artist=None, artist_mode="none", search_query="anything",
+        mood="balanced",
+        energy="medium",
+        vocals="neutral",
+        genres=[],
+        artist=None,
+        artist_mode="none",
+        search_query="anything",
     )
-    retriever = _FixedCandidateRetriever("stub_catalog", [_dead_track("catalog", i) for i in range(3)])
-    fallback_retriever = _FixedCandidateRetriever("stub_fallback", [_dead_track("audius", i) for i in range(3)])
+    retriever = _FixedCandidateRetriever(
+        "stub_catalog", [_dead_track("catalog", i) for i in range(3)]
+    )
+    fallback_retriever = _FixedCandidateRetriever(
+        "stub_fallback", [_dead_track("audius", i) for i in range(3)]
+    )
 
     with pytest.raises(NoMatchingCandidate):
         session_manager._resolve_and_render(
-            db_session, intent, retriever, fallback_retriever,
-            get_segment_selector(), get_transition_planner(), _AlwaysPassThroughRenderer(),
-            session_id="session_test_d1_exhausted", previous_segment=None, prefers_smoother=False,
+            db_session,
+            intent,
+            retriever,
+            fallback_retriever,
+            get_segment_selector(),
+            get_transition_planner(),
+            _AlwaysPassThroughRenderer(),
+            session_id="session_test_d1_exhausted",
+            previous_segment=None,
+            prefers_smoother=False,
         )
 
 
-def test_resolve_and_render_never_substitutes_an_unrelated_track_for_a_required_artist(db_session):
+def test_resolve_and_render_never_substitutes_an_unrelated_track_for_a_required_artist(
+    db_session,
+):
     # The last-resort catalog tier must stay gated on `not intent.artist`,
     # same as orchestrator.retrieve_candidates_with_fallback's own tier 4:
     # an explicit artist ask that turns out unplayable everywhere is a
@@ -1611,21 +1868,40 @@ def test_resolve_and_render_never_substitutes_an_unrelated_track_for_a_required_
     import pytest
 
     from app.schemas import PromptIntent
-    from app.services.pipeline.dependencies import get_segment_selector, get_transition_planner
+    from app.services.pipeline.dependencies import (
+        get_segment_selector,
+        get_transition_planner,
+    )
     from app.services.pipeline.orchestrator import NoMatchingCandidate
 
     intent = PromptIntent(
-        mood="balanced", energy="medium", vocals="neutral", genres=[],
-        artist="Nancy Ajram", artist_mode="required", search_query="play something by Nancy Ajram",
+        mood="balanced",
+        energy="medium",
+        vocals="neutral",
+        genres=[],
+        artist="Nancy Ajram",
+        artist_mode="required",
+        search_query="play something by Nancy Ajram",
     )
-    retriever = _FixedCandidateRetriever("stub_catalog", [_dead_track("catalog", i) for i in range(3)])
-    fallback_retriever = _FixedCandidateRetriever("stub_fallback", [_dead_track("audius", i) for i in range(3)])
+    retriever = _FixedCandidateRetriever(
+        "stub_catalog", [_dead_track("catalog", i) for i in range(3)]
+    )
+    fallback_retriever = _FixedCandidateRetriever(
+        "stub_fallback", [_dead_track("audius", i) for i in range(3)]
+    )
 
     with pytest.raises(NoMatchingCandidate):
         session_manager._resolve_and_render(
-            db_session, intent, retriever, fallback_retriever,
-            get_segment_selector(), get_transition_planner(), _AlwaysPassThroughRenderer(),
-            session_id="session_test_d1_artist_gate", previous_segment=None, prefers_smoother=False,
+            db_session,
+            intent,
+            retriever,
+            fallback_retriever,
+            get_segment_selector(),
+            get_transition_planner(),
+            _AlwaysPassThroughRenderer(),
+            session_id="session_test_d1_artist_gate",
+            previous_segment=None,
+            prefers_smoother=False,
         )
 
 
@@ -1634,23 +1910,44 @@ def test_resolve_and_render_never_substitutes_an_unrelated_track_for_a_required_
 
 def test_reserved_ms_for_floors_to_half_a_short_segments_duration():
     stub_track = Track(
-        source="audius", source_track_id="1", title="T", artist="A", album=None,
-        audio_url="https://example.test/1", cover_url=None, duration_seconds=90,
-        genre=None, vibe=None, vibe_label=None, catalog_track_id=None, local_path=None,
+        source="audius",
+        source_track_id="1",
+        title="T",
+        artist="A",
+        album=None,
+        audio_url="https://example.test/1",
+        cover_url=None,
+        duration_seconds=90,
+        genre=None,
+        vibe=None,
+        vibe_label=None,
+        catalog_track_id=None,
+        local_path=None,
     )
     short_segment = SelectedSegment(
-        track=stub_track, start_second=0, end_second=6,
-        method="whole_clip", bpm=None, musical_key=None,
+        track=stub_track,
+        start_second=0,
+        end_second=6,
+        method="whole_clip",
+        bpm=None,
+        musical_key=None,
     )
     # Half of 6000ms, well under RESERVED_TRANSITION_MS -- the short segment
     # itself is the binding constraint, not the constant.
     assert session_manager._reserved_ms_for(short_segment) == 3000
 
     long_segment = SelectedSegment(
-        track=stub_track, start_second=0, end_second=60,
-        method="whole_clip", bpm=None, musical_key=None,
+        track=stub_track,
+        start_second=0,
+        end_second=60,
+        method="whole_clip",
+        bpm=None,
+        musical_key=None,
     )
-    assert session_manager._reserved_ms_for(long_segment) == session_manager.RESERVED_TRANSITION_MS
+    assert (
+        session_manager._reserved_ms_for(long_segment)
+        == session_manager.RESERVED_TRANSITION_MS
+    )
 
 
 def test_session_body_then_bridge_then_continuation_covers_the_full_sequence_with_no_gap_or_duplication(
@@ -1679,7 +1976,9 @@ def test_session_body_then_bridge_then_continuation_covers_the_full_sequence_wit
     assert body_now_playing["reserved_ms"] == min(
         session_manager.RESERVED_TRANSITION_MS, full_duration_ms // 2
     )
-    assert body_now_playing["reserved_ms"] > 0  # sanity: this fixture reserves something real
+    assert (
+        body_now_playing["reserved_ms"] > 0
+    )  # sanity: this fixture reserves something real
     assert body_now_playing["tail_audio_url"] is not None
 
     prep = client.post(f"/sessions/{session_id}/prepare-next")
@@ -1735,7 +2034,9 @@ def test_session_bridge_crossfade_is_capped_at_the_reserved_tail_length(
 
     row = db_session.query(DJSession).filter_by(id=session_id).one()
     reserved_ms = row.now_playing_json["reserved_ms"]
-    assert reserved_ms == 800  # the fixture segment is long enough not to hit the half-duration floor
+    assert (
+        reserved_ms == 800
+    )  # the fixture segment is long enough not to hit the half-duration floor
 
     prep = client.post(f"/sessions/{session_id}/prepare-next")
     assert prep.status_code == 200
@@ -1796,7 +2097,9 @@ def test_prepare_next_bridge_failure_falls_through_to_the_next_candidate_and_lea
             return None, "download_failed_ConnectError"
         return _DEMO_WAV_BYTES, None
 
-    monkeypatch.setattr("app.services.pipeline.audio_renderer._download", selective_download)
+    monkeypatch.setattr(
+        "app.services.pipeline.audio_renderer._download", selective_download
+    )
 
     session = client.post(
         "/sessions/start", json={"prompt": "play something by George Wassouf"}
@@ -1834,7 +2137,8 @@ def test_advance_still_works_on_a_legacy_session_row_with_no_stage_key(
 
     row = db_session.query(DJSession).filter_by(id=session_id).one()
     legacy_now_playing = {
-        key: value for key, value in row.now_playing_json.items()
+        key: value
+        for key, value in row.now_playing_json.items()
         if key not in ("stage", "resume_offset_ms", "reserved_ms", "tail_audio_url")
     }
     row.now_playing_json = legacy_now_playing

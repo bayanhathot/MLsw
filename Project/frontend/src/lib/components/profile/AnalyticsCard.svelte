@@ -1,12 +1,15 @@
 <script>
-	/** @type {{ label: string, value: string, detail?: string, icon?: string, accent?: string }} */
-	let { label, value, detail = '', icon = '◌', accent = 'blue' } = $props();
+	/** @type {{ label: string, value: string, detail?: string, icon?: string, accent?: string, tooltip?: string }} */
+	let { label, value, detail = '', icon = '◌', accent = 'blue', tooltip = '' } = $props();
 </script>
 
 <article class="metric-card" class:violet={accent === 'violet'} class:cyan={accent === 'cyan'}>
 	<div class="metric-top">
 		<span class="metric-icon" aria-hidden="true">{icon}</span>
 		<span class="metric-label">{label}</span>
+		{#if tooltip}<button class="metric-help" type="button" title={tooltip} aria-label={tooltip}
+				>?</button
+			>{/if}
 	</div>
 	<strong>{value}</strong>
 	{#if detail}<p>{detail}</p>{/if}
@@ -65,6 +68,20 @@
 		font-weight: 900;
 		letter-spacing: 0.14em;
 		text-transform: uppercase;
+	}
+	.metric-help {
+		display: grid;
+		width: 20px;
+		height: 20px;
+		margin-left: auto;
+		place-items: center;
+		border: 1px solid rgba(125, 183, 255, 0.24);
+		border-radius: 999px;
+		color: #8fa6c6;
+		background: transparent;
+		font-size: 11px;
+		font-weight: 900;
+		cursor: help;
 	}
 	strong {
 		display: block;

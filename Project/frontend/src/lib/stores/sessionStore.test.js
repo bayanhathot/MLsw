@@ -18,6 +18,7 @@ function makeSession(overrides = {}) {
 	return {
 		id: 'session-1',
 		prompt: 'chill lofi beats',
+		mode: null,
 		vibeLabel: 'Deep work focus',
 		nowPlaying: {
 			title: 'Track One',
@@ -65,6 +66,20 @@ afterEach(() => {
 });
 
 describe('sessionStore.start (change vibe while already playing)', () => {
+	it('sends the selected literal mode and retains the server-confirmed mode', async () => {
+		apiMocks.startSession.mockResolvedValueOnce(makeSession({ mode: 'party' }));
+		sessionStore.setPrompt('music for tonight');
+		sessionStore.setMode('party');
+
+		const ok = await sessionStore.start();
+
+		expect(ok).toBe(true);
+		expect(apiMocks.startSession).toHaveBeenCalledWith(
+			expect.objectContaining({ prompt: 'music for tonight', mode: 'party' })
+		);
+		expect(get(sessionStore).mode).toBe('party');
+	});
+
 	it('keeps the current session/playback untouched while the new vibe is loading', async () => {
 		await startPlayingSession();
 		const before = get(sessionStore);

@@ -1,6 +1,6 @@
 # Adversarial hallucination-robustness evaluation
 
-**Pass rate: 7/7 (100%)**
+**Pass rate: 8/8 (100%)**
 
 | # | Case | Result | Detail |
 |---|------|--------|--------|
@@ -10,4 +10,5 @@
 | 4 | Corrupt/truncated file | ✅ PASS | Correctly rejected: Audio is too short to be a usable track (minimum 1 second). |
 | 5 | Unavailable Audius URL | ✅ PASS | Rejected / rescued to a playable track instead of a dead pass-through (final: catalog:1, served_by=catalog) |
 | 6 | Silent Audius stream (available, silent throughout) | ✅ PASS | Correctly rejected: fallback_reason=silent_or_near_silent_audio |
-| 7 | Malformed/malicious LLM JSON response | ✅ PASS | Every malformed/malicious response degraded to the safe deterministic fallback, no injected field reached the returned intent |
+| 7 | Uniformly near-silent analyzed provider segment | ✅ PASS | Analysis rejected the track by absolute level and rendering independently rejected stale chorus metadata |
+| 8 | Malformed/malicious LLM JSON response | ✅ PASS | Every malformed/malicious response degraded to the safe deterministic fallback, no injected field reached the returned intent |

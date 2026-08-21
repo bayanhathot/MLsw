@@ -65,11 +65,31 @@ docker compose exec -e ENABLE_COLD_SEED=true backend python -m app.seed
 | Mix library, publishing, likes, saves | Implemented |
 | Community: Friends/Explore/Discussions/People, posts/comments/votes, mix sharing, attachments | Implemented |
 | Public profiles, mutual friends, friend-only DMs, live/durable notifications, block/report | Implemented |
-| Music Identity analytics (listening history, period filters, visibility controls) | Implemented; a "Listening DNA" ML feature is a stable but deliberately unimplemented contract |
+| Music Identity analytics (listening statistics, most-replayed segment, average segment length, time saved, period filters, visibility controls) | Implemented; a "Listening DNA" ML feature is a stable but deliberately unimplemented contract |
 | Trained ranking/recommendation model | Deliberately not implemented |
 | LLM prompt refinement | Implemented; local Ollama (sole option) or off (`VIBE_LLM_PROVIDER=none`). Verified 2026-08-15 against the live Azure VM (`qwen3:8b`): Concurrency (bounded admission, never blocks/crashes under load) — 20 concurrent callers vs. a limit of 4 → high-water-mark 4/4, 0 failures. Performance (multi-turn math + context retention) — PASS, exact 6.7% tempo-increase answer, both check types passed; see [backend/README.md#evaluations](backend/README.md#evaluations) for the full transcript and a caveat about production's shorter timeout. |
 | CI | Every push/PR runs backend tests (80% coverage gate), frontend checks/tests/e2e, and container builds |
 | Azure CD | Live at `https://sweng-group-18.eastus.cloudapp.azure.com`; auto-deploys `main` on green CI — see [deploy/README.md](deploy/README.md) |
+
+### Music Identity metric definitions
+
+The owner and permitted public-profile views use the same server-side period
+filter (`7d`, `30d`, `6m`, or `all`). The three segment-specific proposal
+metrics are calculated from server-resolved listening events, not values sent
+by the browser:
+
+- **Most-replayed segment:** eligible plays are grouped by persisted segment
+  ID (or source-track ID plus selected bounds for a live DJ moment). A result
+  appears after the second play; replay count is play count minus one.
+- **Average segment length:** the event-weighted average of selected end second
+  minus selected start second for positive segment plays.
+- **Time saved versus full songs:** the sum of full source-track duration minus
+  seconds actually heard, floored at zero, for positive plays whose source
+  duration is known.
+
+The API returns these values under `segment_analytics` in the Music Identity
+response. Empty states are explicit, and the UI repeats each formula in an
+accessible help tooltip.
 
 ## Repo layout
 

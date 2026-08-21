@@ -13,6 +13,8 @@
  * @typedef {"idle" | "starting" | "playing" | "buffering_next" | "stopped" | "error"} AppStatus
  */
 
+/** @typedef {'workout' | 'relaxation' | 'emotional_tarab' | 'party'} AutoMixMode */
+
 /**
  * @typedef {Object} Preset
  * @property {string} label
@@ -47,6 +49,7 @@
  * @typedef {Object} Session
  * @property {string} id
  * @property {string} prompt
+ * @property {AutoMixMode | null} mode
  * @property {string} vibeLabel
  * @property {NowPlaying} nowPlaying
  * @property {string} audioUrl
@@ -71,6 +74,7 @@
  * @property {string} transitionToNext
  * @property {string} source
  * @property {string} sourceTrackId
+ * @property {number | null} trackDurationSeconds
  * @property {string} genre
  * @property {string} vibe
  */
@@ -87,6 +91,7 @@
  * @property {string} sessionId
  * @property {string} title
  * @property {string} prompt
+ * @property {AutoMixMode | null} mode
  * @property {string | null} description
  * @property {string} coverUrl
  * @property {'draft' | 'published'} status
@@ -262,6 +267,7 @@
  * @typedef {Object} SessionState
  * @property {AppStatus} status
  * @property {string} prompt
+ * @property {AutoMixMode | null} mode
  * @property {number} progress
  * @property {string} currentStep
  * @property {Session | null} session
@@ -301,7 +307,9 @@
  * @property {string | null} error
  * @property {string | null} configured_model
  * @property {string[]} loaded_models
- * @property {{ at: string | null, latency_ms: number | null, ok: boolean | null }} last_call
+ * @property {{ at: string | null, latency_ms: number | null, ok: boolean | null, outcome: 'success' | 'timeout' | 'http_error' | 'invalid_response' | 'unexpected_error' | null }} last_call
+ * @property {{ attempted: number, succeeded: number, timed_out: number, http_errors: number, invalid_responses: number, unexpected_errors: number, shed: number, success_rate: number | null, mean_latency_ms: number | null }} stats
+ * @property {{ attempted: number, succeeded: number, timed_out: number, http_errors: number, invalid_responses: number, unexpected_errors: number, shed: number, success_rate: number | null, mean_latency_ms: number | null } | null} cluster_stats
  */
 
 /**

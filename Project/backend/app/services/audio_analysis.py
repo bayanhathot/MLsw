@@ -10,7 +10,8 @@ is overridden to use -- a plain import would freeze the pre-override binding.
 
 Chorus/hook detection is a self-similarity proxy: chroma features are
 bucketed to ~1 column per second (bounding the similarity matrix regardless
-of track length), and among candidate windows that clear _SILENCE_FLOOR_DBFS
+of track length), and among candidate windows that clear both the relative
+_SILENCE_FLOOR_DBFS and absolute _ABSOLUTE_SILENCE_FLOOR_DBFS
 (see _rank_windows), the one with the highest average similarity to the
 rest of the track -- i.e. the most repeated/representative section -- is
 picked. The energy floor exists because self-similarity alone discards
@@ -73,13 +74,12 @@ EXTERNAL_ANALYSIS_MAX_ATTEMPTS = int(os.getenv("EXTERNAL_ANALYSIS_MAX_ATTEMPTS",
 # chroma/beat-tracking method, a different segment-selection heuristic,
 # etc.) so existing rows can be targeted for reprocessing by version later
 # -- see CatalogTrack.analysis_version's own docstring for the query shape
-# this is meant to support. "v2" (bumped from "v1"): musical_key is now
-# real Krumhansl-Schmuckler key-finding (root + mode), replacing v1's bare
-# strongest-average-chroma-bin heuristic -- a genuine change to the
-# analysis approach, not just an additive field (contrast with
-# integrated_loudness_lufs, an independent measurement that didn't touch
-# bpm/key/segment logic and so didn't warrant a bump).
-ANALYSIS_VERSION = "v2"
+# this is meant to support. "v3" adds an absolute dBFS floor to segment
+# selection, so old v2 external-track cache rows are reanalyzed instead of
+# continuing to trust windows that only sounded loud relative to a uniformly
+# near-silent track. v2 introduced real Krumhansl-Schmuckler key-finding;
+# v1 used a bare strongest-average-chroma-bin heuristic.
+ANALYSIS_VERSION = "v3"
 
 _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -95,6 +95,13 @@ _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B
 # This is the fix for the course rubric's own worked hallucination
 # example: "choosing a part of a song that is silence."
 _SILENCE_FLOOR_DBFS = -45.0
+# D8: the relative floor above distinguishes a real highlight from a quiet
+# passage inside the same track, but cannot identify a uniformly quiet track:
+# -60 dBFS noise is only a few dB below its *own* tiny peak. Every candidate
+# must therefore also clear this absolute full-scale floor. Keeping the two
+# checks separate preserves quietly mastered real music while preventing an
+# entire near-silent provider track from being labeled chorus_detection.
+_ABSOLUTE_SILENCE_FLOOR_DBFS = -50.0
 
 # Krumhansl & Kessler (1982) major/minor key profiles: empirically measured
 # listener probe-tone ratings of how well each pitch class fits a
@@ -293,15 +300,16 @@ def _bucket_chroma(chroma: np.ndarray, frames_per_second: float) -> np.ndarray:
 
 
 def _bucket_rms_dbfs(
-    rms_frames: np.ndarray, frames_per_second: float, n_buckets: int, peak_amplitude: float
+    rms_frames: np.ndarray, frames_per_second: float, n_buckets: int, reference_amplitude: float
 ) -> np.ndarray:
-    """Per-second mean level, in dBFS relative to this track's own peak
-    sample amplitude -- bucketed at the same rate/hop length
+    """Per-second mean level relative to ``reference_amplitude`` -- either
+    the track peak for within-track contrast or 1.0 for absolute dBFS.
+    Bucketed at the same rate/hop length
     _bucket_chroma uses so the two arrays line up index-for-index (padded
     with the last real frame if librosa's own frame-counting for RMS vs.
     chroma_cqt differs by a frame or two at the same hop_length, so a
     short mismatch never desyncs the two bucket arrays). -inf for every
-    bucket when the whole track is digital silence (peak_amplitude == 0),
+    bucket when the reference is non-positive,
     rather than a divide-by-zero."""
 
     bucket_frames = max(1, int(round(frames_per_second)))
@@ -310,10 +318,10 @@ def _bucket_rms_dbfs(
         rms_frames = np.pad(rms_frames, (0, needed - rms_frames.shape[0]), mode="edge")
     trimmed = rms_frames[:needed]
     bucket_rms = trimmed.reshape(n_buckets, bucket_frames).mean(axis=1)
-    if peak_amplitude <= 0.0:
+    if reference_amplitude <= 0.0:
         return np.full(n_buckets, -np.inf)
     with np.errstate(divide="ignore"):
-        return 20.0 * np.log10(np.maximum(bucket_rms, 1e-12) / peak_amplitude)
+        return 20.0 * np.log10(np.maximum(bucket_rms, 1e-12) / reference_amplitude)
 
 
 def _rank_windows(
@@ -330,10 +338,11 @@ def _rank_windows(
 
     Self-similarity ranking (see _bucket_chroma) discards amplitude
     entirely -- a silent or near-silent window can be maximally
-    "self-similar" to itself and win on that basis alone. _SILENCE_FLOOR_
-    DBFS disqualifies any candidate window whose mean level falls that far
-    below the track's own peak before ranking ever runs; among windows
-    that pass, the existing similarity ranking is unchanged.
+    "self-similar" to itself and win on that basis alone. The relative
+    _SILENCE_FLOOR_DBFS disqualifies windows far below the track's own peak;
+    _ABSOLUTE_SILENCE_FLOOR_DBFS also rejects a uniformly quiet track whose
+    own peak is tiny. Among windows that pass both, the existing similarity
+    ranking is unchanged.
 
     Returns None if there are too few buckets to window at all (the
     legitimate too-short-to-window case). Otherwise
@@ -351,19 +360,30 @@ def _rank_windows(
     if total_seconds <= window or window <= 0:
         return None
 
-    level_db = _bucket_rms_dbfs(rms_frames, frames_per_second, total_seconds, peak_amplitude)
+    relative_level_db = _bucket_rms_dbfs(
+        rms_frames, frames_per_second, total_seconds, peak_amplitude
+    )
+    absolute_level_dbfs = _bucket_rms_dbfs(
+        rms_frames, frames_per_second, total_seconds, 1.0
+    )
 
     norms = buckets / (np.linalg.norm(buckets, axis=0, keepdims=True) + 1e-9)
     similarity = norms.T @ norms  # second-by-second cosine self-similarity
 
     best_start, best_score, best_level = 0, -1.0, None
     for start in range(0, total_seconds - window + 1):
-        window_level = float(level_db[start : start + window].mean())
-        if window_level < _SILENCE_FLOOR_DBFS:
+        window_relative_level = float(relative_level_db[start : start + window].mean())
+        window_absolute_level = float(absolute_level_dbfs[start : start + window].mean())
+        if (
+            window_relative_level < _SILENCE_FLOOR_DBFS
+            or window_absolute_level < _ABSOLUTE_SILENCE_FLOOR_DBFS
+        ):
             continue  # disqualified: too quiet to be a real "highlight"
         score = float(similarity[start : start + window, :].mean())
         if score > best_score:
-            best_score, best_start, best_level = score, start, window_level
+            # Persist/report the absolute value: unlike a track-relative
+            # number, it is meaningful evidence that this window is audible.
+            best_score, best_start, best_level = score, start, window_absolute_level
 
     if best_level is None:
         return 0, total_seconds, best_score, None
@@ -561,7 +581,7 @@ class AnalysisResult:
     segment_end_second: int
     segment_method: str
     # The selected window's own measured level (dBFS, relative to the
-    # track's own peak amplitude) -- None for a whole_clip result, where
+    # full-scale amplitude) -- None for a whole_clip result, where
     # no single window was scored against _SILENCE_FLOOR_DBFS. Not a
     # persisted DB column (no schema change): _apply_result deliberately
     # doesn't copy this onto CatalogTrack/ExternalTrack, since its only

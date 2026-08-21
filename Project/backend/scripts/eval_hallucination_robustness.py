@@ -3,7 +3,7 @@ playback.
 
 The course rubric's own worked example: "the AI must not recommend a
 non-existent item -- for example, choosing a part of a song that is
-silence." This script runs seven labeled adversarial cases end to end
+silence." This script runs eight labeled adversarial cases end to end
 against the *real* production guards -- the original energy floor in
 segment selection, the upload silence/near-silence threshold, the
 whole-clip silence trim, the raised analysis window, plus D1/D2's later
@@ -82,6 +82,7 @@ os.environ.setdefault("UPLOAD_DIR", tempfile.mkdtemp(prefix="cuemix-eval-"))
 
 import httpx
 import numpy as np
+import soundfile as sf
 from pydub import AudioSegment
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -89,7 +90,7 @@ from sqlalchemy.orm import sessionmaker
 import app.main  # noqa: F401 -- registers every SQLAlchemy model before create_all, same reason measure_session_latency.py/eval_preferences.py both import this first.
 from app.database.base import Base
 from app.schemas import PromptIntent, SelectedSegment, Track
-from app.services import audius_service, prompt_parser, session_manager, upload_queue
+from app.services import audio_analysis, audius_service, prompt_parser, session_manager, upload_queue
 from app.services.pipeline import audio_renderer
 from app.services.pipeline.dependencies import (
     get_audius_candidate_retriever,
@@ -383,7 +384,78 @@ def case_silent_audius_stream(_db) -> CaseResult:
     )
 
 
-# --- Case 7: a malformed/malicious LLM JSON response ------------------
+# --- Case 7: uniformly near-silent analyzed provider audio ------------
+
+
+def case_analyzed_near_silent_provider_segment(_db) -> CaseResult:
+    """D8: a uniformly quiet provider track used to pass the relative
+    energy floor because every window was loud compared only with that
+    track's own tiny peak. Prove both production defenses: analysis must
+    reject the track absolutely, and rendering must reject stale/manual
+    ``chorus_detection`` metadata rather than trusting the method label."""
+
+    sr = 22050
+    duration_seconds = 40
+    rng = np.random.default_rng(seed=18)
+    noise = rng.normal(0.0, 1.0, sr * duration_seconds).astype(np.float32)
+    target_rms = 10 ** (-60 / 20)
+    noise *= target_rms / (float(np.sqrt(np.mean(noise**2))) + 1e-12)
+    path = Path(os.environ["UPLOAD_DIR"]) / "eval-uniform-near-silent.wav"
+    sf.write(str(path), noise, sr)
+
+    analysis_rejected = False
+    analysis_error = None
+    try:
+        audio_analysis.analyze_audio(str(path), label="uniform -60 dBFS provider track")
+    except ValueError as exc:
+        analysis_error = str(exc)
+        analysis_rejected = "silence floor" in analysis_error
+
+    track = Track(
+        source="audius", source_track_id="quiet-track-zzz-9182", title="Quiet Track",
+        artist="Nobody", album=None,
+        audio_url=audius_service.audius_stream_url("quiet-track-zzz-9182"), cover_url=None,
+        duration_seconds=duration_seconds, genre=None, vibe=None, vibe_label=None,
+        catalog_track_id=None, local_path=None,
+    )
+    segment = SelectedSegment(
+        track=track, start_second=0, end_second=duration_seconds,
+        method="chorus_detection", bpm=None, musical_key=None,
+    )
+    renderer = audio_renderer.PydubAudioRenderer()
+    original_download = audio_renderer._download
+    audio_renderer._download = lambda url: (path.read_bytes(), None)
+    try:
+        rendered = renderer.render([segment], [])
+    finally:
+        audio_renderer._download = original_download
+        path.unlink(missing_ok=True)
+
+    render_rejected = (
+        rendered.is_pass_through and rendered.fallback_reason == "silent_or_near_silent_audio"
+    )
+    passed = analysis_rejected and render_rejected
+    return CaseResult(
+        "analyzed_near_silent_provider_segment",
+        "Uniformly near-silent analyzed provider segment",
+        passed,
+        (
+            "Analysis rejected the track by absolute level and rendering independently "
+            "rejected stale chorus metadata"
+            if passed else
+            "FAILED: at least one absolute-level safety boundary accepted near-silent audio"
+        ),
+        {
+            "target_dBFS": -60,
+            "analysis_rejected": analysis_rejected,
+            "analysis_error": analysis_error,
+            "render_rejected": render_rejected,
+            "render_fallback_reason": rendered.fallback_reason,
+        },
+    )
+
+
+# --- Case 8: a malformed/malicious LLM JSON response ------------------
 
 
 def case_malformed_llm_response(_db) -> CaseResult:
@@ -462,6 +534,7 @@ CASES = [
     case_corrupt_file,
     case_unavailable_audius_url,
     case_silent_audius_stream,
+    case_analyzed_near_silent_provider_segment,
     case_malformed_llm_response,
 ]
 

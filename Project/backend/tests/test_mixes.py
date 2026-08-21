@@ -45,13 +45,15 @@ def _patch_audius(monkeypatch, tracks):
         lambda prompt, limit=5: tracks,
     )
     monkeypatch.setattr(
-        "app.services.pipeline.audio_renderer._download", lambda url: (_DEMO_WAV_BYTES, None)
+        "app.services.pipeline.audio_renderer._download",
+        lambda url: (_DEMO_WAV_BYTES, None),
     )
 
 
 def test_mix_persists_and_provider_empty_uses_safe_fallback(client, monkeypatch):
     monkeypatch.setattr(
-        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [],
     )
     response = client.post("/mixes/start", json={"prompt": "unknown mood"})
     assert response.status_code == 200
@@ -61,6 +63,22 @@ def test_mix_persists_and_provider_empty_uses_safe_fallback(client, monkeypatch)
     # (mood-bucket matched), not a single hardcoded local-demo dict anymore.
     assert body["segments"][0]["source"] == "catalog"
     assert body["segments"][0]["audio_url"].startswith("/api/media/renders/")
+
+
+def test_named_auto_mix_mode_is_applied_and_persisted(client, monkeypatch, db_session):
+    _patch_audius(monkeypatch, sample_tracks())
+    response = client.post(
+        "/mixes/start",
+        json={"prompt": "quiet ambient background", "mode": "party"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "party"
+    from app.database.models.mix import Mix
+
+    row = db_session.get(Mix, body["id"])
+    assert row.mode == "party"
 
 
 def test_mix_renders_a_real_crossfaded_composite_across_tracks(client, monkeypatch):
@@ -75,6 +93,8 @@ def test_mix_renders_a_real_crossfaded_composite_across_tracks(client, monkeypat
     assert first["audio_url"].endswith(".wav")
     assert first["end_second"] > first["start_second"]
     assert second["end_second"] > second["start_second"]
+    assert first["track_duration_seconds"] == 120
+    assert second["track_duration_seconds"] == 20
     assert first["transition_to_next"] == "crossfade"
     assert second["transition_to_next"] == "end"
 
@@ -89,7 +109,11 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
 
     assert second_client.post(f"/mixes/{mix['id']}/like").json()["like_count"] == 1
     assert second_client.post(f"/mixes/{mix['id']}/like").json()["like_count"] == 1
-    mix_like_notices = [item for item in client.get("/notifications").json() if item["kind"] == "mix_like"]
+    mix_like_notices = [
+        item
+        for item in client.get("/notifications").json()
+        if item["kind"] == "mix_like"
+    ]
     assert len(mix_like_notices) == 1
     assert second_client.post(f"/mixes/{mix['id']}/save").status_code == 200
     feed = second_client.get("/mixes/feed").json()
@@ -102,7 +126,9 @@ def test_mix_feed_library_like_and_save(client, second_client, monkeypatch):
     assert second_client.delete(f"/mixes/{mix['id']}/save").json()["is_saved"] is False
 
 
-def test_channel_hub_receives_user_notification_on_mix_like(client, second_client, monkeypatch):
+def test_channel_hub_receives_user_notification_on_mix_like(
+    client, second_client, monkeypatch
+):
     """mixes.py publishes a mix-like notification onto channel_hub's
     "user:{id}" channel (see channel_hub.py)."""
 
@@ -137,7 +163,9 @@ def test_blocked_owner_hides_direct_mix_access(client, second_client, monkeypatc
     assert second_client.get(f"/mixes/{mix['id']}").status_code == 404
 
 
-def test_mine_and_saved_endpoints_return_the_correct_library_subsets(client, second_client, monkeypatch):
+def test_mine_and_saved_endpoints_return_the_correct_library_subsets(
+    client, second_client, monkeypatch
+):
     _patch_audius(monkeypatch, sample_tracks())
     register_and_login(client, "alice", "alice@example.com")
     register_and_login(second_client, "bob", "bob@example.com")
@@ -148,15 +176,20 @@ def test_mine_and_saved_endpoints_return_the_correct_library_subsets(client, sec
     assert [item["id"] for item in client.get("/mixes/mine").json()] == [mix["id"]]
     assert client.get("/mixes/saved").json() == []
     assert second_client.get("/mixes/mine").json() == []
-    assert [item["id"] for item in second_client.get("/mixes/saved").json()] == [mix["id"]]
+    assert [item["id"] for item in second_client.get("/mixes/saved").json()] == [
+        mix["id"]
+    ]
 
 
-def test_named_artist_with_no_audius_or_catalog_match_still_falls_back_safely(client, monkeypatch):
+def test_named_artist_with_no_audius_or_catalog_match_still_falls_back_safely(
+    client, monkeypatch
+):
     """Mixes must never hard-fail the way a session can plainly report "no
     match": even a named artist with nothing anywhere still yields a mix."""
 
     monkeypatch.setattr(
-        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [],
     )
     response = client.post(
         "/mixes/start", json={"prompt": "play something by Zzzqx Nonexistent Artist"}
@@ -165,7 +198,9 @@ def test_named_artist_with_no_audius_or_catalog_match_still_falls_back_safely(cl
     assert response.json()["segments"]
 
 
-def test_mix_can_use_the_owners_own_private_catalog_track(client, monkeypatch, db_session):
+def test_mix_can_use_the_owners_own_private_catalog_track(
+    client, monkeypatch, db_session
+):
     """create_mix() threads owner_id into viewer_id (mirroring
     session_manager.py's identical viewer_id=user_id pattern), so a
     signed-in owner's own private catalog upload is eligible for their own
@@ -173,7 +208,8 @@ def test_mix_can_use_the_owners_own_private_catalog_track(client, monkeypatch, d
     session."""
 
     monkeypatch.setattr(
-        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [],
     )
     user = register_and_login(client, "priv_mix_owner", "priv_mix_owner@example.com")
 
@@ -181,10 +217,16 @@ def test_mix_can_use_the_owners_own_private_catalog_track(client, monkeypatch, d
     catalog_dir = upload_queue.UPLOAD_DIR / "catalog"
     catalog_dir.mkdir(parents=True, exist_ok=True)
     (catalog_dir / storage_name).write_bytes(_DEMO_WAV_BYTES)
-    db_session.add(CatalogTrack(
-        owner_id=user["id"], title="Owner Private Mix Track", artist="Zzq Mix Private Artist",
-        visibility="private", storage_name=storage_name, content_type="audio/wav",
-    ))
+    db_session.add(
+        CatalogTrack(
+            owner_id=user["id"],
+            title="Owner Private Mix Track",
+            artist="Zzq Mix Private Artist",
+            visibility="private",
+            storage_name=storage_name,
+            content_type="audio/wav",
+        )
+    )
     db_session.commit()
 
     mix = client.post(
@@ -201,20 +243,28 @@ def test_mix_excludes_another_users_private_catalog_track(
     mix's own owner, never let a different user's private upload leak in."""
 
     monkeypatch.setattr(
-        "app.services.pipeline.audius_retriever.search_tracks", lambda prompt, limit=5: []
+        "app.services.pipeline.audius_retriever.search_tracks",
+        lambda prompt, limit=5: [],
     )
     owner = register_and_login(client, "priv_mix_owner2", "priv_mix_owner2@example.com")
-    register_and_login(second_client, "other_mix_viewer", "other_mix_viewer@example.com")
+    register_and_login(
+        second_client, "other_mix_viewer", "other_mix_viewer@example.com"
+    )
     # Seed the public demo catalog *before* adding the private row below --
     # _ensure_seed_catalog only self-heals an empty table, and this test
     # needs a real public fallback for the last-resort tier to land on
     # once the private track (correctly) isn't a candidate for this viewer.
     _ensure_seed_catalog(db_session)
-    db_session.add(CatalogTrack(
-        owner_id=owner["id"], title="Owner Private Mix Track Two",
-        artist="Zzq Mix Private Artist Two", visibility="private",
-        storage_name="x.wav", content_type="audio/wav",
-    ))
+    db_session.add(
+        CatalogTrack(
+            owner_id=owner["id"],
+            title="Owner Private Mix Track Two",
+            artist="Zzq Mix Private Artist Two",
+            visibility="private",
+            storage_name="x.wav",
+            content_type="audio/wav",
+        )
+    )
     db_session.commit()
 
     # Never hard-fails (mixes' own guarantee, see the "not even the catalog

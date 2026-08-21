@@ -5,8 +5,8 @@ from datetime import datetime
 from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database.base import Base
 from app.core.time import utc_now
+from app.database.base import Base
 
 
 class DJSession(Base):
@@ -15,7 +15,13 @@ class DJSession(Base):
 
     __tablename__ = "dj_sessions"
     __table_args__ = (
-        CheckConstraint("status IN ('playing', 'stopped')", name="ck_dj_session_status"),
+        CheckConstraint(
+            "status IN ('playing', 'stopped')", name="ck_dj_session_status"
+        ),
+        CheckConstraint(
+            "mode IS NULL OR mode IN ('workout', 'relaxation', 'emotional_tarab', 'party')",
+            name="ck_dj_session_mode",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(48), primary_key=True)
@@ -23,6 +29,11 @@ class DJSession(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     prompt: Mapped[str] = mapped_column(String(300), nullable=False)
+    # Optional literal product mode selected at creation. The fully applied
+    # intent still lives in intent_json; this field preserves which named
+    # mode produced it for API/UI/debugging rather than trying to infer the
+    # mode later from mutable intent fields.
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="playing")
     vibe_label: Mapped[str] = mapped_column(String(100), nullable=False)
     # Name of whichever CandidateRetriever actually served the current
@@ -71,7 +82,9 @@ class DJSession(Base):
     # track's artist from played_track_keys_json after the fact.
     played_artists_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     selected_feedback: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
@@ -93,7 +106,9 @@ class SessionFeedback(Base):
     )
     feedback: Mapped[str] = mapped_column(String(100), nullable=False)
     normalized_feedback: Mapped[str] = mapped_column(String(40), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, nullable=False
+    )
 
 
 class KnownBrokenTrack(Base):
@@ -114,7 +129,9 @@ class KnownBrokenTrack(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     fallback_reason: Mapped[str] = mapped_column(String(100), nullable=False)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, nullable=False
+    )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )

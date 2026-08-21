@@ -1,6 +1,5 @@
 """Generated mix API and its public feed/private library."""
 
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
 
@@ -15,8 +14,8 @@ from app.schemas import (
     MixFeedItem,
     MixLibraryRead,
     MixRead,
-    NotificationRead,
     MixUpdate,
+    NotificationRead,
     StartMixRequest,
 )
 from app.services import forum_service, mix_service, social_service
@@ -76,6 +75,7 @@ def start_mix(
         db,
         request.prompt,
         current_user.id if current_user else None,
+        mode=request.mode,
         vibe=vibe,
         retriever=retriever,
         fallback_retriever=fallback_retriever,
@@ -102,13 +102,14 @@ def get_feed(
         if blocked_ids:
             query = query.filter(~Mix.owner_id.in_(blocked_ids))
     mixes = (
-        query
-        .order_by(Mix.published_at.desc(), Mix.id.desc())
+        query.order_by(Mix.published_at.desc(), Mix.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
-    return [_feed_item(db, mix, current_user.id if current_user else None) for mix in mixes]
+    return [
+        _feed_item(db, mix, current_user.id if current_user else None) for mix in mixes
+    ]
 
 
 def _owned_mixes(db: Session, user_id: int) -> list[Mix]:
@@ -136,16 +137,23 @@ def _saved_mixes(db: Session, user_id: int) -> list[Mix]:
 def get_library(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    return {"owned": _owned_mixes(db, current_user.id), "saved": _saved_mixes(db, current_user.id)}
+    return {
+        "owned": _owned_mixes(db, current_user.id),
+        "saved": _saved_mixes(db, current_user.id),
+    }
 
 
 @router.get("/mine", response_model=list[MixRead])
-def get_owned(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_owned(
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     return _owned_mixes(db, current_user.id)
 
 
 @router.get("/saved", response_model=list[MixRead])
-def get_saved(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_saved(
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     return _saved_mixes(db, current_user.id)
 
 
@@ -223,7 +231,12 @@ def _like(mix_id: int, enabled: bool, current_user: User, db: Session):
 
 @router.post("/{mix_id}/like")
 @router.put("/{mix_id}/like", include_in_schema=False)
-async def like_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def like_mix(
+    mix_id: int,
+    _: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     mix = _published(db, mix_id)
     was_liked = mix_service.liked_by(db, mix_id, current_user.id)
     result = _like(mix_id, True, current_user, db)
@@ -240,13 +253,22 @@ async def like_mix(mix_id: int, _: None = Depends(write_rate_limit), current_use
         if notification:
             db.commit()
             db.refresh(notification)
-            notification_payload = NotificationRead.model_validate(notification).model_dump(mode="json")
-            await channel_hub.publish(f"user:{mix.owner_id}", "notification", notification_payload)
+            notification_payload = NotificationRead.model_validate(
+                notification
+            ).model_dump(mode="json")
+            await channel_hub.publish(
+                f"user:{mix.owner_id}", "notification", notification_payload
+            )
     return result
 
 
 @router.delete("/{mix_id}/like")
-def unlike_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def unlike_mix(
+    mix_id: int,
+    _: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     return _like(mix_id, False, current_user, db)
 
 
@@ -258,10 +280,20 @@ def _save(mix_id: int, enabled: bool, current_user: User, db: Session):
 
 @router.post("/{mix_id}/save")
 @router.put("/{mix_id}/save", include_in_schema=False)
-def save_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def save_mix(
+    mix_id: int,
+    _: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     return _save(mix_id, True, current_user, db)
 
 
 @router.delete("/{mix_id}/save")
-def unsave_mix(mix_id: int, _: None = Depends(write_rate_limit), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def unsave_mix(
+    mix_id: int,
+    _: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     return _save(mix_id, False, current_user, db)

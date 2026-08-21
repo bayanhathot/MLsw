@@ -108,10 +108,9 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     assert row.segment_end_second > row.segment_start_second
     # Lets future targeted reprocessing (e.g. "everything below version N",
     # "everything analyzed before date X") query these independently --
-    # see CatalogTrack.analysis_version's own docstring. "v2": real
-    # Krumhansl-Schmuckler key-finding (root + mode), not v1's bare
-    # strongest-chroma-bin pitch class guess.
-    assert row.analysis_version == "v2"
+    # see CatalogTrack.analysis_version's own docstring. "v3": v2's real
+    # Krumhansl-Schmuckler key-finding plus the absolute segment-level floor.
+    assert row.analysis_version == "v3"
     assert row.analyzed_at is not None
     # Genuine confidence signals read off the same librosa computations
     # bpm/musical_key are chosen from (see audio_analysis._bpm_confidence/

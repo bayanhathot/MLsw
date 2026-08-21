@@ -8,6 +8,7 @@ frontend/API contract.
 from collections import defaultdict
 from datetime import date, timedelta
 
+from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
 
 from app.core.time import utc_now
@@ -19,9 +20,13 @@ PERIODS = {"7d": 7, "30d": 30, "6m": 183, "all": None}
 
 
 def get_or_create_music_profile(db: Session, user_id: int) -> UserMusicProfile:
-    profile = db.query(UserMusicProfile).filter(UserMusicProfile.user_id == user_id).first()
+    profile = (
+        db.query(UserMusicProfile).filter(UserMusicProfile.user_id == user_id).first()
+    )
     if profile is None:
-        profile = UserMusicProfile(user_id=user_id, is_public=False, visibility="private")
+        profile = UserMusicProfile(
+            user_id=user_id, is_public=False, visibility="private"
+        )
         db.add(profile)
         db.commit()
         db.refresh(profile)
@@ -34,7 +39,9 @@ def set_visibility(profile: UserMusicProfile, visibility: str) -> None:
     profile.is_public = visibility == "public"
 
 
-def _aggregate_named(events: list[ListeningEvent], attribute: str) -> dict[str, tuple[str, int]]:
+def _aggregate_named(
+    events: list[ListeningEvent], attribute: str
+) -> dict[str, tuple[str, int]]:
     values: dict[str, list] = {}
     for event in events:
         raw = getattr(event, attribute, None)
@@ -55,7 +62,9 @@ def _metrics(grouped: dict[str, tuple[str, int]], denominator: int) -> list[dict
         {
             "name": name,
             "seconds": seconds,
-            "percentage": round((seconds / denominator) * 100, 1) if denominator else 0.0,
+            "percentage": round((seconds / denominator) * 100, 1)
+            if denominator
+            else 0.0,
         }
         for name, seconds in items
     ]
@@ -68,18 +77,23 @@ def _tracks(events: list[ListeningEvent], denominator: int) -> list[dict]:
             continue
         key = (
             event.source,
-            event.source_track_id or f"{event.artist_name.casefold()}::{event.track_title.casefold()}",
+            event.source_track_id
+            or f"{event.artist_name.casefold()}::{event.track_title.casefold()}",
         )
         item = grouped.setdefault(
             key,
             {"title": event.track_title, "artist": event.artist_name, "seconds": 0},
         )
         item["seconds"] += int(event.seconds_listened)
-    ordered = sorted(grouped.values(), key=lambda item: (-item["seconds"], item["title"].casefold()))
+    ordered = sorted(
+        grouped.values(), key=lambda item: (-item["seconds"], item["title"].casefold())
+    )
     return [
         {
             **item,
-            "percentage": round(item["seconds"] / denominator * 100, 1) if denominator else 0.0,
+            "percentage": round(item["seconds"] / denominator * 100, 1)
+            if denominator
+            else 0.0,
         }
         for item in ordered[:12]
     ]
@@ -99,7 +113,11 @@ def _time_of_day(events: list[ListeningEvent], denominator: int) -> list[dict]:
             bucket = "Night"
         buckets[bucket] += max(0, int(event.seconds_listened))
     return [
-        {"name": name, "seconds": seconds, "percentage": round(seconds / denominator * 100, 1) if denominator else 0.0}
+        {
+            "name": name,
+            "seconds": seconds,
+            "percentage": round(seconds / denominator * 100, 1) if denominator else 0.0,
+        }
         for name, seconds in buckets.items()
         if seconds > 0
     ]
@@ -111,14 +129,22 @@ def _dna(profile: UserMusicProfile) -> dict:
     if isinstance(features, dict):
         for name, value in features.items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                dimensions.append({"name": str(name), "value": max(0.0, min(1.0, float(value)))})
+                dimensions.append(
+                    {"name": str(name), "value": max(0.0, min(1.0, float(value)))}
+                )
     elif isinstance(features, list):
         for item in features:
             if not isinstance(item, dict):
                 continue
             name, value = item.get("name"), item.get("value")
-            if isinstance(name, str) and isinstance(value, (int, float)) and not isinstance(value, bool):
-                dimensions.append({"name": name, "value": max(0.0, min(1.0, float(value)))})
+            if (
+                isinstance(name, str)
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                dimensions.append(
+                    {"name": name, "value": max(0.0, min(1.0, float(value)))}
+                )
     return {
         "status": profile.dna_status,
         "label": profile.dna_label,
@@ -150,14 +176,23 @@ def _trend(events: list[ListeningEvent], period: str) -> list[dict]:
             day = event.started_at.date()
             week = day - timedelta(days=day.weekday())
             listened[week] += max(0, int(event.seconds_listened))
-        return [{"date": key.isoformat(), "seconds": listened[key]} for key in sorted(listened)]
+        return [
+            {"date": key.isoformat(), "seconds": listened[key]}
+            for key in sorted(listened)
+        ]
     listened_month: dict[str, int] = defaultdict(int)
     for event in events:
-        listened_month[event.started_at.strftime("%Y-%m-01")] += max(0, int(event.seconds_listened))
-    return [{"date": key, "seconds": listened_month[key]} for key in sorted(listened_month)]
+        listened_month[event.started_at.strftime("%Y-%m-01")] += max(
+            0, int(event.seconds_listened)
+        )
+    return [
+        {"date": key, "seconds": listened_month[key]} for key in sorted(listened_month)
+    ]
 
 
-def _recent_listening(db: Session, events: list[ListeningEvent], limit: int = 6) -> list[dict]:
+def _recent_listening(
+    db: Session, events: list[ListeningEvent], limit: int = 6
+) -> list[dict]:
     grouped: dict[str, dict] = {}
     for event in events:
         if event.mix_id is not None:
@@ -166,12 +201,17 @@ def _recent_listening(db: Session, events: list[ListeningEvent], limit: int = 6)
             key, kind = f"session:{event.session_id}", "session"
         else:
             continue
-        item = grouped.setdefault(key, {"key": key, "kind": kind, "seconds": 0, "started_at": event.started_at})
+        item = grouped.setdefault(
+            key,
+            {"key": key, "kind": kind, "seconds": 0, "started_at": event.started_at},
+        )
         item["seconds"] += int(event.seconds_listened)
         if event.started_at > item["started_at"]:
             item["started_at"] = event.started_at
 
-    ordered = sorted(grouped.values(), key=lambda item: item["started_at"], reverse=True)[:limit]
+    ordered = sorted(
+        grouped.values(), key=lambda item: item["started_at"], reverse=True
+    )[:limit]
     result = []
     for item in ordered:
         context_id = item["key"].split(":", 1)[1]
@@ -189,15 +229,142 @@ def _recent_listening(db: Session, events: list[ListeningEvent], limit: int = 6)
     return result
 
 
-def _filter_events(db: Session, user_id: int, period: str) -> list[ListeningEvent]:
+def _scoped_events_query(db: Session, user_id: int, period: str):
     query = db.query(ListeningEvent).filter(ListeningEvent.user_id == user_id)
     days = PERIODS.get(period)
     if period not in PERIODS:
         period = "all"
         days = None
     if days:
-        query = query.filter(ListeningEvent.started_at >= utc_now() - timedelta(days=days))
-    return query.order_by(ListeningEvent.started_at.desc(), ListeningEvent.id.desc()).all()
+        query = query.filter(
+            ListeningEvent.started_at >= utc_now() - timedelta(days=days)
+        )
+    return query
+
+
+def _filter_events(db: Session, user_id: int, period: str) -> list[ListeningEvent]:
+    return (
+        _scoped_events_query(db, user_id, period)
+        .order_by(ListeningEvent.started_at.desc(), ListeningEvent.id.desc())
+        .all()
+    )
+
+
+def _segment_analytics(db: Session, user_id: int, period: str) -> dict:
+    """Compute the proposal's three segment metrics from server-resolved events.
+
+    Formulas are deliberately explicit and stable:
+    - most replayed = the eligible segment with the largest event count, but
+      only after a second play exists; replay_count = play_count - 1;
+    - average length = AVG(segment_end_second - segment_start_second), weighted
+      by eligible playback events in the selected period;
+    - time saved = SUM(MAX(track_duration_seconds - seconds_listened, 0)) for
+      positive plays with a known full-track duration.
+
+    A persisted mix segment uses its database id as its stable identity. Live
+    DJ moments have no MixSegment row, so their stable source-track id plus
+    selected start/end bounds is used instead. All calculations run in SQL and
+    use the same period scope as the rest of Music Identity.
+    """
+
+    scoped = _scoped_events_query(db, user_id, period)
+    positive_play = ListeningEvent.seconds_listened > 0
+    valid_segment = and_(
+        positive_play,
+        ListeningEvent.segment_start_second.is_not(None),
+        ListeningEvent.segment_end_second.is_not(None),
+        ListeningEvent.segment_end_second > ListeningEvent.segment_start_second,
+    )
+    segment_length = (
+        ListeningEvent.segment_end_second - ListeningEvent.segment_start_second
+    )
+    known_track_duration = and_(
+        positive_play,
+        ListeningEvent.track_duration_seconds.is_not(None),
+        ListeningEvent.track_duration_seconds > 0,
+    )
+    seconds_saved = case(
+        (
+            and_(
+                known_track_duration,
+                ListeningEvent.track_duration_seconds > ListeningEvent.seconds_listened,
+            ),
+            ListeningEvent.track_duration_seconds - ListeningEvent.seconds_listened,
+        ),
+        else_=0,
+    )
+
+    summary = scoped.with_entities(
+        func.avg(case((valid_segment, segment_length), else_=None)).label(
+            "average_segment_length"
+        ),
+        func.coalesce(func.sum(seconds_saved), 0).label("time_saved"),
+        func.coalesce(func.sum(case((valid_segment, 1), else_=0)), 0).label(
+            "segment_play_count"
+        ),
+        func.coalesce(func.sum(case((known_track_duration, 1), else_=0)), 0).label(
+            "time_saved_play_count"
+        ),
+    ).one()
+
+    play_count = func.count(ListeningEvent.id)
+    listened_sum = func.sum(ListeningEvent.seconds_listened)
+    replayed = (
+        scoped.filter(valid_segment)
+        .with_entities(
+            ListeningEvent.segment_id.label("segment_id"),
+            ListeningEvent.source.label("source"),
+            ListeningEvent.source_track_id.label("source_track_id"),
+            ListeningEvent.track_title.label("title"),
+            ListeningEvent.artist_name.label("artist"),
+            ListeningEvent.segment_start_second.label("start_second"),
+            ListeningEvent.segment_end_second.label("end_second"),
+            play_count.label("play_count"),
+            listened_sum.label("seconds_listened"),
+        )
+        .group_by(
+            ListeningEvent.segment_id,
+            ListeningEvent.source,
+            ListeningEvent.source_track_id,
+            ListeningEvent.track_title,
+            ListeningEvent.artist_name,
+            ListeningEvent.segment_start_second,
+            ListeningEvent.segment_end_second,
+        )
+        .having(play_count > 1)
+        .order_by(
+            play_count.desc(),
+            listened_sum.desc(),
+            ListeningEvent.track_title.asc(),
+            ListeningEvent.segment_start_second.asc(),
+        )
+        .first()
+    )
+
+    most_replayed = None
+    if replayed is not None:
+        most_replayed = {
+            "segment_id": replayed.segment_id,
+            "title": replayed.title,
+            "artist": replayed.artist,
+            "start_second": int(replayed.start_second),
+            "end_second": int(replayed.end_second),
+            "play_count": int(replayed.play_count),
+            "replay_count": int(replayed.play_count) - 1,
+            "seconds_listened": int(replayed.seconds_listened or 0),
+        }
+
+    return {
+        "most_replayed_segment": most_replayed,
+        "average_segment_length_seconds": (
+            round(float(summary.average_segment_length), 1)
+            if summary.average_segment_length is not None
+            else None
+        ),
+        "time_saved_seconds": int(summary.time_saved or 0),
+        "segment_play_count": int(summary.segment_play_count or 0),
+        "time_saved_play_count": int(summary.time_saved_play_count or 0),
+    }
 
 
 def build_music_identity(db: Session, user_id: int, period: str = "all") -> dict:
@@ -227,13 +394,25 @@ def build_music_identity(db: Session, user_id: int, period: str = "all") -> dict
             "top_genre": genres[0] if genres else None,
             "top_vibe": vibes[0] if vibes else None,
             "artists_discovered": len(artists_grouped),
-            "tracks_discovered": len({
-                (event.source, event.source_track_id or f"{event.artist_name.casefold()}::{event.track_title.casefold()}")
-                for event in events if event.seconds_listened > 0
-            }),
+            "tracks_discovered": len(
+                {
+                    (
+                        event.source,
+                        event.source_track_id
+                        or f"{event.artist_name.casefold()}::{event.track_title.casefold()}",
+                    )
+                    for event in events
+                    if event.seconds_listened > 0
+                }
+            ),
             "listening_contexts": len(contexts),
-            "average_context_seconds": round(sum(item["seconds"] for item in contexts) / len(contexts)) if contexts else 0,
+            "average_context_seconds": round(
+                sum(item["seconds"] for item in contexts) / len(contexts)
+            )
+            if contexts
+            else 0,
         },
+        "segment_analytics": _segment_analytics(db, user_id, period),
         "artists": artists[:12],
         "genres": genres[:12],
         "vibes": vibes[:12],

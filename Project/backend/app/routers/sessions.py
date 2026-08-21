@@ -39,11 +39,16 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 def _existing(db: Session, session_id: str, current_user: User | None = None):
     session = session_manager.get_session(db, session_id)
     if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found."
+        )
     if session.user_id is not None and (
         current_user is None or session.user_id != current_user.id
     ):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session belongs to another user.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Session belongs to another user.",
+        )
     return session
 
 
@@ -65,6 +70,7 @@ def start_session(
             db,
             request.prompt,
             current_user.id if current_user else None,
+            mode=request.mode,
             vibe=vibe,
             retriever=retriever,
             fallback_retriever=fallback_retriever,
@@ -77,12 +83,16 @@ def start_session(
         # NoMatchingCandidate site is mid-session (session_manager.py),
         # where the existing session/trace already stays queryable and
         # doesn't need a separate failure record.
-        record_event({
-            "event": "session_create_failed",
-            "prompt": request.prompt,
-            "reason": str(exc),
-        })
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from None
+        record_event(
+            {
+                "event": "session_create_failed",
+                "prompt": request.prompt,
+                "reason": str(exc),
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from None
 
 
 @router.get("/{session_id}", response_model=SessionRead)
@@ -109,7 +119,9 @@ def send_feedback(
 ):
     session = _existing(db, session_id, current_user)
     if session.status == "stopped":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session is already stopped.")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Session is already stopped."
+        )
     return session_manager.apply_feedback(
         db,
         session,
@@ -142,7 +154,9 @@ def advance_session(
 
     session = _existing(db, session_id, current_user)
     if session.status == "stopped":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session is already stopped.")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Session is already stopped."
+        )
     return session_manager.advance_session(
         db,
         session,

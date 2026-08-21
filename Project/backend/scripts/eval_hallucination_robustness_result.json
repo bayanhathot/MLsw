@@ -1,6 +1,6 @@
 {
-  "pass_count": 7,
-  "total_count": 7,
+  "pass_count": 8,
+  "total_count": 8,
   "pass_rate": 1.0,
   "cases": [
     {
@@ -60,6 +60,19 @@
       "evidence": {
         "is_pass_through": true,
         "fallback_reason": "silent_or_near_silent_audio"
+      }
+    },
+    {
+      "case_id": "analyzed_near_silent_provider_segment",
+      "label": "Uniformly near-silent analyzed provider segment",
+      "passed": true,
+      "detail": "Analysis rejected the track by absolute level and rendering independently rejected stale chorus metadata",
+      "evidence": {
+        "target_dBFS": -60,
+        "analysis_rejected": true,
+        "analysis_error": "Every analyzed window of 'uniform -60 dBFS provider track' fell below the silence floor -- no real, sustained loud passage to report as a completed analysis.",
+        "render_rejected": true,
+        "render_fallback_reason": "silent_or_near_silent_audio"
       }
     },
     {

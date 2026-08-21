@@ -19,6 +19,8 @@
 	} = $props();
 	let totalSeconds = $derived(Number(identity?.summary?.total_listening_seconds || 0));
 	let hasData = $derived(totalSeconds > 0);
+	let segmentAnalytics = $derived(identity?.segment_analytics || {});
+	let mostReplayedSegment = $derived(segmentAnalytics?.most_replayed_segment || null);
 
 	/** @type {[('7d'|'30d'|'6m'|'all'), string][]} */
 	const periodOptions = [
@@ -113,6 +115,47 @@
 				? `${identity.summary.top_vibe.percentage}% of classified listening`
 				: 'Your recurring context will show here.'}
 			icon="≈"
+		/>
+	</div>
+
+	<div class="analytics-caption">
+		<div>
+			<p class="eyebrow">Proposal analytics</p>
+			<h3>How Cuemix changes your listening time</h3>
+		</div>
+		<span>Calculated from server-verified plays in this time window</span>
+	</div>
+	<div class="metrics-grid segment-metrics">
+		<AnalyticsCard
+			label="Most-replayed segment"
+			value={mostReplayedSegment?.title || 'No replays yet'}
+			detail={mostReplayedSegment
+				? `${mostReplayedSegment.artist} · ${mostReplayedSegment.replay_count} replay${mostReplayedSegment.replay_count === 1 ? '' : 's'} across ${mostReplayedSegment.play_count} plays`
+				: 'A segment appears after its second recorded play.'}
+			tooltip="Formula: group eligible plays by persisted segment, or by source track plus selected bounds for live DJ moments. Replays equal play count minus one."
+			icon="↻"
+		/>
+		<AnalyticsCard
+			label="Average segment length"
+			value={segmentAnalytics?.average_segment_length_seconds == null
+				? 'No segments yet'
+				: duration(segmentAnalytics.average_segment_length_seconds)}
+			detail={segmentAnalytics?.segment_play_count
+				? `Event-weighted average across ${segmentAnalytics.segment_play_count} segment plays`
+				: 'Starts after the first valid segment play.'}
+			tooltip="Formula: average of selected end second minus selected start second for every positive segment play in the chosen period."
+			icon="↔"
+			accent="cyan"
+		/>
+		<AnalyticsCard
+			label="Time saved vs full songs"
+			value={duration(segmentAnalytics?.time_saved_seconds || 0)}
+			detail={segmentAnalytics?.time_saved_play_count
+				? `Estimated across ${segmentAnalytics.time_saved_play_count} plays with known track duration`
+				: 'Full-track duration is required for this estimate.'}
+			tooltip="Formula: sum of max(full source-track duration minus seconds actually heard, zero) for positive plays with a known duration."
+			icon="⌁"
+			accent="violet"
 		/>
 	</div>
 
@@ -271,6 +314,26 @@
 		display: grid;
 		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 14px;
+	}
+	.analytics-caption {
+		display: flex;
+		align-items: end;
+		justify-content: space-between;
+		gap: 20px;
+		padding-top: 6px;
+	}
+	.analytics-caption h3 {
+		margin: 0;
+		font-size: 22px;
+		letter-spacing: -0.03em;
+	}
+	.analytics-caption > span {
+		color: #71839d;
+		font-size: 12px;
+		text-align: right;
+	}
+	.segment-metrics {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 	}
 	.discovery-strip {
 		display: grid;
@@ -474,6 +537,13 @@
 		.period-row {
 			align-items: flex-start;
 			flex-direction: column;
+		}
+		.analytics-caption {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.analytics-caption > span {
+			text-align: left;
 		}
 		.periods {
 			width: 100%;

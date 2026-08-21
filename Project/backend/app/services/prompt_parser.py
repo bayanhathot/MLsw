@@ -12,7 +12,8 @@ Concurrency (D4): at most OLLAMA_MAX_CONCURRENCY calls are ever in flight
 against Ollama at once; a call beyond that genuinely queues behind
 OLLAMA_QUEUE_WAIT_SECONDS (a real wait, not the old 50ms shed) before
 falling back to the deterministic parse. See get_ollama_stats() for the
-attempted/succeeded/timed_out/shed counters this produces, and
+attempted/succeeded/timeout/HTTP/invalid/unexpected/shed counters this
+produces, and
 get_cluster_ollama_stats() for the cross-replica aggregate.
 
 D6b: that concurrency cap is enforced across every BACKEND_WORKERS replica,
@@ -35,7 +36,7 @@ import redis as sync_redis
 from pydantic import ValidationError
 
 from app.core.redis_client import get_sync_redis_client
-from app.schemas import PromptIntent
+from app.schemas import AutoMixMode, PromptIntent
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +53,54 @@ ALLOWED_GENRES = {
     "rock",
     "techno",
 }
+
+# Literal proposal modes are an explicit user choice, not a phrase for the
+# LLM/deterministic parser to guess. Applying one replaces only the musical
+# dimensions controlled by the mode while preserving a parsed artist ask and
+# the original safe search text. The same function is used by live sessions
+# and persisted mixes so the four buttons cannot drift into different
+# meanings across product surfaces.
+AUTO_MIX_MODE_PRESETS: dict[AutoMixMode, dict[str, str | list[str]]] = {
+    AutoMixMode.WORKOUT: {
+        "mood": "energetic",
+        "energy": "high",
+        "vocals": "neutral",
+        "genres": ["electronic", "hip-hop", "rock"],
+    },
+    AutoMixMode.RELAXATION: {
+        "mood": "calm",
+        "energy": "low",
+        "vocals": "less",
+        "genres": ["ambient", "lofi", "classical"],
+    },
+    AutoMixMode.EMOTIONAL_TARAB: {
+        "mood": "emotional",
+        "energy": "medium",
+        "vocals": "more",
+        "genres": ["arabic"],
+    },
+    AutoMixMode.PARTY: {
+        "mood": "party",
+        "energy": "high",
+        "vocals": "more",
+        "genres": ["pop", "house", "electronic"],
+    },
+}
+
+
+def apply_auto_mix_mode(intent: PromptIntent, mode: AutoMixMode | None) -> PromptIntent:
+    """Apply one explicit, deterministic product preset to a parsed intent."""
+
+    if mode is None:
+        return intent
+    return intent.model_copy(update=AUTO_MIX_MODE_PRESETS[mode], deep=True)
+
+
 # Process-local fallback only -- see _acquire_ollama_slot below for when
 # this is actually used vs. the D6b distributed semaphore.
-_ollama_slots = BoundedSemaphore(max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "4")))))
+_ollama_slots = BoundedSemaphore(
+    max(1, min(16, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "4"))))
+)
 
 
 def _ollama_max_concurrency() -> int:
@@ -66,7 +112,9 @@ def _ollama_max_concurrency() -> int:
 # hardcoded 0.05s (a shed, not a queue: under load, nearly every request
 # skipped the model entirely rather than waiting its turn). Clamped the same
 # way OLLAMA_MAX_CONCURRENCY is just above.
-OLLAMA_QUEUE_WAIT_SECONDS = max(0.05, min(10.0, float(os.getenv("OLLAMA_QUEUE_WAIT_SECONDS", "2.0"))))
+OLLAMA_QUEUE_WAIT_SECONDS = max(
+    0.05, min(10.0, float(os.getenv("OLLAMA_QUEUE_WAIT_SECONDS", "2.0")))
+)
 
 # D6b: without this, each BACKEND_WORKERS replica enforced its own local
 # OLLAMA_MAX_CONCURRENCY independently, so the real concurrency against the
@@ -109,7 +157,9 @@ return 1
 """
 
 
-def _acquire_distributed_slot(redis_client: sync_redis.Redis, timeout_seconds: float) -> str | None:
+def _acquire_distributed_slot(
+    redis_client: sync_redis.Redis, timeout_seconds: float
+) -> str | None:
     """Polls the Redis-backed distributed semaphore until a slot frees up or
     `timeout_seconds` elapses -- Redis has no native blocking-acquire
     primitive, so this is a bounded poll loop. Returns the holder token to
@@ -122,8 +172,13 @@ def _acquire_distributed_slot(redis_client: sync_redis.Redis, timeout_seconds: f
     while True:
         now = time()
         acquired = redis_client.eval(
-            _OLLAMA_SEMAPHORE_ACQUIRE_LUA, 1, _OLLAMA_SEMAPHORE_KEY,
-            now, limit, holder, now + _OLLAMA_LEASE_SECONDS,
+            _OLLAMA_SEMAPHORE_ACQUIRE_LUA,
+            1,
+            _OLLAMA_SEMAPHORE_KEY,
+            now,
+            limit,
+            holder,
+            now + _OLLAMA_LEASE_SECONDS,
         )
         if acquired:
             return holder
@@ -155,7 +210,8 @@ def _acquire_ollama_slot(timeout_seconds: float):
         except (sync_redis.RedisError, OSError) as exc:
             logger.warning(
                 "prompt_parser: distributed Ollama semaphore unavailable, "
-                "falling back to process-local: %s", exc,
+                "falling back to process-local: %s",
+                exc,
             )
         else:
             if holder is None:
@@ -165,6 +221,7 @@ def _acquire_ollama_slot(timeout_seconds: float):
     if not _ollama_slots.acquire(timeout=timeout_seconds):
         return None
     return _ollama_slots.release
+
 
 # Only create_session calls parse_prompt (see vibe.py/session_manager.py's
 # own _initial_intent) -- apply_feedback/advance_session/prepare_next reuse
@@ -185,7 +242,20 @@ _OLLAMA_STAGE_BUDGET_SECONDS = 15.0
 # path itself -- only real, attempted calls update it, so a disabled/unused
 # LLM step correctly shows "no calls yet" rather than a stale/fabricated value.
 _last_call_lock = Lock()
-_last_ollama_call: dict = {"at": None, "latency_ms": None, "ok": None}
+_last_ollama_call: dict = {"at": None, "latency_ms": None, "ok": None, "outcome": None}
+
+_OLLAMA_OUTCOME_SUCCESS = "success"
+_OLLAMA_OUTCOME_TIMEOUT = "timeout"
+_OLLAMA_OUTCOME_HTTP_ERROR = "http_error"
+_OLLAMA_OUTCOME_INVALID_RESPONSE = "invalid_response"
+_OLLAMA_OUTCOME_UNEXPECTED_ERROR = "unexpected_error"
+_OLLAMA_OUTCOMES = {
+    _OLLAMA_OUTCOME_SUCCESS,
+    _OLLAMA_OUTCOME_TIMEOUT,
+    _OLLAMA_OUTCOME_HTTP_ERROR,
+    _OLLAMA_OUTCOME_INVALID_RESPONSE,
+    _OLLAMA_OUTCOME_UNEXPECTED_ERROR,
+}
 
 # Cumulative, process-level counters -- same lock as _last_ollama_call, same
 # "only real attempted calls update it" rule. Per-process, not per-cluster --
@@ -198,6 +268,9 @@ _ollama_stats: dict = {
     "attempted": 0,
     "succeeded": 0,
     "timed_out": 0,
+    "http_errors": 0,
+    "invalid_responses": 0,
+    "unexpected_errors": 0,
     "shed": 0,
     "latency_count": 0,
     "latency_sum_ms": 0.0,
@@ -214,29 +287,43 @@ _ollama_stats: dict = {
 _OLLAMA_CLUSTER_STATS_KEY = "cuemix:ollama_stats"
 
 
-def _record_cluster_ollama_call(latency_ms: float, ok: bool) -> None:
+def _record_cluster_ollama_call(latency_ms: float, outcome: str) -> None:
     redis_client = get_sync_redis_client()
     if redis_client is None:
         return
     try:
         redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "attempted", 1)
-        if ok:
+        if outcome == _OLLAMA_OUTCOME_SUCCESS:
             redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "succeeded", 1)
             redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "latency_count", 1)
-            redis_client.hincrbyfloat(_OLLAMA_CLUSTER_STATS_KEY, "latency_sum_ms", latency_ms)
+            redis_client.hincrbyfloat(
+                _OLLAMA_CLUSTER_STATS_KEY, "latency_sum_ms", latency_ms
+            )
             # Best-effort high-watermark, not atomic against a concurrent
             # writer on another replica -- a lost race here just means the
             # displayed max briefly undercounts the true slowest call, not a
             # correctness problem for anything that reads this value. An
             # atomic version would need a Lua compare-and-set; not obviously
             # worth it for a display-only "slowest call we've seen" metric.
-            current_max = float(redis_client.hget(_OLLAMA_CLUSTER_STATS_KEY, "latency_max_ms") or 0.0)
+            current_max = float(
+                redis_client.hget(_OLLAMA_CLUSTER_STATS_KEY, "latency_max_ms") or 0.0
+            )
             if latency_ms > current_max:
-                redis_client.hset(_OLLAMA_CLUSTER_STATS_KEY, "latency_max_ms", latency_ms)
-        else:
+                redis_client.hset(
+                    _OLLAMA_CLUSTER_STATS_KEY, "latency_max_ms", latency_ms
+                )
+        elif outcome == _OLLAMA_OUTCOME_TIMEOUT:
             redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "timed_out", 1)
+        elif outcome == _OLLAMA_OUTCOME_HTTP_ERROR:
+            redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "http_errors", 1)
+        elif outcome == _OLLAMA_OUTCOME_INVALID_RESPONSE:
+            redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "invalid_responses", 1)
+        else:
+            redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "unexpected_errors", 1)
     except (sync_redis.RedisError, OSError):
-        logger.debug("prompt_parser: cluster Ollama stats increment failed", exc_info=True)
+        logger.debug(
+            "prompt_parser: cluster Ollama stats increment failed", exc_info=True
+        )
 
 
 def _record_cluster_ollama_shed() -> None:
@@ -246,23 +333,36 @@ def _record_cluster_ollama_shed() -> None:
     try:
         redis_client.hincrby(_OLLAMA_CLUSTER_STATS_KEY, "shed", 1)
     except (sync_redis.RedisError, OSError):
-        logger.debug("prompt_parser: cluster Ollama shed increment failed", exc_info=True)
+        logger.debug(
+            "prompt_parser: cluster Ollama shed increment failed", exc_info=True
+        )
 
 
-def _record_ollama_call(latency_ms: float, ok: bool) -> None:
+def _record_ollama_call(latency_ms: float, outcome: str) -> None:
+    if outcome not in _OLLAMA_OUTCOMES:
+        raise ValueError(f"Unknown Ollama outcome: {outcome}")
     with _last_call_lock:
         _last_ollama_call["at"] = datetime.now(UTC).replace(tzinfo=None)
         _last_ollama_call["latency_ms"] = round(latency_ms, 1)
-        _last_ollama_call["ok"] = ok
+        _last_ollama_call["ok"] = outcome == _OLLAMA_OUTCOME_SUCCESS
+        _last_ollama_call["outcome"] = outcome
         _ollama_stats["attempted"] += 1
-        if ok:
+        if outcome == _OLLAMA_OUTCOME_SUCCESS:
             _ollama_stats["succeeded"] += 1
             _ollama_stats["latency_count"] += 1
             _ollama_stats["latency_sum_ms"] += latency_ms
-            _ollama_stats["latency_max_ms"] = max(_ollama_stats["latency_max_ms"], latency_ms)
-        else:
+            _ollama_stats["latency_max_ms"] = max(
+                _ollama_stats["latency_max_ms"], latency_ms
+            )
+        elif outcome == _OLLAMA_OUTCOME_TIMEOUT:
             _ollama_stats["timed_out"] += 1
-    _record_cluster_ollama_call(latency_ms, ok)
+        elif outcome == _OLLAMA_OUTCOME_HTTP_ERROR:
+            _ollama_stats["http_errors"] += 1
+        elif outcome == _OLLAMA_OUTCOME_INVALID_RESPONSE:
+            _ollama_stats["invalid_responses"] += 1
+        else:
+            _ollama_stats["unexpected_errors"] += 1
+    _record_cluster_ollama_call(latency_ms, outcome)
 
 
 def _record_ollama_shed() -> None:
@@ -323,9 +423,14 @@ def get_cluster_ollama_stats() -> dict | None:
         "attempted": attempted,
         "succeeded": succeeded,
         "timed_out": int(raw.get("timed_out", 0)),
+        "http_errors": int(raw.get("http_errors", 0)),
+        "invalid_responses": int(raw.get("invalid_responses", 0)),
+        "unexpected_errors": int(raw.get("unexpected_errors", 0)),
         "shed": int(raw.get("shed", 0)),
         "success_rate": (succeeded / attempted) if attempted else None,
-        "mean_latency_ms": round(latency_sum_ms / latency_count, 1) if latency_count else None,
+        "mean_latency_ms": round(latency_sum_ms / latency_count, 1)
+        if latency_count
+        else None,
     }
 
 
@@ -340,6 +445,9 @@ def reset_ollama_stats() -> None:
                 "attempted": 0,
                 "succeeded": 0,
                 "timed_out": 0,
+                "http_errors": 0,
+                "invalid_responses": 0,
+                "unexpected_errors": 0,
                 "shed": 0,
                 "latency_count": 0,
                 "latency_sum_ms": 0.0,
@@ -352,6 +460,7 @@ def reset_ollama_stats() -> None:
             redis_client.delete(_OLLAMA_CLUSTER_STATS_KEY)
         except (sync_redis.RedisError, OSError):
             pass
+
 
 _HIGH_ENERGY_WORDS = {"energy", "energetic", "gym", "workout", "fast", "intense"}
 _LOW_ENERGY_WORDS = {"calm", "chill", "focus", "relax", "smooth", "sleep"}
@@ -414,15 +523,36 @@ def _looks_like_vibe_description(candidate: str) -> bool:
 
     words = set(re.findall(r"[a-z0-9-]+", candidate.lower()))
     filler = {
-        "some", "something", "music", "songs", "tracks", "a", "the", "for",
-        "me", "and", "of", "please",
+        "some",
+        "something",
+        "music",
+        "songs",
+        "tracks",
+        "a",
+        "the",
+        "for",
+        "me",
+        "and",
+        "of",
+        "please",
     }
     meaningful = words - filler
     if not meaningful:
         return True
-    keyword_like = ALLOWED_GENRES | _HIGH_ENERGY_WORDS | _LOW_ENERGY_WORDS | {
-        "vocals", "instrumental", "less", "vibes", "vibe", "mix", "beats",
-    }
+    keyword_like = (
+        ALLOWED_GENRES
+        | _HIGH_ENERGY_WORDS
+        | _LOW_ENERGY_WORDS
+        | {
+            "vocals",
+            "instrumental",
+            "less",
+            "vibes",
+            "vibe",
+            "mix",
+            "beats",
+        }
+    )
     return meaningful <= keyword_like
 
 
@@ -435,7 +565,9 @@ def _extract_artist_and_mode(prompt: str) -> tuple[str | None, str]:
     required_match = _ARTIST_REQUIRED_PATTERN.search(prompt)
     reference_match = _ARTIST_REFERENCE_PATTERN.search(prompt)
 
-    if required_match and (not reference_match or required_match.start() <= reference_match.start()):
+    if required_match and (
+        not reference_match or required_match.start() <= reference_match.start()
+    ):
         candidate = _clean_candidate(_first_group(required_match))
         if candidate is None:
             return None, "none"
@@ -472,10 +604,29 @@ def _extract_artist_and_mode(prompt: str) -> tuple[str | None, str]:
 def deterministic_parse(prompt: str) -> PromptIntent:
     text = prompt.strip().lower()
     tokens = set(re.findall(r"[a-z0-9-]+", text))
-    energy = "high" if tokens & _HIGH_ENERGY_WORDS else "low" if tokens & _LOW_ENERGY_WORDS else "medium"
-    vocals = "less" if {"instrumental", "focus", "less"} & tokens else "more" if "vocals" in tokens else "neutral"
+    energy = (
+        "high"
+        if tokens & _HIGH_ENERGY_WORDS
+        else "low"
+        if tokens & _LOW_ENERGY_WORDS
+        else "medium"
+    )
+    vocals = (
+        "less"
+        if {"instrumental", "focus", "less"} & tokens
+        else "more"
+        if "vocals" in tokens
+        else "neutral"
+    )
     genres = sorted(tokens & ALLOWED_GENRES)[:5]
-    mood = next((word for word in ("energetic", "calm", "chill", "focus", "smooth") if word in tokens), "balanced")
+    mood = next(
+        (
+            word
+            for word in ("energetic", "calm", "chill", "focus", "smooth")
+            if word in tokens
+        ),
+        "balanced",
+    )
     artist, artist_mode = _extract_artist_and_mode(prompt)
     return PromptIntent(
         mood=mood,
@@ -513,7 +664,9 @@ def _apply_guardrails(intent: PromptIntent, fallback: PromptIntent) -> PromptInt
     CandidateRetriever depends on.
     """
 
-    intent.genres = [genre.lower() for genre in intent.genres if genre.lower() in ALLOWED_GENRES]
+    intent.genres = [
+        genre.lower() for genre in intent.genres if genre.lower() in ALLOWED_GENRES
+    ]
     intent.search_query = fallback.search_query
     llm_artist = intent.artist.strip() if isinstance(intent.artist, str) else None
     if fallback.artist:
@@ -548,7 +701,9 @@ def parse_prompt(prompt: str) -> PromptIntent:
     if not base_url or not model:
         return fallback
 
-    timeout_seconds = max(0.5, min(20.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0"))))
+    timeout_seconds = max(
+        0.5, min(20.0, float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3.0")))
+    )
     # See _OLLAMA_STAGE_BUDGET_SECONDS's own docstring: normally a no-op
     # (OLLAMA_QUEUE_WAIT_SECONDS's default plus OLLAMA_TIMEOUT_SECONDS's own
     # default comfortably fit under the budget), this only actually clamps
@@ -556,7 +711,8 @@ def parse_prompt(prompt: str) -> PromptIntent:
     # eats far enough into the shared stage budget that the configured queue
     # wait would risk pushing this call past what the request can afford.
     queue_wait_seconds = min(
-        OLLAMA_QUEUE_WAIT_SECONDS, max(0.05, _OLLAMA_STAGE_BUDGET_SECONDS - timeout_seconds)
+        OLLAMA_QUEUE_WAIT_SECONDS,
+        max(0.05, _OLLAMA_STAGE_BUDGET_SECONDS - timeout_seconds),
     )
     release_slot = _acquire_ollama_slot(queue_wait_seconds)
     if release_slot is None:
@@ -564,12 +720,12 @@ def parse_prompt(prompt: str) -> PromptIntent:
         return fallback
     # Everything from here down runs only once a slot was actually acquired
     # -- both _record_ollama_call and the release below live in this same
-    # try/finally, so every acquired call (success, an HTTP/validation
+    # try/finally, so every acquired call (success, timeout, HTTP/validation
     # failure, or a genuinely unexpected exception) always releases exactly
     # once; the shed path above never acquired, so it has nothing to
     # release.
     started = perf_counter()
-    ok = False
+    outcome = _OLLAMA_OUTCOME_UNEXPECTED_ERROR
     try:
         # Qwen3 models default to "thinking mode" on in Ollama, which emits a
         # hidden reasoning block before the real answer and adds real latency
@@ -577,7 +733,11 @@ def parse_prompt(prompt: str) -> PromptIntent:
         # that's the safer choice until a given deployment's GPU is confirmed
         # to handle it within OLLAMA_TIMEOUT_SECONDS; flip per-environment via
         # the env var alone, no code change needed.
-        think_enabled = os.getenv("OLLAMA_THINK_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+        think_enabled = os.getenv("OLLAMA_THINK_ENABLED", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         # Ollama unloads an idle model from memory after its keep-alive window
         # (5 minutes by default), so a request after any gap pays a full
         # reload-from-disk before it can even start generating. A per-request
@@ -607,11 +767,24 @@ def parse_prompt(prompt: str) -> PromptIntent:
         raw = payload.get("response") if isinstance(payload, dict) else None
         decoded = json.loads(raw) if isinstance(raw, str) else raw
         intent = PromptIntent.model_validate(decoded)
-        ok = True
-    except (httpx.HTTPError, ValueError, TypeError, ValidationError):
+        outcome = _OLLAMA_OUTCOME_SUCCESS
+    except httpx.TimeoutException:
+        outcome = _OLLAMA_OUTCOME_TIMEOUT
+        return fallback
+    except httpx.HTTPError:
+        outcome = _OLLAMA_OUTCOME_HTTP_ERROR
+        return fallback
+    except (ValueError, TypeError, ValidationError):
+        outcome = _OLLAMA_OUTCOME_INVALID_RESPONSE
+        return fallback
+    except Exception:
+        # Preserve the parser's fail-open contract, but keep operational
+        # failures distinct from actual network timeouts in the dashboard.
+        logger.warning("Unexpected Ollama prompt-refinement failure", exc_info=True)
+        outcome = _OLLAMA_OUTCOME_UNEXPECTED_ERROR
         return fallback
     finally:
-        _record_ollama_call((perf_counter() - started) * 1000, ok)
+        _record_ollama_call((perf_counter() - started) * 1000, outcome)
         release_slot()
 
     return _apply_guardrails(intent, fallback)

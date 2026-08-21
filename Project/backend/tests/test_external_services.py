@@ -296,6 +296,9 @@ def test_ollama_stats_count_a_successful_call(monkeypatch):
     assert stats["attempted"] == 1
     assert stats["succeeded"] == 1
     assert stats["timed_out"] == 0
+    assert stats["http_errors"] == 0
+    assert stats["invalid_responses"] == 0
+    assert stats["unexpected_errors"] == 0
     assert stats["shed"] == 0
     assert stats["success_rate"] == 1.0
     assert stats["mean_latency_ms"] is not None
@@ -316,9 +319,56 @@ def test_ollama_stats_count_a_timeout_as_attempted_but_not_succeeded(monkeypatch
     assert stats["attempted"] == 1
     assert stats["succeeded"] == 0
     assert stats["timed_out"] == 1
+    assert stats["http_errors"] == 0
+    assert stats["invalid_responses"] == 0
+    assert stats["unexpected_errors"] == 0
     assert stats["shed"] == 0
     assert stats["success_rate"] == 0.0
     assert stats["mean_latency_ms"] is None  # no successful call to average
+
+
+def test_ollama_stats_do_not_misclassify_http_errors_as_timeouts(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    prompt_parser.reset_ollama_stats()
+
+    def server_error(*args, **kwargs):
+        return httpx.Response(503, request=httpx.Request("POST", "http://x"))
+
+    monkeypatch.setattr(httpx.Client, "post", server_error)
+    prompt_parser.parse_prompt("chill lofi beats")
+
+    stats = prompt_parser.get_ollama_stats()
+    assert stats["attempted"] == 1
+    assert stats["timed_out"] == 0
+    assert stats["http_errors"] == 1
+    assert stats["invalid_responses"] == 0
+    assert stats["unexpected_errors"] == 0
+    assert prompt_parser.get_last_ollama_call()["outcome"] == "http_error"
+
+
+def test_ollama_stats_do_not_misclassify_invalid_responses_as_timeouts(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.invalid")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    prompt_parser.reset_ollama_stats()
+
+    def malformed(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={"response": "not-json"},
+            request=httpx.Request("POST", "http://x"),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", malformed)
+    prompt_parser.parse_prompt("chill lofi beats")
+
+    stats = prompt_parser.get_ollama_stats()
+    assert stats["attempted"] == 1
+    assert stats["timed_out"] == 0
+    assert stats["http_errors"] == 0
+    assert stats["invalid_responses"] == 1
+    assert stats["unexpected_errors"] == 0
+    assert prompt_parser.get_last_ollama_call()["outcome"] == "invalid_response"
 
 
 def test_ollama_stats_count_a_shed_call_without_counting_it_as_attempted(monkeypatch):
@@ -401,8 +451,10 @@ def test_cluster_ollama_stats_aggregate_across_simulated_replicas(monkeypatch):
 
     prompt_parser.reset_ollama_stats()  # also clears the Redis hash
 
-    prompt_parser._record_ollama_call(100.0, True)
-    prompt_parser._record_ollama_call(50.0, False)
+    prompt_parser._record_ollama_call(100.0, "success")
+    prompt_parser._record_ollama_call(50.0, "timeout")
+    prompt_parser._record_ollama_call(75.0, "http_error")
+    prompt_parser._record_ollama_call(80.0, "invalid_response")
     prompt_parser._record_ollama_shed()
 
     # A fresh, separate reset of only the process-local counters -- a real
@@ -410,16 +462,20 @@ def test_cluster_ollama_stats_aggregate_across_simulated_replicas(monkeypatch):
     # while the Redis-backed cluster counters keep accumulating.
     with prompt_parser._last_call_lock:
         prompt_parser._ollama_stats.update(
-            {"attempted": 0, "succeeded": 0, "timed_out": 0, "shed": 0,
+            {"attempted": 0, "succeeded": 0, "timed_out": 0,
+             "http_errors": 0, "invalid_responses": 0, "unexpected_errors": 0, "shed": 0,
              "latency_count": 0, "latency_sum_ms": 0.0, "latency_max_ms": 0.0}
         )
-    prompt_parser._record_ollama_call(200.0, True)
+    prompt_parser._record_ollama_call(200.0, "success")
 
     cluster = prompt_parser.get_cluster_ollama_stats()
     assert cluster is not None
-    assert cluster["attempted"] == 3
+    assert cluster["attempted"] == 5
     assert cluster["succeeded"] == 2
     assert cluster["timed_out"] == 1
+    assert cluster["http_errors"] == 1
+    assert cluster["invalid_responses"] == 1
+    assert cluster["unexpected_errors"] == 0
     assert cluster["shed"] == 1
     assert cluster["mean_latency_ms"] == pytest.approx((100.0 + 200.0) / 2, abs=0.1)
 

@@ -87,23 +87,37 @@
   <h1>Requirements status</h1>
   <p class="sub">Where the project stands against the seven graded requirements and the original
   proposal, scored from the repository itself. A requirement earns marks only where code and current
-  evidence prove it—not where comments or architecture make it plausible. Strictly re-audited at
-  commit <code>1e25270</code> on 20 August 2026.</p>
+  evidence prove it — not where comments, architecture, or an earlier optimistic pass make it
+  plausible. This pass checked the implementation, the proposal PDF, the lecturer feedback, the
+  current working tree, focused D8/D9 regressions, an 8-case adversarial evaluation, the full backend
+  suite, and frontend checks. Re-audited from commit <code>c40532e</code> on 21 August 2026.</p>
 
   <div class="hero">
-    <div class="tile"><strong>73</strong><span>Strict rubric estimate, out of 100</span></div>
-    <div class="tile ok"><strong>3</strong><span>Requirements fully met</span></div>
-    <div class="tile flag"><strong>1</strong><span>High-severity defect open</span></div>
-    <div class="tile flag"><strong>68</strong><span>If the high defect earns −5</span></div>
-    <div class="tile"><strong>16.5</strong><span>Points still reachable</span></div>
-    <div class="tile ok"><strong>+5</strong><span>Rubric points in the next 2.5 days</span></div>
+    <div class="tile flag"><strong>74.5</strong><span>Strict rubric estimate, out of 100</span></div>
+    <div class="tile ok"><strong>5</strong><span>Requirements ≥ 80% met (of 7)</span></div>
+    <div class="tile flag"><strong>56%</strong><span>Weakest area: the 50-pt proposal itself</span></div>
+    <div class="tile ok"><strong>0</strong><span>Open reproduced defects</span></div>
+    <div class="tile"><strong>17</strong><span>Rubric points reachable below</span></div>
+    <div class="tile ok"><strong>74.5</strong><span>Risk-adjusted score at zero open bugs</span></div>
   </div>
 </header>
 
+<div class="card" style="border-color:#5c4a20;background:#1c1710">
+  <h2 style="margin:0 0 8px;font-size:16px">Expected grade: <span style="color:#f0cd85">71–79 / 100</span></h2>
+  <p style="margin:0 0 10px;color:var(--ink-2);font-size:14px;max-width:80ch">
+  Point estimate <strong style="color:var(--ink)">74.5/100</strong> before any future grader-found bug
+  or late-submission penalties. The four named auto-mix modes, all four proposal analytics, D8, and D9 are implemented and no longer counted as open work. The band exists
+  because Requirement 1 is graded holistically, while this dashboard uses a transparent per-feature
+  approximation.</p>
+</div>
+
 <h2>1 · Requirement scoring</h2>
-<p class="note">Three requirements are fully met. Four remain partial under a proof-first reading.
-The weakest area is still the 50-point proposal; the last remaining open defect is the
-single-instance deployment topology (D6) — every other defect in the register has a verified fix.</p>
+<p class="note">Five requirements are at least 80% complete. The 50-point proposal remains the main
+gap: there is no user-saved segment object, waveform editor, or passive
+behavior learning. All four named analytics now exist locally with period-filtered server aggregation and formula tooltips. The local LLM is
+real and has a separate passing math/context evaluation, but the product still uses it only for a
+single short classification call. Robustness is now 10/10: absolute analysis and render-time guards
+reject the reproduced near-silent provider path, and the adversarial report passes 8/8.</p>
 
 <div class="chart">
   <div id="chartRows"></div>
@@ -118,9 +132,11 @@ single-instance deployment topology (D6) — every other defect in the register 
 </div>
 
 <h2>2 · Requirement 1 — the proposal, feature by feature</h2>
-<p class="note">Scored across the six feature groups the proposal defines. Automatic mixing is
-substantially implemented and well tested. <strong>Segments as a user-controlled object</strong>—the
-proposal's stated core idea—remain absent, and three named analytics still lack explicit outputs.</p>
+<p class="note">Scored conservatively across the six feature groups named in the PDF.
+<strong>Segments as a user-controlled object do not exist</strong>: no persistence model, waveform,
+manual start/end marking, or personal segment library. Upload, automatic DSP selection, live/saved
+mix rendering, authentication, and a substantial listening dashboard are real; they earn partial
+credit but do not substitute for the proposal's missing literal promises.</p>
 <div class="card">
 <table>
   <thead><tr><th>Proposal feature group</th><th>Score</th><th>What exists today</th></tr></thead>
@@ -129,23 +145,24 @@ proposal's stated core idea—remain absent, and three named analytics still lac
 </div>
 
 <h2>3 · Defect register</h2>
-<p class="note">The guidelines charge <strong>−5 points per bug found</strong>. Only open issues are
-listed, and none currently are — all seven tracked defects (D1–D7) have verified fixes. Debug access
-is excluded by the lecturer's decision.</p>
+<p class="note">The guidelines charge <strong>−5 points per bug found</strong>. Historical D1–D7 and
+the newly reproduced D8–D9 now have verified fixes. No reproduced defect remains open in this audit.
+Debug access remains excluded by the lecturer's decision.</p>
 <div class="card" id="bugRows"></div>
 
 <h2>4 · Plan of work</h2>
-<p class="note">Ranked by grade impact and defect risk. Tick items to project both the rubric score
-and the high-severity penalty exposure.</p>
+<p class="note">Only unfinished work is listed. The saved-segment model is the largest proposal
+dependency: waveform selection, mixes from saved moments, and saved-segment learning all rely on it.
+Tick items to project rubric progress. Completed modes, analytics, D8, and D9 jobs have been removed completely.</p>
 <div class="card" id="actionRows"></div>
 <div class="live">
-  <div><b id="projScore">73</b><span>Projected score</span></div>
+  <div><b id="projScore">74.5</b><span>Projected rubric score</span></div>
   <div><b id="projDays">0</b><span>Days committed</span></div>
-  <div><b id="projBugs">0</b><span>High-severity defect open</span></div>
-  <div><b id="projRiskScore">73</b><span>Risk-adjusted score</span></div>
+  <div><b id="projBugs">0</b><span>Open reproduced defects</span></div>
+  <div><b id="projRiskScore">74.5</b><span>After current known-bug penalties</span></div>
   <div style="flex:1;min-width:230px;color:var(--ink-2);font-size:13px">
-    Rubric ceiling is 89.5 with everything below completed. No high-severity defect is open right now
-    (D1 is fixed); every grader-found bug and every late week can still cost another 5.
+    Rubric ceiling is 91.5 with all feature work below complete. There is currently no known-bug
+    deduction; every additional grader-found bug and every late week can cost another five.
   </div>
 </div>
 
@@ -166,81 +183,81 @@ see. Lead with your strongest material, not with the login screen.</p>
       video attachment, live notification — no refresh.</li>
     <li><strong style="color:var(--ink)">Playlist upload.</strong> Batch upload with priority decay,
       then restart the worker and show the queue recover.</li>
-    <li><strong style="color:var(--ink)">Hallucination guards.</strong> Show the 6/6 scorecard only
-      after changing the unavailable-Audius case to require rejection/rescue rather than accepting a
-      dead pass-through as success.</li>
+    <li><strong style="color:var(--ink)">Hallucination guards.</strong> Show the 8/8 scorecard — the
+      new case proves a uniformly near-silent provider track is rejected both during analysis and
+      again at rendering even when stale metadata labels it a chorus.</li>
     <li><strong style="color:var(--ink)">Memory.</strong> Log out, log back in, preferences and prompt
       shortcuts intact.</li>
   </ol>
+  <p style="margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);color:var(--ink-2);font-size:13.5px">
+  <strong style="color:#f0cd85">Claim the four modes and four analytics as locally verified, not yet production-proven.</strong>
+  Music Identity now shows listening statistics, most-replayed segment, average segment length, and time saved versus full songs, all using the selected period and documented formulas. Also update <code>Project/README.md</code>:
+  it still says live transitions are metadata-only even though the current body → bridge → continuation
+  implementation now renders them.</p>
 </div>
 
 <footer>
-  <strong style="color:var(--ink-2)">Method.</strong> Scores derive from reading the repository at
-  <code>Project/</code> at commit <code>1e25270</code> on 20 August 2026—models, routers, services,
-  tests, evaluation artifacts, the CI workflow and both Compose files—against the proposal and course
-  guidelines. CI/CD run <a href="https://github.com/bayanhathot/MLsw/actions/runs/32401306027">#32401306027</a>
-  completed successfully for <code>1e25270</code>, including Azure deployment. Local verification: 434 backend
-  tests passed and 10 Redis-dependent tests skipped; Svelte check reported 0 errors/0 warnings and
-  34 frontend tests passed. CI supplies real Redis and completed successfully.<br>
+  <strong style="color:var(--ink-2)">Method.</strong> Scores derive from reading the actual
+  implementation at commit <code>c40532e</code> on 21 August 2026 — real logic in models, routers,
+  services, and frontend components, file:line cited, not filenames or docstrings taken on faith —
+  against <code>CueMix.pdf</code> (the original proposal) and <code>feedback.md</code> (the professor's
+  grading rubric). The updated full backend suite passed 457 tests with 13 Redis-dependent cases
+  skipped when Redis was unset; exact analytics fixtures, all seven focused named-mode cases, and the D8/D9 regressions passed. Frontend
+  verification reported 0 Svelte errors/warnings, 38/38 tests passing, clean lint, and a clean production build; the regenerated
+  adversarial report passed 8/8. A separate Redis-enabled full run timed out in an existing live
+  WebSocket fanout test, so it is not presented as a clean current run. The private GitHub Actions status for <code>c40532e</code>
+  could not be authenticated, and read-only public endpoint requests reset during this audit; the linked
+  run #32401306027 remains valid evidence only for <code>1e25270</code>.<br>
   <strong style="color:var(--ink-2)">Estimates, not an official grade.</strong> Requirement 1 in
-  particular is judged holistically by the professor. The displayed 73 is before bug penalties; the
-  remaining high-severity defect creates a plausible 5-point downside. Debug access is not counted
-  as a defect because the lecturer explicitly accepted it.
+  particular is judged holistically by the professor, and this dashboard's own unweighted-mean method
+  for it is a simplification, not the professor's actual rubric. The 74.5 headline is before future late
+  or newly discovered bug penalties. Debug access is not counted because the lecturer explicitly
+  accepted it.
 </footer>
 
 </div>
 <script>
 const rubric = [
-  {n:'01', t:'Project proposal', w:50, score:30, verdict:['serious','Partly met'],
-   ev:'Retrieval, DSP analysis, phrase/key-aware planning, rendered saved mixes and the live body → bridge → continuation state machine are real and tested. Audius persistent analysis is enabled in the VM profile. The 50-point gap remains product-facing: no user-saved segment model/API/editor/library exists, passive replay/like/skip signals do not change ranking, and most-replayed segment, average segment length and time-saved outputs are absent.'},
+  {n:'01', t:'Project proposal', w:50, score:28, verdict:['warn','Partial — see section 2'],
+   ev:'Conservative mean of the six feature groups below (45/35/80/75/30/70). The four named modes and all four analytics are locally implemented with typed contracts, deterministic behavior, period filtering, and tests. Missing literal promises remain substantial: personal saved segments, waveform/manual marking, mixes built from those saved segments, and passive-signal learning.'},
   {n:'02', t:'Long-term memory', w:5, score:5, verdict:['good','Fully met'],
-   ev:'<code>UserPreference</code>, <code>PromptShortcut</code>, <code>UserMusicProfile</code> and <code>ListeningEvent</code> persist per user. Positive explicit DJ feedback is read back into future session intent; persistence is not merely a table with no consumer.'},
-  {n:'03', t:'Robustness to hallucinations', w:10, score:8, verdict:['warn','Strong, not complete'],
-   ev:'The LLM cannot invent playable catalog fields; silent and near-silent uploads are rejected; detected windows have an energy floor; local whole-clip fallbacks trim dead air; malformed LLM output fails safely; and a committed adversarial report says 6/6. Strict deduction: that report counts an unavailable Audius pass-through as PASS, and Audius whole-clip fallback is still untrimmed. See D1–D2.'},
+   ev:'Dedicated per-user preference, prompt-shortcut, music-profile, and listening-event records persist. Explicit DJ feedback is read back into later neutral session intent, so this is functioning memory rather than unused storage. The rubric does not require more preference dimensions for full credit.'},
+  {n:'03', t:'Robustness to hallucinations', w:10, score:10, verdict:['good','Fully met'],
+   ev:'Dead provider URLs fail closed or rescue to verified catalog audio. Uniform −60 dBFS provider audio is now rejected by an absolute analysis floor and an independent all-method render guard; analysis version v3 invalidates stale v2 cache rows. Silent uploads, corrupt files, and malformed LLM responses are covered by the regenerated 8/8 report.'},
   {n:'04', t:'Smart job queue', w:5, score:5, verdict:['good','Fully met'],
-   ev:'Bounded parallel priority queue, playlist batch upload, validation, per-batch priority decay, cancel/retry, Redis durability, restart recovery and dedicated stress/recovery tests are present. The previously reported local bulk-upload discrepancy is no longer reproduced by the current full suite or green CI.'},
-  {n:'05', t:'Local LLM integration', w:10, score:6, verdict:['warn','Partly met'],
-   ev:'Compose-managed Ollama/Qwen, model pull and warm-up, schema-constrained decoding, timeouts, fail-open behavior and a separate math/context evaluation exist. In-product use remains one-shot prompt classification; <code>acquire(timeout=0.05)</code> sheds contention to the deterministic parser, and only the most recent call is observable. See D4–D5.'},
+   ev:'Bounded parallel priority queue, batch upload, real decoding/silence validation, priority decay, cancellation/retry, Redis durability, restart recovery, and focused regression tests are present. The changed queue-related suite passed in this audit.'},
+  {n:'05', t:'Local LLM integration', w:10, score:7.5, verdict:['warn','Strong infrastructure, narrow use'],
+   ev:'Local qwen3:8b, a recorded passing multi-turn math/context capability evaluation, schema-constrained parsing, real queue waiting, Redis-backed cluster concurrency, and aggregate counters exist. Timeout, HTTP, invalid-response, unexpected-error, success, and shed outcomes are now reported separately in local/cluster stats and the debug UI. Partial credit remains because product use is one short classification call rather than a complex conversation/context workflow.'},
   {n:'06', t:'Forum &amp; communication suite', w:10, score:10, verdict:['good','Fully met'],
-   ev:'All eight requested sub-features are implemented: posts/comments with anonymity and media, votes and metrics, friend-gated DMs with media, Redis-backed live delivery, rate limits, size caps and realistic cold seeding. Real-backend two-browser E2E is part of CI.'},
-  {n:'07', t:'Deployment &amp; CI/CD', w:10, score:9, verdict:['warn','Strong, not complete'],
-   ev:'Public HTTPS, database/Redis health, backend/frontend/E2E tests, immutable images and automatic Azure deployment are proven. Strict deduction: <code>BACKEND_WORKERS</code> must remain 1 and the deployment guide says replicas still require shared storage/queue work, so “scale easily” is not fully met.'}
+   ev:'All eight requested capabilities are implemented: public posts with title/body/image/video, explicit anonymity, media comments, post/comment votes and profile metrics, private DMs with media, live Redis-backed DM/vote notifications, rate and size limits, and realistic cold seeding. One-level replies and friend-gated DMs are product restrictions, not omissions from the written rubric.'},
+  {n:'07', t:'Deployment &amp; CI/CD', w:10, score:9, verdict:['good','Strong, latest live proof pending'],
+   ev:'The repository has public-HTTPS deployment, DB/Redis health checks, tests/build/publish/deploy jobs, immutable images, rollback/backup paths, Redis-shared coordination, and <code>BACKEND_WORKERS=2</code>. Deduction: storage remains single-host and this audit could not authenticate to the private Actions page or confirm the public endpoints for <code>c40532e</code> (connection reset); run #32401306027 proves the prior <code>1e25270</code> deployment, not this commit.'}
 ];
 
 const proposal = [
-  ['1. User authentication + personal segment library', 60,
-   'Registration, PBKDF2-SHA256, cookie auth, CSRF and rate limits are complete. The "personal music segment library" has no table, no endpoint and no screen.'],
-  ['2. Song upload + waveform + manual segment marking', 40,
-   'Upload, validation, batch queue, DSP analysis and streaming are excellent. No waveform library is imported anywhere in <code>frontend/src</code>, and users cannot select start/end timestamps at all.'],
-  ['3. Smart transition engine', 92,
-   'Compatibility scoring, key/BPM/phrase factors, loudness normalization and live bridge crossfades are implemented and tested. Keep a recorded production audio proof; metadata and tests alone do not prove what the grader will hear.'],
-  ['4. Auto-mix generator + four modes', 80,
-   'Retrieval, planning, rendering and all four modes (workout, relaxation, emotional/Tarab, party) work. Mixes are built from auto-detected segments, never from user-saved ones, because those do not exist.'],
-  ['5. Learning from likes, replays, skips, saved segments', 40,
-   'Explicit DJ feedback moves <code>UserPreference</code>. <code>ListeningEvent</code> stores <code>skipped</code>, but nothing consumes it for ranking; likes and replays do not influence selection; saved segments cannot, by construction.'],
-  ['6. Analytics dashboard', 35,
-   'Listening statistics exist — artists, genres, trends, time of day, listening DNA. Most-replayed segment, average segment length and time saved are absent, and this is the area the guidelines single out as "really interested in seeing".']
+  ['1. User authentication + personal segment library', 45,
+   'Registration, PBKDF2-SHA256/bcrypt cookie auth are complete and solid on their own (~95%). But the proposal bundles this with a "personal music segment library," which has no DB model, no endpoint, and no screen anywhere in the codebase — dragging the blended score to under half.'],
+  ['2. Song upload + waveform + manual segment marking', 35,
+   'Upload (batch, validated, job-tracked) is fully built. But a project-wide search found zero waveform/canvas/timeline code anywhere in the frontend — the one hit for "waveform" is a decorative CSS background graphic on the marketing landing page, not an interactive per-track visualization — and zero UI for marking a start/end timestamp. Every segment in the app is 100% AI-auto-picked; a user has never once chosen one.'],
+  ['3. Smart transition engine', 80,
+   'Real, verified DSP: tempo/key/phrase-aware crossfade-length calculation and a genuine pydub audio blend in the rendered file (not metadata-only), confirmed by reading <code>transition_planner.py</code> and <code>audio_renderer.py</code> line by line. Revised down from a prior 92%: there is no separate fade-in/fade-out primitive distinct from crossfade, and no single numeric "compatibility score" field is ever returned (the scoring logic is real, just expressed as milliseconds, not a score).'],
+  ['4. Auto-mix generator + four named modes', 75,
+   'Workout, Relaxation, Emotional/Tarab, and Party are now literal visible selector options backed by the <code>AutoMixMode</code> API enum and documented deterministic mood/energy/vocals/genre presets. The choice is validated, persisted on sessions and mixes, shown in the mix library, and covered by backend/frontend tests; Custom preserves free-text behavior. Remaining deduction: mixes still pull fresh AI-picked segments rather than a user\'s saved moments (see feature 2), and this new flow has not yet been verified on the deployed VM.'],
+  ['5. Learning from likes, replays, skips, saved segments', 30,
+   'The <em>mechanism</em> for learning is real and traced end to end (see the Long-term memory rubric row) — but only for explicit text feedback like "more energy," not the four signals this feature literally names. <code>ListeningEvent.skipped</code> is stored but never read back into ranking; mix likes don\'t influence future retrieval; "saved segments" can\'t feed learning because they don\'t exist as objects to save.'],
+  ['6. Analytics dashboard', 70,
+   'All four named outputs now exist in Music Identity: established listening statistics plus most-replayed segment, event-weighted average segment length, and estimated time saved versus full songs. The new values are authoritative period-filtered SQL aggregates with explicit formulas, empty states, accessible tooltips, source-duration persistence/backfill, and exact fixture tests. Remaining deduction is conservative because this new migration and UI have not yet been verified on the production VM.']
 ];
 
 const bugs = [];
-// D1-D7 all closed -- see the corresponding entries in
-// cuemix-defect-prompt-roadmap_2.md's prompt log. D6's audit (6a) found two
-// of the three cited blockers (channel_hub.py, upload_queue.py) were
-// already Redis-backed; the third category (rate_limit.py,
-// pipeline_debug_service.py, prompt_parser.py's Ollama semaphore/stats) was
-// ported to Redis too (6b), BACKEND_WORKERS raised to 2, and proven with
-// real cross-worker HTTP/websocket/Redis evidence -- see deploy/README.md's
-// "Horizontal scaling" section for what's still single-host (shared
-// container/volume, not separate hosts/pods) and what that would need.
 
 const actions = [
-  {id:'a1', t:'Make Audius safety fail closed', d:'Done: dead pass-through URLs are rejected (or rescued to a real playable track) rather than ever reaching now_playing, and downloaded fallback audio gets a bounded energy check. Closed D1–D2.', days:1, gain:2, risk:1, done:true},
-  {id:'a2', t:'Make the LLM meet its concurrency requirement', d:'Done: real bounded queueing (OLLAMA_QUEUE_WAIT_SECONDS) and attempted/succeeded/timed-out/shed counters are live on the debug panel. Closed D4–D5.', days:1.5, gain:3, done:true},
-  {id:'a3', t:'Ship the four promised analytics cards', d:'Most replayed segment, average segment length, listening statistics and time saved—backend aggregates plus clearly labelled cards and documented formulas.', days:2, gain:2.5},
-  {id:'a4', t:'Waveform editor + saved segment library', d:'Model, migration, create/list/delete API, draggable start/end handles, looping preview and a reusable library card. This is still the largest proposal gap.', days:5, gain:6},
-  {id:'a5', t:'Wire passive signals into ranking', d:'Bounded weights from replay, like, save and skip into future ranking, with decay, caps and an offline evaluation showing movement over baseline.', days:3, gain:1.5},
-  {id:'a6', t:'Prove a scalable deployment topology', d:'Done: rate limiting, the pipeline debug hub, and the Ollama concurrency semaphore/stats ported to Redis (channel_hub/upload_queue already were), BACKEND_WORKERS raised to 2, real cross-worker HTTP/websocket/Redis evidence captured. Closed D6. Shared object storage for true multi-host replicas (beyond one container\'s workers) remains documented as future work in deploy/README.md.', days:2, gain:1, done:true},
-  {id:'a7', t:'Build the production demo and evidence pack', d:'Timed rubric order, current run/SHA, real two-pass Audius segmentation, audible transition recording, scope-change correspondence and fallback video. D7\'s stale comment is already fixed.', days:1, gain:0.5}
+  {id:'c3', t:'Build saved-segment persistence and a personal library', d:'SavedSegment model/migration plus create/list/delete API and library screen. This is the foundation for manual selection and mixes built from the user\'s chosen moments.', days:3, gain:4},
+  {id:'c4', t:'Add waveform and manual start/end marking', d:'Interactive waveform, draggable/keyboard-accessible handles, looping preview, validation, and save-to-library flow. Depends on c3.', days:4, gain:4.5},
+  {id:'c5', t:'Use saved segments and passive signals in future mixes', d:'Allow auto-mix generation from saved segments; feed bounded replay/like/save/skip weights with decay and caps into ranking; publish an offline evaluation. Depends on c3.', days:3, gain:3.5},
+  {id:'c6', t:'Use the local LLM for one real context-heavy product flow', d:'Add a bounded multi-turn explanation/coaching flow using actual BPM/key/transition values, while retaining deterministic validation and the Redis concurrency limit.', days:2, gain:2.5},
+  {id:'c7', t:'Expose the promised transition contract', d:'Add explicit fade-in/fade-out behavior and a numeric compatibility score alongside the existing real crossfade planning/rendering.', days:1.5, gain:1.5},
+  {id:'c8', t:'Refresh production proof and documentation', d:'Obtain a green CI/deploy run for c40532e or later, verify public health/DB/Redis/Audius two-pass behavior, record audible live bridges, and fix README claims that still describe live crossfades and worker count as old behavior.', days:1, gain:1}
 ];
 
 const BASE = rubric.reduce((s,r)=>s+r.score,0);
@@ -260,10 +277,11 @@ document.querySelector('#proposalRows').innerHTML = proposal.map(p=>{
   return `<tr><td><strong>${p[0]}</strong></td>
     <td style="width:120px"><span class="chip ${tone}">${p[1]}%</span></td><td>${p[2]}</td></tr>`;
 }).join('') + `<tr><td><strong>Mean → requirement 1 score</strong></td>
-  <td><span class="chip serious">58%</span></td>
-  <td>58% of 50 points = <strong>29</strong>, carried above as <strong>30</strong>. A generous
-  weighting toward the working mixing engine reaches 34; the gap to a top score is almost entirely
-  the saved-segment feature and the three missing analytics.</td></tr>`;
+  <td><span class="chip warn">56%</span></td>
+  <td>Conservative mean of the six rows above (45+35+80+75+30+70)/6 ≈ 56% of 50 points ≈
+  <strong>28</strong>, carried into section 1. The gap to a strong score is concentrated in one
+  root cause repeated four times: nothing in the app is ever a segment a <em>user</em> chose — see the
+  todo list in section 4 for what would move each row fastest.</td></tr>`;
 
 document.querySelector('#bugRows').innerHTML = bugs.length ? bugs.map(b=>{
   const label = {critical:'High',serious:'Medium',warn:'Low'}[b.sev];
@@ -271,7 +289,7 @@ document.querySelector('#bugRows').innerHTML = bugs.length ? bugs.map(b=>{
     <div style="font-size:11px;color:var(--ink-3);margin-top:7px;letter-spacing:.08em">${b.id}</div></div>
     <div><h4>${b.t}</h4><p>${b.d}</p><p class="fix"><strong>Fix:</strong> ${b.f}</p></div></div>`;
 }).join('') : `<div class="item"><div><span class="chip good">Clear</span></div>
-  <div><h4>No open defects</h4><p>D1–D7 all have verified fixes in the current tree.</p></div></div>`;
+  <div><h4>No open defects</h4><p>No reproduced defect remains in the current audit.</p></div></div>`;
 
 document.querySelector('#actionRows').innerHTML = actions.map(a=>
   `<div class="act"><input type="checkbox" data-act="${a.id}" aria-label="Commit to ${a.t}"${a.done ? ' checked' : ''}>
@@ -286,11 +304,12 @@ const picked = new Set(actions.filter(a=>a.done).map(a=>a.id));
 function refresh(){
   let score = BASE, days = 0;
   actions.forEach(a=>{ if(picked.has(a.id)){ score += a.gain; days += a.days; } });
-  const highBugs = 0; // D1 (the one high-severity defect) is fixed, unconditionally
+  const openBugs = 0;
   document.querySelector('#projScore').textContent = Math.min(100,score).toFixed(score%1?1:0);
   document.querySelector('#projDays').textContent = days%1 ? days.toFixed(1) : days;
-  document.querySelector('#projBugs').textContent = highBugs;
-  document.querySelector('#projRiskScore').textContent = Math.max(0, score - highBugs * 5).toFixed(score%1?1:0);
+  document.querySelector('#projBugs').textContent = openBugs;
+  const riskScore = Math.max(0, score - openBugs * 5);
+  document.querySelector('#projRiskScore').textContent = riskScore.toFixed(riskScore%1?1:0);
 }
 document.querySelectorAll('[data-act]').forEach(box=>box.addEventListener('change',e=>{
   e.target.checked ? picked.add(e.target.dataset.act) : picked.delete(e.target.dataset.act);

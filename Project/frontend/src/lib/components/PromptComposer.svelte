@@ -22,6 +22,7 @@
 	 */
 
 	import { PRESETS } from '$lib/constants/presets.js';
+	import AutoMixModeSelector from '$lib/components/AutoMixModeSelector.svelte';
 	import { authStore } from '$lib/stores/authStore.js';
 	import { getPromptShortcuts } from '$lib/services/promptShortcutsApi.js';
 	import { mergeShortcuts } from '$lib/utils/shortcuts.js';
@@ -61,22 +62,26 @@
 	/**
 	 * @type {{
 	 *   prompt?: string,
+	 *   mode?: import('$lib/types.js').AutoMixMode | null,
 	 *   isStarting?: boolean,
 	 *   isOverlay?: boolean,
 	 *   showCancel?: boolean,
 	 *   startLabel?: string,
 	 *   onPromptChange?: (prompt: string) => void,
+	 *   onModeChange?: (mode: import('$lib/types.js').AutoMixMode | null) => void,
 	 *   onStart?: () => void,
 	 *   onCancel?: () => void
 	 * }}
 	 */
 	let {
 		prompt = '',
+		mode = null,
 		isStarting = false,
 		isOverlay = false,
 		showCancel = false,
 		startLabel = '▶ Start AI DJ',
 		onPromptChange = () => {},
+		onModeChange = () => {},
 		onStart = () => {},
 		onCancel = () => {}
 	} = $props();
@@ -89,7 +94,13 @@
 
 	/** @param {Preset} preset */
 	function usePreset(preset) {
+		onModeChange(null);
 		onPromptChange(preset.prompt);
+	}
+
+	/** @param {string} defaultPrompt */
+	function useModeDefaultPrompt(defaultPrompt) {
+		if (!prompt.trim()) onPromptChange(defaultPrompt);
 	}
 
 	/** @param {SubmitEvent} event */
@@ -137,6 +148,15 @@
 					{preset.label}
 				</button>
 			{/each}
+		</div>
+
+		<div class="mode-row">
+			<AutoMixModeSelector
+				value={mode}
+				compact={isOverlay}
+				onChange={onModeChange}
+				onDefaultPrompt={useModeDefaultPrompt}
+			/>
 		</div>
 	</div>
 </form>
@@ -233,6 +253,11 @@
 		gap: 10px;
 	}
 
+	.mode-row {
+		grid-column: 2;
+		min-width: 0;
+	}
+
 	.preset-chip {
 		border: 1px solid var(--border-muted);
 		border-radius: 999px;
@@ -256,7 +281,8 @@
 		}
 
 		.spark,
-		.shortcut-row {
+		.shortcut-row,
+		.mode-row {
 			grid-column: auto;
 		}
 

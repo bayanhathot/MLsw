@@ -2,30 +2,51 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database.base import Base
 from app.core.time import utc_now
+from app.database.base import Base
 
 
 class Mix(Base):
     __tablename__ = "mixes"
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published')", name="ck_mix_status"),
+        CheckConstraint(
+            "mode IS NULL OR mode IN ('workout', 'relaxation', 'emotional_tarab', 'party')",
+            name="ck_mix_mode",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[str] = mapped_column(String(48), unique=True, nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(
+        String(48), unique=True, nullable=False, index=True
+    )
     owner_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     prompt: Mapped[str] = mapped_column(String(300), nullable=False)
+    # The literal proposal mode used to generate this persisted mix. Null is
+    # the existing custom/free-prompt path and keeps older rows compatible.
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="draft", index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, nullable=False
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="mixes")
@@ -40,7 +61,9 @@ class Mix(Base):
 
 class MixSegment(Base):
     __tablename__ = "mix_segments"
-    __table_args__ = (UniqueConstraint("mix_id", "position", name="uq_mix_segment_position"),)
+    __table_args__ = (
+        UniqueConstraint("mix_id", "position", name="uq_mix_segment_position"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     mix_id: Mapped[int] = mapped_column(
@@ -53,9 +76,15 @@ class MixSegment(Base):
     cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_second: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     end_second: Mapped[int] = mapped_column(Integer, nullable=False)
-    transition_to_next: Mapped[str] = mapped_column(String(50), nullable=False, default="crossfade")
+    transition_to_next: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="crossfade"
+    )
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     source_track_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Full source-track duration, distinct from start/end which are offsets
+    # into the rendered mix. Used by listening analytics to measure how much
+    # time a selected moment saved versus playing its complete source track.
+    track_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     genre: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vibe: Mapped[str | None] = mapped_column(String(100), nullable=True)
 

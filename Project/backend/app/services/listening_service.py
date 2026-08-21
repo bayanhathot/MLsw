@@ -29,10 +29,14 @@ def _reject_future_timestamp(value: datetime | None, *, field_name: str) -> None
     if value is None:
         return
     if value > utc_now() + _FUTURE_TOLERANCE:
-        raise HTTPException(status_code=422, detail=f"{field_name} cannot be in the future.")
+        raise HTTPException(
+            status_code=422, detail=f"{field_name} cannot be in the future."
+        )
 
 
-def _existing_event(db: Session, client_event_id: str, user_id: int) -> ListeningEvent | None:
+def _existing_event(
+    db: Session, client_event_id: str, user_id: int
+) -> ListeningEvent | None:
     event = (
         db.query(ListeningEvent)
         .filter(ListeningEvent.client_event_id == client_event_id)
@@ -41,7 +45,9 @@ def _existing_event(db: Session, client_event_id: str, user_id: int) -> Listenin
     if event is None:
         return None
     if event.user_id != user_id:
-        raise HTTPException(status_code=409, detail="Listening event identifier already exists.")
+        raise HTTPException(
+            status_code=409, detail="Listening event identifier already exists."
+        )
     return event
 
 
@@ -55,14 +61,18 @@ def _mix_context(db: Session, request: ListeningEventCreate, user_id: int) -> di
     if mix is None:
         raise HTTPException(status_code=404, detail="Mix not found.")
     if mix.status != "published" and mix.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="This mix is not available to this user.")
+        raise HTTPException(
+            status_code=403, detail="This mix is not available to this user."
+        )
     segment = (
         db.query(MixSegment)
         .filter(MixSegment.id == request.segment_id, MixSegment.mix_id == mix.id)
         .first()
     )
     if segment is None:
-        raise HTTPException(status_code=422, detail="Segment does not belong to this mix.")
+        raise HTTPException(
+            status_code=422, detail="Segment does not belong to this mix."
+        )
     segment_length = max(1, segment.end_second - segment.start_second)
     return {
         "session_id": None,
@@ -74,7 +84,11 @@ def _mix_context(db: Session, request: ListeningEventCreate, user_id: int) -> di
         "artist_name": segment.artist,
         "genre": segment.genre,
         "vibe": segment.vibe,
-        "track_duration_seconds": max(segment.end_second, segment_length),
+        "track_duration_seconds": max(
+            int(segment.track_duration_seconds or 0),
+            segment.end_second,
+            segment_length,
+        ),
         "segment_start_second": segment.start_second,
         "segment_end_second": segment.end_second,
         "expected_seconds": segment_length,
@@ -98,7 +112,9 @@ def _session_context(db: Session, request: ListeningEventCreate, user_id: int) -
     segment = (session.now_playing_json or {}).get("segment") or {}
     track = segment.get("track") or {}
     if not track:
-        raise HTTPException(status_code=409, detail="Session track is no longer available.")
+        raise HTTPException(
+            status_code=409, detail="Session track is no longer available."
+        )
 
     start_second = int(segment.get("start_second") or 0)
     end_second = int(segment.get("end_second") or start_second)
@@ -113,11 +129,16 @@ def _session_context(db: Session, request: ListeningEventCreate, user_id: int) -
         "artist_name": track.get("artist") or "Unknown artist",
         "genre": track.get("genre"),
         "vibe": track.get("vibe_label") or track.get("vibe") or session.vibe_label,
-        "track_duration_seconds": max(end_second, segment_length),
+        "track_duration_seconds": max(
+            int(track.get("duration_seconds") or 0), end_second, segment_length
+        ),
         "segment_start_second": start_second,
         "segment_end_second": end_second,
         "expected_seconds": segment_length,
-        "metadata_json": {"session_prompt": session.prompt, "retriever": session.retriever_name},
+        "metadata_json": {
+            "session_prompt": session.prompt,
+            "retriever": session.retriever_name,
+        },
     }
 
 
@@ -149,7 +170,9 @@ def create_event(
     _reject_future_timestamp(started_at, field_name="started_at")
     _reject_future_timestamp(ended_at, field_name="ended_at")
     if ended_at is not None and started_at is not None and ended_at < started_at:
-        raise HTTPException(status_code=422, detail="ended_at cannot be before started_at.")
+        raise HTTPException(
+            status_code=422, detail="ended_at cannot be before started_at."
+        )
 
     expected = max(1, int(context.pop("expected_seconds")))
     # Each event represents one pass through a segment/session moment. Replays

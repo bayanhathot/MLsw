@@ -12,6 +12,7 @@ describe('backend response adapters', () => {
 			{
 				session_id: 'mix_1',
 				prompt: 'focus',
+				mode: 'workout',
 				segments: [
 					{
 						position: 1,
@@ -27,6 +28,7 @@ describe('backend response adapters', () => {
 		);
 
 		expect(session.id).toBe('mix_1');
+		expect(session.mode).toBe('workout');
 		expect(session.audioUrl).toBe('/api/static/audio/demo.mp3');
 		expect(session.nowPlaying.title).toBe('Focus Loop');
 		expect(session.segments[0]).toMatchObject({ startSecond: 5, endSecond: 25 });
@@ -38,14 +40,22 @@ describe('backend response adapters', () => {
 			session_id: 'mix_7',
 			title: 'Night flow',
 			prompt: 'coding',
+			mode: 'party',
 			status: 'published',
 			like_count: 3,
 			is_liked: true,
-			segments: [{ id: 9, audio_url: '/static/audio/demo.mp3' }]
+			segments: [{ id: 9, audio_url: '/static/audio/demo.mp3', track_duration_seconds: 215 }]
 		});
 
-		expect(mix).toMatchObject({ id: 7, sessionId: 'mix_7', likeCount: 3, isLiked: true });
+		expect(mix).toMatchObject({
+			id: 7,
+			sessionId: 'mix_7',
+			mode: 'party',
+			likeCount: 3,
+			isLiked: true
+		});
 		expect(mix.segments[0].audioUrl).toBe('/api/static/audio/demo.mp3');
+		expect(mix.segments[0].trackDurationSeconds).toBe(215);
 	});
 
 	it('normalizes anonymous forum posts without leaking an author id', () => {

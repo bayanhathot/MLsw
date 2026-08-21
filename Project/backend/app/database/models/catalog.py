@@ -170,9 +170,9 @@ class CatalogTrack(Base):
     segment_start_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_end_second: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # Which build of the analysis pipeline produced the fields above ("v2" =
-    # the current librosa chroma+beat_track+self-similarity approach plus
-    # real Krumhansl-Schmuckler key-finding, see audio_analysis.py's module
+    # Which build of the analysis pipeline produced the fields above ("v3" =
+    # v2's librosa/Krumhansl-Schmuckler analysis plus an absolute dBFS floor
+    # for selected windows, see audio_analysis.py's module
     # docstring and ANALYSIS_VERSION's own comment) and when it ran -- both null
     # until analysis actually completes (never set on a "failed" run, so a
     # failed row's null version/timestamp naturally falls into any future

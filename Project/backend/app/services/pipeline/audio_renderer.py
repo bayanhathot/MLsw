@@ -278,6 +278,15 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
     end_ms = segment.end_second * 1000
     clip = audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
 
+    if audio_sha256 is not None and clip.dBFS < _SILENCE_TRIM_THRESHOLD_DBFS:
+        # D8 defense in depth: analysis now applies an absolute floor to
+        # every selected window, but rendering must also refuse an external
+        # clip that is uniformly below that floor. This covers stale cached
+        # analysis, an unanalysed/manual segment, and any future selection
+        # method rather than trusting method == "whole_clip" as the old
+        # implementation did.
+        return None, "silent_or_near_silent_audio", None
+
     if audio_sha256 is not None and segment.method == "whole_clip":
         # D2/Cause A: an Audius whole-clip window is never pre-trimmed for
         # silence the way a local file's is -- segment_selector.py's own

@@ -72,13 +72,15 @@
 		closeSocket();
 	});
 
-	/** @param {{ at: string | null, latency_ms: number | null, ok: boolean | null }} lastCall */
+	/** @param {{ at: string | null, latency_ms: number | null, ok: boolean | null, outcome: string | null }} lastCall */
 	function lastCallLabel(lastCall) {
 		if (!lastCall?.at) return 'No calls yet';
 		const when = formatUtcDate(lastCall.at, (date) =>
 			date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 		);
-		return `${when} · ${lastCall.latency_ms}ms · ${lastCall.ok ? 'ok' : 'fell back to deterministic parse'}`;
+		const outcome =
+			lastCall.outcome?.replaceAll('_', ' ') || (lastCall.ok ? 'success' : 'fallback');
+		return `${when} · ${lastCall.latency_ms}ms · ${outcome}`;
 	}
 
 	/** @param {string} value */
@@ -93,6 +95,7 @@
 </script>
 
 {#if visible && data}
+	{@const stats = data.ollama.cluster_stats || data.ollama.stats}
 	<div class="pipeline-debug">
 		<button
 			class="debug-toggle"
@@ -131,6 +134,17 @@
 					<div>
 						<dt>Last call</dt>
 						<dd>{lastCallLabel(data.ollama.last_call)}</dd>
+					</div>
+					<div>
+						<dt>Calls</dt>
+						<dd>{stats.succeeded}/{stats.attempted} succeeded · {stats.shed} shed</dd>
+					</div>
+					<div>
+						<dt>Fallback causes</dt>
+						<dd>
+							{stats.timed_out} timeout · {stats.http_errors} HTTP · {stats.invalid_responses} invalid
+							· {stats.unexpected_errors} unexpected
+						</dd>
 					</div>
 					{#if data.ollama.error}
 						<div>

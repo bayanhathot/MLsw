@@ -25,10 +25,10 @@ from app.services.audio_analysis import (
     _BARS_PER_PHRASE,
     _BEATS_PER_BAR,
     _CHROMA_HOP_LENGTH,
+    _ABSOLUTE_SILENCE_FLOOR_DBFS,
     _MAJOR_KEY_PROFILE,
     _MINOR_KEY_PROFILE,
     _PITCH_CLASSES,
-    _SILENCE_FLOOR_DBFS,
     _TARGET_SEGMENT_SECONDS,
     _beat_grids,
     _best_segment,
@@ -434,7 +434,7 @@ def test_best_segment_never_selects_a_near_silent_region_over_a_loud_one():
 
     assert method == "chorus_detection"
     assert level is not None
-    assert level >= _SILENCE_FLOOR_DBFS
+    assert level >= _ABSOLUTE_SILENCE_FLOOR_DBFS
     # The energy floor actually changed the outcome versus naive similarity.
     assert start != naive_start
 
@@ -475,6 +475,24 @@ def test_analyze_audio_raises_rather_than_completing_on_a_uniformly_silent_track
 
     with pytest.raises(ValueError, match="silence floor"):
         audio_analysis.analyze_audio(str(path), label="test silent track")
+
+
+def test_analyze_audio_rejects_uniform_near_silence_even_relative_to_its_own_peak(tmp_path):
+    """D8 regression: a relative-only energy floor sees uniform -60 dBFS
+    noise as loud compared with its own tiny peak and used to label it a
+    valid chorus_detection window. The absolute floor must reject it."""
+
+    sr = 22050
+    duration_seconds = 40
+    rng = np.random.default_rng(seed=18)
+    noise = rng.normal(0.0, 1.0, sr * duration_seconds).astype(np.float32)
+    target_rms = 10 ** (-60 / 20)
+    noise *= target_rms / (float(np.sqrt(np.mean(noise**2))) + 1e-12)
+    path = tmp_path / "uniform-near-silent.wav"
+    sf.write(str(path), noise, sr)
+
+    with pytest.raises(ValueError, match="silence floor"):
+        audio_analysis.analyze_audio(str(path), label="uniform -60 dBFS provider track")
 
 
 def test_analyze_catalog_track_marks_a_uniformly_silent_upload_failed_not_completed(db_session, tmp_path):
@@ -522,7 +540,7 @@ def test_best_segment_still_ranks_normally_among_windows_that_all_pass_the_floor
     )
 
     assert method == "chorus_detection"
-    assert level is not None and level >= _SILENCE_FLOOR_DBFS
+    assert level is not None and level >= _ABSOLUTE_SILENCE_FLOOR_DBFS
     assert end - start == min(int(duration_seconds), _TARGET_SEGMENT_SECONDS)
 
 
@@ -566,7 +584,7 @@ def test_analyze_audio_can_select_a_highlight_past_the_old_four_minute_cap(tmp_p
     # just that *some* window won.
     assert result.segment_start_second >= 240
     assert result.segment_level_dbfs is not None
-    assert result.segment_level_dbfs >= audio_analysis._SILENCE_FLOOR_DBFS
+    assert result.segment_level_dbfs >= audio_analysis._ABSOLUTE_SILENCE_FLOOR_DBFS
 
 
 def test_analyze_audio_finds_a_highlight_past_the_current_ten_minute_cap(monkeypatch, tmp_path):
@@ -626,4 +644,4 @@ def test_analyze_audio_finds_a_highlight_past_the_current_ten_minute_cap(monkeyp
     # it, not just that *some* window inside the prefix won.
     assert result.segment_start_second >= 40
     assert result.segment_level_dbfs is not None
-    assert result.segment_level_dbfs >= audio_analysis._SILENCE_FLOOR_DBFS
+    assert result.segment_level_dbfs >= audio_analysis._ABSOLUTE_SILENCE_FLOOR_DBFS

@@ -2,6 +2,7 @@
 
 import { apiRequest } from './api.js';
 import { normalizeSegment } from './segment.js';
+import { isAutoMixMode } from '../constants/autoMixModes.js';
 
 /**
  * @param {unknown} value
@@ -20,6 +21,7 @@ export function normalizeMix(value) {
 		sessionId: String(raw.sessionId ?? raw.session_id ?? raw.id ?? ''),
 		title: String(raw.title || 'Untitled mix'),
 		prompt: String(raw.prompt || ''),
+		mode: isAutoMixMode(raw.mode) ? raw.mode : null,
 		description: typeof raw.description === 'string' ? raw.description : null,
 		coverUrl: String(raw.coverUrl ?? raw.cover_url ?? segments[0]?.coverUrl ?? ''),
 		status: raw.status === 'published' ? 'published' : 'draft',
@@ -63,12 +65,12 @@ export async function getMix(mixId) {
 	return normalizeMix(await apiRequest(`/mixes/${mixId}`));
 }
 
-/** @param {string} prompt */
-export async function createMix(prompt) {
+/** @param {string} prompt @param {import('../types.js').AutoMixMode | null} [mode] */
+export async function createMix(prompt, mode = null) {
 	return normalizeMix(
 		await apiRequest('/mixes/start', {
 			method: 'POST',
-			body: JSON.stringify({ prompt })
+			body: JSON.stringify({ prompt, mode })
 		})
 	);
 }

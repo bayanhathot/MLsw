@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utc_now
 from app.database.models.session import DJSession, SessionFeedback, UserPreference
 from app.schemas import (
+    AutoMixMode,
     BridgeRender,
     NowPlayingRead,
     PromptIntent,
@@ -36,6 +37,7 @@ from app.services import (
     session_candidate_pool,
     upload_queue,
 )
+from app.services.admin_debug_events import publish_session_updated, record_event
 from app.services.pipeline import audio_renderer, external_track_cache
 from app.services.pipeline.catalog_retriever import (
     LAST_RESORT_CATALOG_RETRIEVER,
@@ -56,7 +58,7 @@ from app.services.pipeline.orchestrator import (
 )
 from app.services.pipeline.transition_planner import MAX_CROSSFADE_MS
 from app.services.pipeline_debug_service import notify_pipeline_debug_change
-from app.services.admin_debug_events import publish_session_updated, record_event
+from app.services.prompt_parser import apply_auto_mix_mode
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +108,9 @@ PREPARED_NEXT_TTL_SECONDS = float(os.getenv("PREPARED_NEXT_TTL_SECONDS", "300"))
 # audio_renderer.REMOTE_TIMEOUT_SECONDS +
 # audio_renderer.LOCAL_AUDIO_OP_TIMEOUT_SECONDS -- see
 # _MAX_SINGLE_ATTEMPT_SECONDS below).
-AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDIDATE_LIMIT)))
+AUDIO_RENDER_RETRY_LIMIT = int(
+    os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDIDATE_LIMIT))
+)
 
 # A wall-clock ceiling on how long one resolution spends retrying render
 # attempts in total (the primary retriever's attempts plus any catalog
@@ -127,7 +131,9 @@ AUDIO_RENDER_RETRY_LIMIT = int(os.getenv("AUDIO_RENDER_RETRY_LIMIT", str(_CANDID
 # audio_renderer._bounded) could blow past it by itself, and the loop would
 # still go on to start further attempts afterward. See
 # _MAX_SINGLE_ATTEMPT_SECONDS for the fix.
-AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SECONDS", "25"))
+AUDIO_RENDER_TIME_BUDGET_SECONDS = float(
+    os.getenv("AUDIO_RENDER_TIME_BUDGET_SECONDS", "25")
+)
 
 # The plausible fetch+decode critical-path cost of one candidate attempt --
 # the two operations that must both complete, in sequence, before a
@@ -140,7 +146,8 @@ AUDIO_RENDER_TIME_BUDGET_SECONDS = float(os.getenv("AUDIO_RENDER_TIME_BUDGET_SEC
 # included), which would be so conservative it'd effectively disable retries
 # under AUDIO_RENDER_TIME_BUDGET_SECONDS' own default.
 _MAX_SINGLE_ATTEMPT_SECONDS = (
-    audio_renderer.REMOTE_TIMEOUT_SECONDS + audio_renderer.LOCAL_AUDIO_OP_TIMEOUT_SECONDS
+    audio_renderer.REMOTE_TIMEOUT_SECONDS
+    + audio_renderer.LOCAL_AUDIO_OP_TIMEOUT_SECONDS
 )
 
 # How much of a selected segment's tail is carved off, blind, the instant
@@ -232,7 +239,11 @@ def _apply_preference(intent: PromptIntent, feedback: str) -> PromptIntent | Non
         return intent  # "smooth" is already the deterministic default bucket
     if feedback.startswith("reinforce:"):
         parts = feedback.split(":", 2)
-        if len(parts) == 3 and parts[1] in _ENERGY_LEVELS and parts[2] in _VOCALS_LEVELS:
+        if (
+            len(parts) == 3
+            and parts[1] in _ENERGY_LEVELS
+            and parts[2] in _VOCALS_LEVELS
+        ):
             data = intent.model_dump()
             data["energy"], data["vocals"] = parts[1], parts[2]
             return PromptIntent.model_validate(data)
@@ -252,7 +263,9 @@ def _effective_original_intent(session: DJSession) -> dict:
     return session.original_intent_json or session.intent_json
 
 
-def _fingerprint_as_json(fingerprint: session_candidate_pool.RetrievalFingerprint) -> list:
+def _fingerprint_as_json(
+    fingerprint: session_candidate_pool.RetrievalFingerprint,
+) -> list:
     """session_candidate_pool.fingerprint_for() returns a tuple (with a
     nested tuple of genres) for use as an in-memory dict key, but JSON has
     no tuple type -- prepared_next_json round-trips through a JSON column,
@@ -403,9 +416,9 @@ def _promote(
         session.played_track_keys_json = (
             (session.played_track_keys_json or []) + [track_key]
         )[-_PLAYED_TRACK_HISTORY:]
-        session.played_artists_json = (
-            (session.played_artists_json or []) + [artist]
-        )[-_PLAYED_TRACK_HISTORY:]
+        session.played_artists_json = ((session.played_artists_json or []) + [artist])[
+            -_PLAYED_TRACK_HISTORY:
+        ]
 
 
 def _delete_rendered_file(audio_url: str) -> None:
@@ -509,12 +522,14 @@ def _try_render_ranked_candidates(
 
     if renderable_candidates:
         for candidate in known_broken_candidates:
-            skipped_tracks.append({
-                "source": candidate.source,
-                "source_track_id": candidate.source_track_id,
-                "title": candidate.title,
-                "fallback_reason": "known_broken",
-            })
+            skipped_tracks.append(
+                {
+                    "source": candidate.source,
+                    "source_track_id": candidate.source_track_id,
+                    "title": candidate.title,
+                    "fallback_reason": "known_broken",
+                }
+            )
     else:
         # Every candidate is known-broken -- nothing left to skip *to*, so
         # fall through to actually trying them (same "loop rather than
@@ -523,7 +538,11 @@ def _try_render_ranked_candidates(
         # each one's known-broken record either way.
         renderable_candidates = candidates
 
-    stage_timings = {"segment_selector_ms": 0.0, "transition_planner_ms": 0.0, "audio_renderer_ms": 0.0}
+    stage_timings = {
+        "segment_selector_ms": 0.0,
+        "transition_planner_ms": 0.0,
+        "audio_renderer_ms": 0.0,
+    }
     attempts = renderable_candidates[:AUDIO_RENDER_RETRY_LIMIT]
     for index, candidate in enumerate(attempts):
         if index > 0 and deadline - time.monotonic() < _MAX_SINGLE_ATTEMPT_SECONDS:
@@ -541,17 +560,21 @@ def _try_render_ranked_candidates(
             # first attempt (index == 0) always runs regardless -- this
             # function must return *something* even if the deadline was
             # already tight before it started.
-            skipped_tracks.append({
-                "source": candidate.source,
-                "source_track_id": candidate.source_track_id,
-                "title": candidate.title,
-                "fallback_reason": "insufficient_time_remaining",
-            })
+            skipped_tracks.append(
+                {
+                    "source": candidate.source,
+                    "source_track_id": candidate.source_track_id,
+                    "title": candidate.title,
+                    "fallback_reason": "insufficient_time_remaining",
+                }
+            )
             break
         track = candidate
         selector_started = time.perf_counter()
         segment = selector.select(db, track)
-        stage_timings["segment_selector_ms"] += (time.perf_counter() - selector_started) * 1000
+        stage_timings["segment_selector_ms"] += (
+            time.perf_counter() - selector_started
+        ) * 1000
 
         # bridge_from.duration_ms is the previous track's already-rendered
         # reserved tail length -- a hard physical ceiling on how much audio
@@ -563,22 +586,32 @@ def _try_render_ranked_candidates(
         max_crossfade_ms = bridge_from.duration_ms if bridge_from is not None else None
         planner_started = time.perf_counter()
         transition = planner.plan(
-            previous_segment, segment, prefers_smoother=prefers_smoother,
+            previous_segment,
+            segment,
+            prefers_smoother=prefers_smoother,
             max_crossfade_ms=max_crossfade_ms,
         )
-        stage_timings["transition_planner_ms"] += (time.perf_counter() - planner_started) * 1000
+        stage_timings["transition_planner_ms"] += (
+            time.perf_counter() - planner_started
+        ) * 1000
 
         renderer_started = time.perf_counter()
         if bridge_from is None:
             rendered = renderer.render_track_transition(
-                segment, resume_offset_ms=resume_offset_ms, reserved_ms=_reserved_ms_for(segment),
+                segment,
+                resume_offset_ms=resume_offset_ms,
+                reserved_ms=_reserved_ms_for(segment),
             )
         else:
             rendered = renderer.render_bridge(
-                bridge_from, segment, crossfade_ms=transition.crossfade_ms,
+                bridge_from,
+                segment,
+                crossfade_ms=transition.crossfade_ms,
                 reserved_ms=_reserved_ms_for(segment),
             )
-        stage_timings["audio_renderer_ms"] += (time.perf_counter() - renderer_started) * 1000
+        stage_timings["audio_renderer_ms"] += (
+            time.perf_counter() - renderer_started
+        ) * 1000
 
         is_pass_through, fallback_reason = _staged_pass_through(rendered)
         if fallback_reason:
@@ -598,14 +631,20 @@ def _try_render_ranked_candidates(
         # attempt is always the final result, even a failed one, never
         # itself recorded as "skipped" (that label is only for a candidate
         # discarded in favor of a different one that was tried next).
-        if not is_pass_through or index == len(attempts) - 1 or time.monotonic() >= deadline:
+        if (
+            not is_pass_through
+            or index == len(attempts) - 1
+            or time.monotonic() >= deadline
+        ):
             break
-        skipped_tracks.append({
-            "source": track.source,
-            "source_track_id": track.source_track_id,
-            "title": track.title,
-            "fallback_reason": fallback_reason,
-        })
+        skipped_tracks.append(
+            {
+                "source": track.source,
+                "source_track_id": track.source_track_id,
+                "title": track.title,
+                "fallback_reason": fallback_reason,
+            }
+        )
     stage_timings = {key: round(value, 2) for key, value in stage_timings.items()}
 
     # Prompt 4: verify the winning attempt's fetched audio against its
@@ -615,7 +654,9 @@ def _try_render_ranked_candidates(
     # was never cached (external_track_id unset) or nothing was actually
     # fetched (audio_sha256 unset -- a local_path load, or a pass-through).
     fetched_audio_sha256 = (
-        rendered.body.audio_sha256 if bridge_from is None else rendered.next_body.audio_sha256
+        rendered.body.audio_sha256
+        if bridge_from is None
+        else rendered.next_body.audio_sha256
     )
     external_track_cache.verify_fingerprint(db, track, fetched_audio_sha256)
 
@@ -726,7 +767,9 @@ def _resolve_and_render(
     candidate_pool_reused = False
     if cached_candidates is not None:
         fresh_count = sum(
-            1 for candidate in cached_candidates if _track_key(candidate) not in exclude_track_keys
+            1
+            for candidate in cached_candidates
+            if _track_key(candidate) not in exclude_track_keys
         )
         if fresh_count >= _CANDIDATE_POOL_REFRESH_THRESHOLD:
             candidates = cached_candidates
@@ -742,12 +785,19 @@ def _resolve_and_render(
             # catalog-sourced, and this reconstruction (like the rest of
             # this best-effort debug path) can't distinguish them from the
             # cached track alone.
-            served_by = retriever if candidates[0].source == "catalog" else fallback_retriever
+            served_by = (
+                retriever if candidates[0].source == "catalog" else fallback_retriever
+            )
             candidate_pool_reused = True
 
     if not candidate_pool_reused:
         candidates, served_by = retrieve_candidates_with_fallback(
-            db, intent, retriever, fallback_retriever, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
+            db,
+            intent,
+            retriever,
+            fallback_retriever,
+            limit=_CANDIDATE_LIMIT,
+            recent_artists=recent_artists,
             viewer_id=viewer_id,
         )
         session_candidate_pool.put(session_id, fingerprint, candidates)
@@ -763,7 +813,9 @@ def _resolve_and_render(
     # is False (see external_track_cache.py's own module docstring).
     external_track_cache.enrich_and_dispatch(db, candidates)
     fresh_candidates = [
-        candidate for candidate in candidates if _track_key(candidate) not in exclude_track_keys
+        candidate
+        for candidate in candidates
+        if _track_key(candidate) not in exclude_track_keys
     ] or candidates
     retrieval_ms = round((time.perf_counter() - retrieval_started) * 1000, 2)
 
@@ -778,10 +830,19 @@ def _resolve_and_render(
     # (see AUDIO_RENDER_TIME_BUDGET_SECONDS) -- one shared budget for the
     # whole resolution's render attempts, not one per phase.
     render_deadline = time.monotonic() + AUDIO_RENDER_TIME_BUDGET_SECONDS
-    track, segment, transition, rendered, skipped_tracks, stage_timings = _try_render_ranked_candidates(
-        db, fresh_candidates, selector, planner, renderer,
-        previous_segment=previous_segment, prefers_smoother=prefers_smoother,
-        deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
+    track, segment, transition, rendered, skipped_tracks, stage_timings = (
+        _try_render_ranked_candidates(
+            db,
+            fresh_candidates,
+            selector,
+            planner,
+            renderer,
+            previous_segment=previous_segment,
+            prefers_smoother=prefers_smoother,
+            deadline=render_deadline,
+            resume_offset_ms=resume_offset_ms,
+            bridge_from=bridge_from,
+        )
     )
 
     # served_by's own candidates are all genuinely broken (not just
@@ -818,37 +879,63 @@ def _resolve_and_render(
         rescue_retrieval_started = time.perf_counter()
         try:
             rescue_candidates = retrieve_candidates(
-                db, intent, rescue_source, limit=_CANDIDATE_LIMIT, recent_artists=recent_artists,
+                db,
+                intent,
+                rescue_source,
+                limit=_CANDIDATE_LIMIT,
+                recent_artists=recent_artists,
                 viewer_id=viewer_id,
             )
         except NoMatchingCandidate:
             rescue_candidates = []
-        retrieval_ms += round((time.perf_counter() - rescue_retrieval_started) * 1000, 2)
+        retrieval_ms += round(
+            (time.perf_counter() - rescue_retrieval_started) * 1000, 2
+        )
         fresh_rescue_candidates = [
-            candidate for candidate in rescue_candidates if _track_key(candidate) not in exclude_track_keys
+            candidate
+            for candidate in rescue_candidates
+            if _track_key(candidate) not in exclude_track_keys
         ]
         if fresh_rescue_candidates:
             (
-                rescue_track, rescue_segment, rescue_transition, rescue_rendered, rescue_skipped,
+                rescue_track,
+                rescue_segment,
+                rescue_transition,
+                rescue_rendered,
+                rescue_skipped,
                 rescue_stage_timings,
             ) = _try_render_ranked_candidates(
-                db, fresh_rescue_candidates, selector, planner, renderer,
-                previous_segment=previous_segment, prefers_smoother=prefers_smoother,
-                deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
+                db,
+                fresh_rescue_candidates,
+                selector,
+                planner,
+                renderer,
+                previous_segment=previous_segment,
+                prefers_smoother=prefers_smoother,
+                deadline=render_deadline,
+                resume_offset_ms=resume_offset_ms,
+                bridge_from=bridge_from,
             )
             for key, value in rescue_stage_timings.items():
                 stage_timings[key] = round(stage_timings[key] + value, 2)
-            rescue_is_pass_through, _rescue_fallback_reason = _staged_pass_through(rescue_rendered)
+            rescue_is_pass_through, _rescue_fallback_reason = _staged_pass_through(
+                rescue_rendered
+            )
             if not rescue_is_pass_through:
-                skipped_tracks.append({
-                    "source": track.source,
-                    "source_track_id": track.source_track_id,
-                    "title": track.title,
-                    "fallback_reason": rendered_fallback_reason,
-                })
+                skipped_tracks.append(
+                    {
+                        "source": track.source,
+                        "source_track_id": track.source_track_id,
+                        "title": track.title,
+                        "fallback_reason": rendered_fallback_reason,
+                    }
+                )
                 skipped_tracks.extend(rescue_skipped)
                 track, segment, transition, rendered = (
-                    rescue_track, rescue_segment, rescue_transition, rescue_rendered,
+                    rescue_track,
+                    rescue_segment,
+                    rescue_transition,
+                    rescue_rendered,
                 )
                 served_by = rescue_source
 
@@ -869,36 +956,58 @@ def _resolve_and_render(
         tried_track_keys = (
             exclude_track_keys
             | {_track_key(track)}
-            | {f"{entry['source']}:{entry['source_track_id']}" for entry in skipped_tracks}
+            | {
+                f"{entry['source']}:{entry['source_track_id']}"
+                for entry in skipped_tracks
+            }
         )
         last_resort_started = time.perf_counter()
         last_resort_candidates = [
             candidate
-            for candidate in last_resort_tracks(db, viewer_id=viewer_id, limit=_CANDIDATE_LIMIT)
+            for candidate in last_resort_tracks(
+                db, viewer_id=viewer_id, limit=_CANDIDATE_LIMIT
+            )
             if _track_key(candidate) not in tried_track_keys
         ]
         retrieval_ms += round((time.perf_counter() - last_resort_started) * 1000, 2)
         if last_resort_candidates:
             (
-                lr_track, lr_segment, lr_transition, lr_rendered, lr_skipped, lr_stage_timings,
+                lr_track,
+                lr_segment,
+                lr_transition,
+                lr_rendered,
+                lr_skipped,
+                lr_stage_timings,
             ) = _try_render_ranked_candidates(
-                db, last_resort_candidates, selector, planner, renderer,
-                previous_segment=previous_segment, prefers_smoother=prefers_smoother,
-                deadline=render_deadline, resume_offset_ms=resume_offset_ms, bridge_from=bridge_from,
+                db,
+                last_resort_candidates,
+                selector,
+                planner,
+                renderer,
+                previous_segment=previous_segment,
+                prefers_smoother=prefers_smoother,
+                deadline=render_deadline,
+                resume_offset_ms=resume_offset_ms,
+                bridge_from=bridge_from,
             )
             for key, value in lr_stage_timings.items():
                 stage_timings[key] = round(stage_timings[key] + value, 2)
             lr_is_pass_through, _lr_fallback_reason = _staged_pass_through(lr_rendered)
             if not lr_is_pass_through:
-                skipped_tracks.append({
-                    "source": track.source,
-                    "source_track_id": track.source_track_id,
-                    "title": track.title,
-                    "fallback_reason": still_fallback_reason,
-                })
+                skipped_tracks.append(
+                    {
+                        "source": track.source,
+                        "source_track_id": track.source_track_id,
+                        "title": track.title,
+                        "fallback_reason": still_fallback_reason,
+                    }
+                )
                 skipped_tracks.extend(lr_skipped)
                 track, segment, transition, rendered = (
-                    lr_track, lr_segment, lr_transition, lr_rendered,
+                    lr_track,
+                    lr_segment,
+                    lr_transition,
+                    lr_rendered,
                 )
                 served_by = LAST_RESORT_CATALOG_RETRIEVER
         still_pass_through, still_fallback_reason = _staged_pass_through(rendered)
@@ -912,16 +1021,18 @@ def _resolve_and_render(
         # feed regardless of which caller (create/apply_feedback/advance/
         # prepare_next) hit it -- those all already handle this exception
         # (see their own try/except NoMatchingCandidate blocks).
-        record_event({
-            "event": "resolve_and_render_exhausted",
-            "session_id": session_id,
-            "last_attempted_track": {
-                "source": track.source,
-                "source_track_id": track.source_track_id,
-                "title": track.title,
-            },
-            "fallback_reason": still_fallback_reason,
-        })
+        record_event(
+            {
+                "event": "resolve_and_render_exhausted",
+                "session_id": session_id,
+                "last_attempted_track": {
+                    "source": track.source,
+                    "source_track_id": track.source_track_id,
+                    "title": track.title,
+                },
+                "fallback_reason": still_fallback_reason,
+            }
+        )
         raise NoMatchingCandidate(
             "No playable audio could be rendered for this request: every ranked "
             "candidate, any rescue attempt from the other retriever, and (when "
@@ -934,7 +1045,9 @@ def _resolve_and_render(
     # bridge_from) -- so this one check is enough to know which of
     # StagedTrackRender/BridgeRender `rendered` actually is.
     if bridge_from is None:
-        reserved_ms = _reserved_ms_for(segment) if rendered.reserved_tail is not None else 0
+        reserved_ms = (
+            _reserved_ms_for(segment) if rendered.reserved_tail is not None else 0
+        )
         now_playing = {
             "title": track.title,
             "artist": track.artist,
@@ -946,7 +1059,9 @@ def _resolve_and_render(
             "stage": "body",
             "resume_offset_ms": resume_offset_ms,
             "reserved_ms": reserved_ms,
-            "tail_audio_url": rendered.reserved_tail.audio_url if rendered.reserved_tail else None,
+            "tail_audio_url": rendered.reserved_tail.audio_url
+            if rendered.reserved_tail
+            else None,
         }
         renderer_is_pass_through = rendered.body.is_pass_through
         renderer_resolved_audio_url = rendered.body.audio_url
@@ -973,7 +1088,9 @@ def _resolve_and_render(
             "resume_offset_ms": rendered.crossfade_ms,
             "reserved_ms": next_reserved_ms,
             "tail_audio_url": (
-                rendered.next_reserved_tail.audio_url if rendered.next_reserved_tail else None
+                rendered.next_reserved_tail.audio_url
+                if rendered.next_reserved_tail
+                else None
             ),
             "next_body_audio_url": rendered.next_body.audio_url,
         }
@@ -995,10 +1112,13 @@ def _resolve_and_render(
     # resolution -- reading them here would show misleading, unrelated
     # data, so both are explicitly None instead.
     score_breakdown = (
-        None if candidate_pool_reused
+        None
+        if candidate_pool_reused
         else getattr(served_by, "last_candidate_scores", {}).get(_track_key(track))
     )
-    cache_hit = None if candidate_pool_reused else getattr(served_by, "last_cache_hit", None)
+    cache_hit = (
+        None if candidate_pool_reused else getattr(served_by, "last_cache_hit", None)
+    )
     # "primary"/"fallback" alone (via fell_back) can't tell a weak-but-real
     # primary match (orchestrator.retrieve_candidates_with_fallback's tier 3)
     # apart from the last-resort "any row" tier (tier 4) -- both report
@@ -1012,8 +1132,10 @@ def _resolve_and_render(
     # added for §12's own "did the flip actually work" measurement, not a
     # new observability system.
     retriever_tier = (
-        "last_resort" if served_by is LAST_RESORT_CATALOG_RETRIEVER
-        else "fallback" if served_by is not retriever
+        "last_resort"
+        if served_by is LAST_RESORT_CATALOG_RETRIEVER
+        else "fallback"
+        if served_by is not retriever
         else "primary"
     )
     pipeline_trace = {
@@ -1085,6 +1207,7 @@ def serialize_session(session: DJSession) -> SessionRead:
     return SessionRead(
         id=session.id,
         prompt=session.prompt,
+        mode=session.mode,
         status=session.status,
         vibeLabel=session.vibe_label,
         audioUrl=now_playing["audio_url"],
@@ -1106,7 +1229,11 @@ def serialize_session(session: DJSession) -> SessionRead:
 
 
 def _initial_intent(
-    prompt: str, db: Session, user_id: int | None, vibe: VibeUnderstander
+    prompt: str,
+    db: Session,
+    user_id: int | None,
+    vibe: VibeUnderstander,
+    mode: AutoMixMode | None = None,
 ) -> tuple[PromptIntent, PromptIntent]:
     """Returns (the intent this resolution actually uses -- possibly
     preference-biased, see _apply_preference -- and the raw intent
@@ -1115,9 +1242,14 @@ def _initial_intent(
     signature clustering) want the raw one; _resolve_and_render wants the
     first."""
 
-    intent = vibe.understand(prompt)
-    is_neutral = intent.energy == "medium" and intent.vocals == "neutral" and not intent.artist
-    if is_neutral and user_id is not None:
+    intent = apply_auto_mix_mode(vibe.understand(prompt), mode)
+    is_neutral = (
+        intent.energy == "medium" and intent.vocals == "neutral" and not intent.artist
+    )
+    # A named mode is an explicit instruction and must not be silently
+    # rewritten by learned preferences. The free-prompt path retains the
+    # existing preference behavior unchanged.
+    if mode is None and is_neutral and user_id is not None:
         preferences = (
             db.query(UserPreference)
             .filter(UserPreference.user_id == user_id, UserPreference.score > 0)
@@ -1142,9 +1274,10 @@ def create_session(
     selector: SegmentSelector,
     planner: TransitionPlanner,
     renderer: AudioRenderer,
+    mode: AutoMixMode | None = None,
 ) -> SessionRead:
     started = time.perf_counter()
-    intent, raw_intent = _initial_intent(prompt, db, user_id, vibe)
+    intent, raw_intent = _initial_intent(prompt, db, user_id, vibe, mode)
     # Generated up front (not left to the DJSession constructor below) so
     # _resolve_and_render can key session_candidate_pool by this session's
     # real, final id from its very first resolution -- a brand-new id has
@@ -1152,13 +1285,22 @@ def create_session(
     # and populates the pool for the first advance() to reuse.
     session_id = f"session_{uuid4().hex}"
     track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
-        db, intent, retriever, fallback_retriever, selector, planner, renderer,
-        session_id=session_id, previous_segment=None, prefers_smoother=False,
+        db,
+        intent,
+        retriever,
+        fallback_retriever,
+        selector,
+        planner,
+        renderer,
+        session_id=session_id,
+        previous_segment=None,
+        prefers_smoother=False,
         viewer_id=user_id,
     )
     pipeline_trace["vibe_understander"] = {
         "implementation": type(vibe).__name__,
         "invoked": True,
+        "auto_mix_mode": mode.value if mode else None,
         "intent": intent.model_dump(mode="json"),
         # Current == original at creation time, by definition.
         "original_intent": intent.model_dump(mode="json"),
@@ -1168,6 +1310,7 @@ def create_session(
         id=session_id,
         user_id=user_id,
         prompt=prompt,
+        mode=mode.value if mode else None,
         status="playing",
         vibe_label=now_playing["segment"]["track"]["vibe_label"] or "Balanced opener",
         retriever_name=served_by.name,
@@ -1242,14 +1385,26 @@ def apply_feedback(
         # when the original resolution needed to -- and recovers gracefully
         # if Audius was down at creation but is back by the time feedback
         # runs, or vice versa.
-        previous_segment = SelectedSegment.model_validate(session.now_playing_json["segment"])
+        previous_segment = SelectedSegment.model_validate(
+            session.now_playing_json["segment"]
+        )
         recent_artists = frozenset(session.played_artists_json or [])
         try:
-            track, _, now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
-                db, mutated, retriever, fallback_retriever, selector, planner, renderer,
-                session_id=session.id, previous_segment=previous_segment,
-                prefers_smoother=prefers_smoother, recent_artists=recent_artists,
-                viewer_id=session.user_id,
+            track, _, now_playing, reasoning, pipeline_trace, served_by = (
+                _resolve_and_render(
+                    db,
+                    mutated,
+                    retriever,
+                    fallback_retriever,
+                    selector,
+                    planner,
+                    renderer,
+                    session_id=session.id,
+                    previous_segment=previous_segment,
+                    prefers_smoother=prefers_smoother,
+                    recent_artists=recent_artists,
+                    viewer_id=session.user_id,
+                )
             )
             # Feedback mutates the stored intent with fixed keyword rules
             # (_mutate_intent) rather than calling the LLM again -- invoked
@@ -1275,10 +1430,14 @@ def apply_feedback(
             # explicit clearing here does.
             session.prepared_next_json = None
             _promote(
-                session, now_playing=now_playing, reasoning=reasoning,
-                pipeline_trace=pipeline_trace, retriever_name=served_by.name,
+                session,
+                now_playing=now_playing,
+                reasoning=reasoning,
+                pipeline_trace=pipeline_trace,
+                retriever_name=served_by.name,
                 vibe_label=now_playing["segment"]["track"]["vibe_label"],
-                track_key=_track_key(track), artist=track.artist,
+                track_key=_track_key(track),
+                artist=track.artist,
             )
             resolved_again = True
             resolved_pipeline_trace = pipeline_trace
@@ -1406,8 +1565,11 @@ def advance_session(
             tail_audio_url=now_playing["tail_audio_url"],
         )
         _promote(
-            session, now_playing=promoted, reasoning=session.reasoning_json,
-            pipeline_trace=session.pipeline_trace_json, retriever_name=session.retriever_name,
+            session,
+            now_playing=promoted,
+            reasoning=session.reasoning_json,
+            pipeline_trace=session.pipeline_trace_json,
+            retriever_name=session.retriever_name,
             vibe_label=session.vibe_label,
         )
         db.commit()
@@ -1433,11 +1595,14 @@ def advance_session(
                 "original_intent": _effective_original_intent(session),
             }
             _promote(
-                session, now_playing=prepared["now_playing"], reasoning=prepared["reasoning"],
+                session,
+                now_playing=prepared["now_playing"],
+                reasoning=prepared["reasoning"],
                 pipeline_trace=pipeline_trace,
                 retriever_name=pipeline_trace["candidate_retriever"]["name"],
                 vibe_label=prepared["now_playing"]["segment"]["track"]["vibe_label"],
-                track_key=prepared["track_key"], artist=prepared["artist"],
+                track_key=prepared["track_key"],
+                artist=prepared["artist"],
             )
             session.prepared_next_json = None
             db.commit()
@@ -1458,12 +1623,18 @@ def advance_session(
                 for key in ("title", "artist", "album", "cover_url", "role", "segment")
             }
             promoted.update(
-                audio_url=tail_audio_url, stage="reserved_plain",
-                resume_offset_ms=0, reserved_ms=0, tail_audio_url=None,
+                audio_url=tail_audio_url,
+                stage="reserved_plain",
+                resume_offset_ms=0,
+                reserved_ms=0,
+                tail_audio_url=None,
             )
             _promote(
-                session, now_playing=promoted, reasoning=session.reasoning_json,
-                pipeline_trace=session.pipeline_trace_json, retriever_name=session.retriever_name,
+                session,
+                now_playing=promoted,
+                reasoning=session.reasoning_json,
+                pipeline_trace=session.pipeline_trace_json,
+                retriever_name=session.retriever_name,
                 vibe_label=session.vibe_label,
             )
             db.commit()
@@ -1483,11 +1654,22 @@ def advance_session(
     exclude = frozenset(session.played_track_keys_json or [])
     recent_artists = frozenset(session.played_artists_json or [])
     try:
-        track, _, fresh_now_playing, reasoning, pipeline_trace, served_by = _resolve_and_render(
-            db, intent, retriever, fallback_retriever, selector, planner, renderer,
-            session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
-            exclude_track_keys=exclude, recent_artists=recent_artists,
-            viewer_id=session.user_id,
+        track, _, fresh_now_playing, reasoning, pipeline_trace, served_by = (
+            _resolve_and_render(
+                db,
+                intent,
+                retriever,
+                fallback_retriever,
+                selector,
+                planner,
+                renderer,
+                session_id=session.id,
+                previous_segment=previous_segment,
+                prefers_smoother=False,
+                exclude_track_keys=exclude,
+                recent_artists=recent_artists,
+                viewer_id=session.user_id,
+            )
         )
     except NoMatchingCandidate:
         # Nothing to advance to (e.g. Audius briefly unreachable); leave the
@@ -1500,7 +1682,9 @@ def advance_session(
         # anticipated -- see apply_feedback's identical guard. Logged so
         # the underlying bug stays visible; the session just keeps playing
         # its current track instead of surfacing a 500 that ends playback.
-        logger.exception("advance_session: unexpected error resolving session %s", session.id)
+        logger.exception(
+            "advance_session: unexpected error resolving session %s", session.id
+        )
         _log_stage_latency("advance_session", session.id, started, None)
         return serialize_session(session)
 
@@ -1514,10 +1698,14 @@ def advance_session(
         "original_intent": _effective_original_intent(session),
     }
     _promote(
-        session, now_playing=fresh_now_playing, reasoning=reasoning, pipeline_trace=pipeline_trace,
+        session,
+        now_playing=fresh_now_playing,
+        reasoning=reasoning,
+        pipeline_trace=pipeline_trace,
         retriever_name=served_by.name,
         vibe_label=fresh_now_playing["segment"]["track"]["vibe_label"],
-        track_key=_track_key(track), artist=track.artist,
+        track_key=_track_key(track),
+        artist=track.artist,
     )
 
     db.commit()
@@ -1621,15 +1809,29 @@ def prepare_next(
                 audio_url=origin_tail_audio_url, duration_ms=origin_reserved_ms
             )
 
-            previous_segment = SelectedSegment.model_validate(origin_now_playing["segment"])
+            previous_segment = SelectedSegment.model_validate(
+                origin_now_playing["segment"]
+            )
             exclude = frozenset(session.played_track_keys_json or [])
             recent_artists = frozenset(session.played_artists_json or [])
             try:
-                track, _, now_playing, reasoning, pipeline_trace, _served_by = _resolve_and_render(
-                    db, intent, retriever, fallback_retriever, selector, planner, renderer,
-                    session_id=session.id, previous_segment=previous_segment, prefers_smoother=False,
-                    exclude_track_keys=exclude, recent_artists=recent_artists,
-                    viewer_id=session.user_id, bridge_from=bridge_from,
+                track, _, now_playing, reasoning, pipeline_trace, _served_by = (
+                    _resolve_and_render(
+                        db,
+                        intent,
+                        retriever,
+                        fallback_retriever,
+                        selector,
+                        planner,
+                        renderer,
+                        session_id=session.id,
+                        previous_segment=previous_segment,
+                        prefers_smoother=False,
+                        exclude_track_keys=exclude,
+                        recent_artists=recent_artists,
+                        viewer_id=session.user_id,
+                        bridge_from=bridge_from,
+                    )
                 )
             except NoMatchingCandidate:
                 # Nothing to bridge into ahead of time; advance_session falls
@@ -1643,7 +1845,9 @@ def prepare_next(
                 # visible than a NoMatchingCandidate, not more -- log it and
                 # let advance_session() do its own (now equally resilient)
                 # real resolution when it's actually needed.
-                logger.exception("prepare_next: unexpected error resolving session %s", session.id)
+                logger.exception(
+                    "prepare_next: unexpected error resolving session %s", session.id
+                )
                 return
 
             resolved_pipeline_trace = pipeline_trace
@@ -1706,8 +1910,12 @@ def prepare_next(
             entry["resolution"] = resolved_pipeline_trace.get("_timing", {})
             # Conservative proxies, not exact deadlines -- see this
             # function's own docstring and the two constants' comments.
-            entry["beat_min_frontend_deadline"] = duration_ms <= _PREPARE_NEXT_MIN_FRONTEND_DEADLINE_MS
-            entry["beat_client_timeout"] = duration_ms <= _PREPARE_NEXT_CLIENT_TIMEOUT_MS
+            entry["beat_min_frontend_deadline"] = (
+                duration_ms <= _PREPARE_NEXT_MIN_FRONTEND_DEADLINE_MS
+            )
+            entry["beat_client_timeout"] = (
+                duration_ms <= _PREPARE_NEXT_CLIENT_TIMEOUT_MS
+            )
         logger.info(json.dumps(entry))
         record_event(entry)
 
@@ -1716,4 +1924,8 @@ def stop_session(db: Session, session: DJSession) -> dict:
     session.status = "stopped"
     session.prepared_next_json = None
     db.commit()
-    return {"session_id": session.id, "status": "stopped", "message": "AI DJ session stopped."}
+    return {
+        "session_id": session.id,
+        "status": "stopped",
+        "message": "AI DJ session stopped.",
+    }

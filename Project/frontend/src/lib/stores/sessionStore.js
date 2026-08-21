@@ -16,6 +16,7 @@ function initialState() {
 	return {
 		status: APP_STATES.IDLE,
 		prompt: '',
+		mode: null,
 		currentStep: '',
 		progress: 0,
 		session: null,
@@ -188,8 +189,14 @@ function createSessionStore() {
 			update((state) => ({ ...state, prompt }));
 		},
 
+		/** @param {import('../types.js').AutoMixMode | null} mode */
+		setMode(mode) {
+			update((state) => ({ ...state, mode }));
+		},
+
 		async start() {
 			const prompt = latestState.prompt.trim();
+			const mode = latestState.mode;
 			if (!prompt || latestState.status === APP_STATES.STARTING) {
 				return false;
 			}
@@ -233,7 +240,7 @@ function createSessionStore() {
 			}));
 
 			try {
-				const session = await apiStartSession({ prompt, signal: startController.signal });
+				const session = await apiStartSession({ prompt, mode, signal: startController.signal });
 				if (requestVersion !== lifecycleVersion) {
 					return false;
 				}
@@ -244,6 +251,7 @@ function createSessionStore() {
 
 				update((state) => ({
 					...state,
+					mode: session.mode,
 					status: APP_STATES.PLAYING,
 					currentStep: 'Ready to play',
 					progress: 100,

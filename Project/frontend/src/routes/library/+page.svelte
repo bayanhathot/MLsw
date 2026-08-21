@@ -3,6 +3,8 @@
 	import { resolve } from '$app/paths';
 	import { onDestroy } from 'svelte';
 
+	import AutoMixModeSelector from '$lib/components/AutoMixModeSelector.svelte';
+	import { autoMixModeLabel } from '$lib/constants/autoMixModes.js';
 	import { createMix, getLibrary, publishMix, unsaveMix, updateMix } from '$lib/services/mixApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
 	import { playerStore } from '$lib/stores/playerStore.js';
@@ -18,6 +20,8 @@
 	let loaded = $state(false);
 	let error = $state('');
 	let draftPrompt = $state('');
+	/** @type {import('$lib/types.js').AutoMixMode | null} */
+	let draftMode = $state(null);
 	let isCreating = $state(false);
 	let editingId = $state(0);
 	let editTitle = $state('');
@@ -66,9 +70,10 @@
 		isCreating = true;
 		error = '';
 		try {
-			const mix = await createMix(prompt);
+			const mix = await createMix(prompt, draftMode);
 			owned = [mix, ...owned];
 			draftPrompt = '';
+			draftMode = null;
 			activeTab = 'owned';
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Could not create the mix.';
@@ -168,7 +173,15 @@
 
 	<form class="create-card card" onsubmit={handleCreate}>
 		<label for="mix-prompt">Generate a persistent mix</label>
-		<div>
+		<AutoMixModeSelector
+			value={draftMode}
+			compact
+			onChange={(mode) => (draftMode = mode)}
+			onDefaultPrompt={(prompt) => {
+				if (!draftPrompt.trim()) draftPrompt = prompt;
+			}}
+		/>
+		<div class="create-controls">
 			<input
 				id="mix-prompt"
 				bind:value={draftPrompt}
@@ -257,6 +270,7 @@
 									<span class:published={mix.status === 'published'}>{mix.status}</span>
 								{/if}
 							</div>
+							{#if mix.mode}<span class="mode-badge">{autoMixModeLabel(mix.mode)} mode</span>{/if}
 							<p>{mix.prompt}</p>
 							{#if mix.description}<p class="description">{mix.description}</p>{/if}
 							<div class="actions">
@@ -326,7 +340,7 @@
 		position: relative;
 		z-index: 1;
 	}
-	.create-card > div {
+	.create-card > .create-controls {
 		display: grid;
 		grid-template-columns: 1fr auto;
 		gap: 12px;
@@ -432,6 +446,17 @@
 		background: rgba(112, 225, 199, 0.14);
 		color: var(--success);
 	}
+	.mode-badge {
+		display: inline-block;
+		margin-top: 8px;
+		border: 1px solid rgba(125, 183, 255, 0.3);
+		border-radius: 999px;
+		padding: 4px 8px;
+		background: rgba(59, 130, 246, 0.13);
+		color: var(--accent-2);
+		font-size: 12px;
+		font-weight: 800;
+	}
 	.description {
 		color: var(--text-muted) !important;
 	}
@@ -451,7 +476,7 @@
 		color: inherit;
 	}
 	@media (max-width: 700px) {
-		.create-card > div {
+		.create-card > .create-controls {
 			grid-template-columns: 1fr;
 		}
 	}

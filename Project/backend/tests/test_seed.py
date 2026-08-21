@@ -14,8 +14,8 @@ from app.database.models.seed_state import ColdSeedRun
 from app.database.models.session import DJSession
 from app.database.models.social import Friendship
 from app.database.models.user import User
-from app.services import music_identity_service
 from app.seed import main, seed_demo_data
+from app.services import music_identity_service
 
 TEST_VERSION = "test-v1"
 TEST_SEED = 4242
@@ -25,14 +25,22 @@ def _run(db_session):
     return run_cold_seed(db_session, version=TEST_VERSION, random_seed=TEST_SEED)
 
 
-def test_cold_seed_creates_roughly_fifty_users_with_both_public_and_private_profiles(db_session):
+def test_cold_seed_creates_roughly_fifty_users_with_both_public_and_private_profiles(
+    db_session,
+):
     result = _run(db_session)
     assert result["users"] == TARGET_USER_COUNT
     assert db_session.query(User).count() == TARGET_USER_COUNT
 
-    public_count = db_session.query(UserMusicProfile).filter_by(visibility="public").count()
-    friends_count = db_session.query(UserMusicProfile).filter_by(visibility="friends").count()
-    private_count = db_session.query(UserMusicProfile).filter_by(visibility="private").count()
+    public_count = (
+        db_session.query(UserMusicProfile).filter_by(visibility="public").count()
+    )
+    friends_count = (
+        db_session.query(UserMusicProfile).filter_by(visibility="friends").count()
+    )
+    private_count = (
+        db_session.query(UserMusicProfile).filter_by(visibility="private").count()
+    )
     assert public_count + friends_count + private_count == TARGET_USER_COUNT
     # ~70% public (a "friends" sliver counts toward the public-ish cohort),
     # ~30% private -- loose bounds since the exact split has some randomness
@@ -48,10 +56,14 @@ def test_cold_seed_creates_roughly_fifty_users_with_both_public_and_private_prof
         assert profile.display_name and " " in profile.display_name
     usernames = [row.username for row in db_session.query(User).all()]
     assert len(set(usernames)) == TARGET_USER_COUNT
-    assert not any(name.lower().startswith("user") and name[4:].isdigit() for name in usernames)
+    assert not any(
+        name.lower().startswith("user") and name[4:].isdigit() for name in usernames
+    )
 
 
-def test_a_seeded_account_can_actually_log_in_through_the_real_endpoint(client, db_session):
+def test_a_seeded_account_can_actually_log_in_through_the_real_endpoint(
+    client, db_session
+):
     # A pure-ORM check of the stored email wouldn't catch this: pydantic's
     # EmailStr (used by both /auth/register and /auth/login) rejects some
     # RFC 2606 "obviously fake" TLDs outright as special-use domains (see
@@ -62,7 +74,9 @@ def test_a_seeded_account_can_actually_log_in_through_the_real_endpoint(client, 
     user = db_session.query(User).first()
     password = f"coldseed-{TEST_VERSION}-{user.username}"
 
-    response = client.post("/auth/login", json={"email": user.email, "password": password})
+    response = client.post(
+        "/auth/login", json={"email": user.email, "password": password}
+    )
 
     assert response.status_code == 200, response.text
     me = client.get("/auth/me")
@@ -106,8 +120,12 @@ def test_cold_seed_creates_logically_valid_nested_replies(db_session):
     comments_by_id = {comment.id: comment for comment in comments}
     for reply in replies:
         parent = comments_by_id[reply.parent_comment_id]
-        assert parent.post_id == reply.post_id  # same-post rule the endpoint also enforces
-        assert parent.parent_comment_id is None  # single-level only, no reply-to-a-reply
+        assert (
+            parent.post_id == reply.post_id
+        )  # same-post rule the endpoint also enforces
+        assert (
+            parent.parent_comment_id is None
+        )  # single-level only, no reply-to-a-reply
         assert reply.created_at >= parent.created_at
         assert reply.author_id != parent.author_id  # nobody replies to themselves
 
@@ -175,6 +193,9 @@ def test_cold_seed_analytics_reflect_the_seeded_listening_events(db_session):
     # seeding raw events instead of hand-writing analytics numbers.
     assert identity["summary"]["total_listening_seconds"] == expected_seconds
     assert identity["summary"]["artists_discovered"] > 0
+    assert identity["segment_analytics"]["average_segment_length_seconds"] > 0
+    assert identity["segment_analytics"]["time_saved_seconds"] > 0
+    assert identity["segment_analytics"]["segment_play_count"] > 0
     assert len(identity["artists"]) > 0
     assert len(identity["genres"]) > 0
 
@@ -199,7 +220,11 @@ def test_running_the_seeder_twice_creates_no_duplicates(db_session):
 def test_cold_seed_never_touches_a_real_pre_existing_user(db_session):
     from app.core.security import hash_password
 
-    real_user = User(username="realuser", email="real@example.com", hashed_password=hash_password("s3cret!!"))
+    real_user = User(
+        username="realuser",
+        email="real@example.com",
+        hashed_password=hash_password("s3cret!!"),
+    )
     db_session.add(real_user)
     db_session.commit()
     real_user_id = real_user.id
@@ -222,10 +247,15 @@ def test_main_seeds_by_default_when_enable_cold_seed_is_unset(monkeypatch, db_se
     main()
 
     assert db_session.query(User).count() == TARGET_USER_COUNT
-    assert db_session.query(ColdSeedRun).filter_by(version=config.DEFAULT_VERSION).count() == 1
+    assert (
+        db_session.query(ColdSeedRun).filter_by(version=config.DEFAULT_VERSION).count()
+        == 1
+    )
 
 
-def test_main_is_a_graceful_no_op_when_enable_cold_seed_is_false(monkeypatch, db_session):
+def test_main_is_a_graceful_no_op_when_enable_cold_seed_is_false(
+    monkeypatch, db_session
+):
     monkeypatch.setenv("ENABLE_COLD_SEED", "false")
     monkeypatch.setattr("app.seed.SessionLocal", TestingSessionLocal)
 
@@ -242,4 +272,9 @@ def test_seed_demo_data_uses_configured_version_and_seed(monkeypatch, db_session
     result = seed_demo_data(db_session)
 
     assert result["version"] == TEST_VERSION
-    assert db_session.query(ColdSeedRun).filter_by(version=TEST_VERSION, random_seed=TEST_SEED).count() == 1
+    assert (
+        db_session.query(ColdSeedRun)
+        .filter_by(version=TEST_VERSION, random_seed=TEST_SEED)
+        .count()
+        == 1
+    )
