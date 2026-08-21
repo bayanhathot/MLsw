@@ -48,6 +48,7 @@ target_volume="${target_volume:-${VOLUME_PREFIX}_uploads_data}"
 # whole file even for an `exec` against postgres alone.
 export BACKEND_IMAGE="${BACKEND_IMAGE:-unused}"
 export FRONTEND_IMAGE="${FRONTEND_IMAGE:-unused}"
+export STUDIO_AI_IMAGE="${STUDIO_AI_IMAGE:-unused}"
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 
 if [ -n "${db_backup}" ]; then

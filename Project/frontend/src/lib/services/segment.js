@@ -44,6 +44,21 @@ export function normalizeSegment(segment, index) {
 			segment.trackDurationSeconds ?? segment.track_duration_seconds
 		),
 		genre: text(segment.genre),
-		vibe: text(segment.vibe)
+		vibe: text(segment.vibe),
+		savedSegmentId: nullableNumber(segment.savedSegmentId ?? segment.saved_segment_id),
+		sourceAudioUrl: backendMediaUrl(
+			text(segment.sourceAudioUrl ?? segment.source_audio_url ?? segment.audio_url)
+		),
+		sourceStartMs: nullableNumber(segment.sourceStartMs ?? segment.source_start_ms),
+		sourceEndMs: nullableNumber(segment.sourceEndMs ?? segment.source_end_ms),
+		bpm: nullableNumber(segment.bpm),
+		musicalKey: text(segment.musicalKey ?? segment.musical_key),
+		camelot: text(segment.camelot),
+		transitionType: text(segment.transitionType ?? segment.transition_type, 'crossfade'),
+		transitionDurationMs: Number(
+			segment.transitionDurationMs ?? segment.transition_duration_ms ?? 4000
+		),
+		compatibilityScore: nullableNumber(segment.compatibilityScore ?? segment.compatibility_score),
+		compatibilityFactors: segment.compatibilityFactors ?? segment.compatibility_factors_json ?? null
 	};
 }

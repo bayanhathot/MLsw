@@ -14,9 +14,9 @@ notifications, and uploads. This module also exposes liveness, readiness, and
 selector-information endpoints.
 """
 
-import os
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from time import perf_counter
@@ -39,32 +39,37 @@ os.environ["NUMBA_CACHE_DIR"] = os.path.join(
 )
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database.database import get_db
 from app.core.config import cors_origins
 from app.core.redis_client import check_redis_health
+from app.database.database import get_db
+from app.routers.admin_debug import router as admin_debug_router
 from app.routers.auth import router as auth_router
 from app.routers.catalog import router as catalog_router
-from app.routers.media import router as media_router
-from app.routers.sessions import router as sessions_router
-from app.routers.mixes import router as mixes_router
-from app.routers.forum import router as forum_router
-from app.routers.messaging import router as messaging_router
-from app.routers.listening import router as listening_router
-from app.routers.profiles import router as profiles_router
-from app.routers.uploads import router as uploads_router
-from app.routers.social import router as social_router
 from app.routers.debug import router as debug_router
-from app.routers.admin_debug import router as admin_debug_router
+from app.routers.forum import router as forum_router
+from app.routers.listening import router as listening_router
+from app.routers.media import router as media_router
+from app.routers.messaging import router as messaging_router
+from app.routers.mixes import router as mixes_router
+from app.routers.profiles import router as profiles_router
 from app.routers.realtime import router as realtime_router
-from app.services.audio_analysis import requeue_pending_analysis, requeue_pending_external_analysis
+from app.routers.sessions import router as sessions_router
+from app.routers.social import router as social_router
+from app.routers.studio import router as studio_router
+from app.routers.uploads import router as uploads_router
+from app.services.audio_analysis import (
+    requeue_pending_analysis,
+    requeue_pending_external_analysis,
+)
 from app.services.channel_hub import channel_hub
 from app.services.pipeline_debug_service import pipeline_debug_hub
+from app.services.studio_service import requeue_pending_studio_renders
 
 # No logging.basicConfig/dictConfig existed anywhere in this backend before
 # this line -- every logger.info(...) call in app/ (including this file's
@@ -106,6 +111,10 @@ async def _lifespan(_app: FastAPI):
     # is False) -- see requeue_pending_external_analysis's own docstring for
     # the crash/restart gap this closes.
     requeue_pending_external_analysis()
+    # Studio renders use the same bounded worker queue. Their intent is
+    # durable in the mix row, so interrupted `rendering` revisions can be
+    # safely re-enqueued before traffic is accepted.
+    requeue_pending_studio_renders()
     yield
     await channel_hub.stop_listener()
     await pipeline_debug_hub.stop_listener()
@@ -222,6 +231,7 @@ app.include_router(media_router)
 app.include_router(debug_router)
 app.include_router(admin_debug_router)
 app.include_router(realtime_router)
+app.include_router(studio_router)
 
 
 # ---------------------------------------------------------

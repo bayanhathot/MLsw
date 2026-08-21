@@ -4,7 +4,8 @@ set -Eeuo pipefail
 DEPLOY_ROOT="${DEPLOY_ROOT:?DEPLOY_ROOT is required}"
 BACKEND_IMAGE="${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}"
-export BACKEND_IMAGE FRONTEND_IMAGE
+STUDIO_AI_IMAGE="${STUDIO_AI_IMAGE:?STUDIO_AI_IMAGE is required}"
+export BACKEND_IMAGE FRONTEND_IMAGE STUDIO_AI_IMAGE
 
 cd "${DEPLOY_ROOT}"
 test -f .env || { echo "${DEPLOY_ROOT}/.env is missing" >&2; exit 1; }
@@ -72,7 +73,7 @@ compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 # has no dependents (backend deliberately isn't gated on it, see
 # docker-compose.prod.yml), so it must be listed explicitly here or `up`
 # would never create it at all on a fresh VM.
-"${compose[@]}" up --detach --remove-orphans backend frontend caddy ollama
+"${compose[@]}" up --detach --remove-orphans backend studio-ai-service frontend caddy ollama
 "${compose[@]}" ps
 
 # Prove the recreated backend received the managed values. This catches the
@@ -162,6 +163,17 @@ else
   echo "warning: ollama did not become ready in time; skipping model pull." >&2
   echo "The app will run on the deterministic parser until this is retried" >&2
   echo "manually: docker compose exec ollama ollama pull ${ollama_model}" >&2
+fi
+
+# Studio AI is optional at runtime, but expose its actual readiness in every
+# deploy log after the model pull/warm-up. Do not fail the deployment: the
+# backend intentionally returns an unavailable recommendation and keeps all
+# manual Studio features usable when this service or Ollama is down.
+if "${compose[@]}" exec -T studio-ai-service python -c \
+  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/ready', timeout=3)"; then
+  echo "Verified Studio AI readiness with model ${ollama_model}."
+else
+  echo "warning: Studio AI is not ready; manual Studio remains available." >&2
 fi
 
 # Install (or refresh) a daily backup cron job -- idempotent, so this is

@@ -180,6 +180,11 @@ jobs:
       - name: Run backend tests
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
+      - name: Run isolated Studio AI service tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/Project/backend:${{ github.workspace }}/Project/studio-ai-service
+        run: pytest ../studio-ai-service/tests -q
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
@@ -501,6 +506,7 @@ jobs:
         env:
           BACKEND_IMAGE: ghcr.io/example/cuemix-backend:validation
           FRONTEND_IMAGE: ghcr.io/example/cuemix-frontend:validation
+          STUDIO_AI_IMAGE: ghcr.io/example/cuemix-studio-ai:validation
         run: >-
           docker compose
           --env-file Project/deploy/.env.production.example
@@ -526,6 +532,15 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
+      - name: Build Studio AI image
+        uses: docker/build-push-action@v6
+        with:
+          context: Project
+          file: Project/studio-ai-service/Dockerfile
+          push: false
+          cache-from: type=gha,scope=studio-ai
+          cache-to: type=gha,mode=max,scope=studio-ai
+
   publish-images:
     name: Publish immutable images
     runs-on: ubuntu-latest
@@ -538,6 +553,7 @@ jobs:
     outputs:
       backend_image: ${{ steps.metadata.outputs.backend_image }}
       frontend_image: ${{ steps.metadata.outputs.frontend_image }}
+      studio_ai_image: ${{ steps.metadata.outputs.studio_ai_image }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -559,6 +575,7 @@ jobs:
           owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           echo "backend_image=ghcr.io/${owner}/cuemix-backend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
           echo "frontend_image=ghcr.io/${owner}/cuemix-frontend:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "studio_ai_image=ghcr.io/${owner}/cuemix-studio-ai:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
 
       - name: Build and publish backend
         uses: docker/build-push-action@v6
@@ -577,6 +594,16 @@ jobs:
           tags: ${{ steps.metadata.outputs.frontend_image }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Build and publish Studio AI
+        uses: docker/build-push-action@v6
+        with:
+          context: Project
+          file: Project/studio-ai-service/Dockerfile
+          push: true
+          tags: ${{ steps.metadata.outputs.studio_ai_image }}
+          cache-from: type=gha,scope=studio-ai
+          cache-to: type=gha,mode=max,scope=studio-ai
 
   deploy-production:
     name: Deploy to Azure VM
@@ -679,9 +706,10 @@ jobs:
           SSH_USER: ${{ vars.SSH_USER }}
           BACKEND_IMAGE: ${{ needs.publish-images.outputs.backend_image }}
           FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}
+          STUDIO_AI_IMAGE: ${{ needs.publish-images.outputs.studio_ai_image }}
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' MANAGED_BACKEND_WORKERS='${PRODUCTION_BACKEND_WORKERS}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' STUDIO_AI_IMAGE='${STUDIO_AI_IMAGE}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' MANAGED_BACKEND_WORKERS='${PRODUCTION_BACKEND_WORKERS}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       # --retry-all-errors is required, not optional: on a first-ever deploy
       # Caddy needs a few seconds to obtain the Let's Encrypt certificate, and
@@ -814,9 +842,10 @@ jobs:
           owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           backend_image="ghcr.io/${owner}/cuemix-backend:${{ inputs.rollback_sha }}"
           frontend_image="ghcr.io/${owner}/cuemix-frontend:${{ inputs.rollback_sha }}"
-          echo "Rolling back to ${backend_image} / ${frontend_image}"
+          studio_ai_image="ghcr.io/${owner}/cuemix-studio-ai:${{ inputs.rollback_sha }}"
+          echo "Rolling back to ${backend_image} / ${frontend_image} / ${studio_ai_image}"
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' MANAGED_BACKEND_WORKERS='${PRODUCTION_BACKEND_WORKERS}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
+            "DEPLOY_ROOT=\$HOME/cuemix-deploy BACKEND_IMAGE='${backend_image}' FRONTEND_IMAGE='${frontend_image}' STUDIO_AI_IMAGE='${studio_ai_image}' MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED='${PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED}' MANAGED_DEBUG_DASHBOARD_ENABLED='${PRODUCTION_DEBUG_DASHBOARD_ENABLED}' MANAGED_ENABLE_PIPELINE_DEBUG='${PRODUCTION_ENABLE_PIPELINE_DEBUG}' MANAGED_BACKEND_WORKERS='${PRODUCTION_BACKEND_WORKERS}' bash \$HOME/cuemix-deploy/deploy/remote-deploy.sh"
 
       - name: Verify the public TLS database health endpoint
         env:

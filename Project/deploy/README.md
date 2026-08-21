@@ -43,8 +43,9 @@ Kept here for reference, or for standing up a second environment:
    the Backend tests, Frontend checks, and Container builds checks (see
    "Branch and environment protection" below).
 
-On each push to `main`, after CI succeeds, immutable commit-tagged images are
-pushed to GHCR. The gated deploy job logs the VM into GHCR, uploads only the
+On each push to `main`, after CI succeeds, immutable commit-tagged backend,
+frontend, and Studio-AI images are pushed to GHCR. The gated deploy job logs
+the VM into GHCR, uploads only the
 versioned deployment files, applies Alembic migrations, recreates services,
 and verifies `$PUBLIC_BASE_URL/api/db-health` from the runner. Before Compose
 runs, `remote-deploy.sh` synchronizes the four managed settings into
@@ -55,6 +56,12 @@ launch args for `BACKEND_WORKERS` (which only ever reaches `uvicorn`'s
 `--workers` argument, never the container's environment). This is necessary
 because CI intentionally preserves the VM's `.env`, so a stale explicit value
 would otherwise override a newer Compose default.
+
+The Studio AI container is internal-only and shares the production Ollama and
+Redis services. Its `/ready` result depends on the configured model being
+present; failed readiness is reported during deployment but does not take down
+the backend because the assistant is deliberately fail-open. Manual Studio
+editing, rendering, and publishing do not depend on it.
 
 ### Horizontal scaling
 
@@ -170,7 +177,7 @@ an older tag, not rebuilding. Trigger it manually:
    prior successful `publish-images` run, so its images already exist in
    GHCR).
 3. Run. The `rollback-production` job checks out that SHA, redeploys its
-   already-published `backend`/`frontend` images via
+   already-published `backend`/`frontend`/`studio-ai-service` images via
    `deploy/remote-deploy.sh` (no rebuild), and verifies
    `$PUBLIC_BASE_URL/api/db-health` before finishing.
 

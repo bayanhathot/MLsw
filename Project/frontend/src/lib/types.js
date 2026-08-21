@@ -16,6 +16,66 @@
 /** @typedef {'workout' | 'relaxation' | 'emotional_tarab' | 'party'} AutoMixMode */
 
 /**
+ * @typedef {Object} StudioTrack
+ * @property {'catalog'|'audius'} sourceType
+ * @property {string} sourceTrackId
+ * @property {string} title
+ * @property {string} artist
+ * @property {string|null} album
+ * @property {string|null} genre
+ * @property {string|null} vibe
+ * @property {number} durationMs
+ * @property {string} audioUrl
+ * @property {string|null} coverUrl
+ * @property {string|null} analysisStatus
+ * @property {number|null} suggestedStartMs
+ * @property {number|null} suggestedEndMs
+ * @property {number|null} bpm
+ * @property {string|null} musicalKey
+ * @property {string|null} camelot
+ *
+ * @typedef {Object} SavedSegment
+ * @property {number} id
+ * @property {number} userId
+ * @property {'catalog'|'audius'} sourceType
+ * @property {string} sourceTrackId
+ * @property {string} title
+ * @property {string} artist
+ * @property {string|null} album
+ * @property {string|null} genre
+ * @property {string|null} vibe
+ * @property {string} sourceAudioUrl
+ * @property {string|null} coverUrl
+ * @property {number} trackDurationMs
+ * @property {number} startMs
+ * @property {number} endMs
+ * @property {string} label
+ * @property {string} createdFrom
+ * @property {number|null} bpm
+ * @property {string|null} musicalKey
+ * @property {string|null} camelot
+ * @property {string} createdAt
+ * @property {string} updatedAt
+ *
+ * @typedef {Object} StudioTransitionChange
+ * @property {number} item_id
+ * @property {'cut'|'crossfade'|'fade_in_out'} transition_type
+ * @property {number} duration_ms
+ *
+ * @typedef {Object} StudioAssistantRecommendation
+ * @property {'segment_bounds'|'mix_order'|'transition'|'explanation'|'unavailable'} recommendation_type
+ * @property {number|null} candidate_id
+ * @property {number|null} proposed_start_ms
+ * @property {number|null} proposed_end_ms
+ * @property {number[]|null} proposed_order
+ * @property {StudioTransitionChange|null} transition_change
+ * @property {string[]} reason_tags
+ * @property {string} explanation
+ * @property {number} confidence
+ * @property {boolean} requires_user_confirmation
+ */
+
+/**
  * @typedef {Object} Preset
  * @property {string} label
  * @property {string} prompt
@@ -77,6 +137,17 @@
  * @property {number | null} trackDurationSeconds
  * @property {string} genre
  * @property {string} vibe
+ * @property {number | null} savedSegmentId
+ * @property {string} sourceAudioUrl
+ * @property {number | null} sourceStartMs
+ * @property {number | null} sourceEndMs
+ * @property {number | null} bpm
+ * @property {string} musicalKey
+ * @property {string} camelot
+ * @property {string} transitionType
+ * @property {number} transitionDurationMs
+ * @property {number | null} compatibilityScore
+ * @property {Record<string, number> | null} compatibilityFactors
  */
 
 /**
@@ -97,6 +168,14 @@
  * @property {'draft' | 'published'} status
  * @property {string} createdAt
  * @property {string | null} publishedAt
+ * @property {boolean} isStudio
+ * @property {number} revision
+ * @property {number | null} renderedRevision
+ * @property {number | null} publishedRevision
+ * @property {string} renderStatus
+ * @property {string | null} renderedAudioUrl
+ * @property {string | null} publishedAudioUrl
+ * @property {'private'|'public'} visibility
  * @property {SessionSegment[]} segments
  * @property {MixOwner | null} owner
  * @property {number} likeCount

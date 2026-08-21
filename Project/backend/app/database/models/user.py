@@ -15,8 +15,8 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database.base import Base
 from app.core.time import utc_now
+from app.database.base import Base
 
 
 class User(Base):
@@ -77,3 +77,9 @@ class User(Base):
     )
 
     mixes = relationship("Mix", back_populates="owner", cascade="all, delete-orphan")
+    saved_segments = relationship(
+        "SavedSegment", back_populates="user", cascade="all, delete-orphan"
+    )
+    studio_behavior_events = relationship(
+        "StudioBehaviorEvent", back_populates="user", cascade="all, delete-orphan"
+    )

@@ -146,6 +146,18 @@ class MixSegmentRead(BaseModel):
     track_duration_seconds: int | None = None
     genre: str | None = None
     vibe: str | None = None
+    saved_segment_id: int | None = None
+    source_audio_url: str | None = None
+    source_start_ms: int | None = None
+    source_end_ms: int | None = None
+    bpm: float | None = None
+    musical_key: str | None = None
+    key_mode: str | None = None
+    camelot: str | None = None
+    transition_type: str = "crossfade"
+    transition_duration_ms: int = 4000
+    compatibility_score: int | None = None
+    compatibility_factors_json: dict | None = None
 
 
 class MixOwnerRead(BaseModel):
@@ -168,6 +180,14 @@ class MixRead(BaseModel):
     status: str
     created_at: datetime
     published_at: datetime | None = None
+    is_studio: bool = False
+    revision: int = 1
+    rendered_revision: int | None = None
+    published_revision: int | None = None
+    render_status: str = "not_rendered"
+    rendered_audio_url: str | None = None
+    published_audio_url: str | None = None
+    visibility: str = "private"
     segments: list[MixSegmentRead]
 
 
@@ -187,6 +207,158 @@ class MixUpdate(NonBlankModel):
     title: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     cover_url: str | None = Field(default=None, max_length=1000)
+
+
+class StudioTrackRead(BaseModel):
+    source_type: Literal["catalog", "audius"]
+    source_track_id: str
+    title: str
+    artist: str
+    album: str | None = None
+    genre: str | None = None
+    vibe: str | None = None
+    duration_ms: int = Field(gt=0)
+    audio_url: str
+    cover_url: str | None = None
+    analysis_status: str | None = None
+    suggested_start_ms: int | None = None
+    suggested_end_ms: int | None = None
+    bpm: float | None = None
+    musical_key: str | None = None
+    camelot: str | None = None
+
+
+class SavedSegmentCreate(NonBlankModel):
+    source_type: Literal["catalog", "audius"]
+    source_track_id: str = Field(min_length=1, max_length=255)
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    label: str = Field(min_length=1, max_length=120)
+    created_from: Literal["manual", "ai", "auto"] = "manual"
+
+
+class SavedSegmentUpdate(NonBlankModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, gt=0)
+
+
+class SavedSegmentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    source_type: Literal["catalog", "audius"]
+    source_track_id: str
+    title: str
+    artist: str
+    album: str | None = None
+    genre: str | None = None
+    vibe: str | None = None
+    source_audio_url: str
+    cover_url: str | None = None
+    track_duration_ms: int
+    start_ms: int
+    end_ms: int
+    label: str
+    created_from: Literal["manual", "ai", "auto"]
+    analysis_version: str | None = None
+    bpm: float | None = None
+    musical_key: str | None = None
+    key_mode: str | None = None
+    camelot: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class StudioMixCreate(NonBlankModel):
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class StudioMixUpdate(NonBlankModel):
+    expected_revision: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class StudioMixItemAdd(BaseModel):
+    saved_segment_id: int = Field(ge=1)
+    expected_revision: int = Field(ge=1)
+
+
+class StudioMixReorder(BaseModel):
+    segment_ids: list[int] = Field(min_length=1, max_length=50)
+    expected_revision: int = Field(ge=1)
+
+
+class StudioTransitionUpdate(BaseModel):
+    expected_revision: int = Field(ge=1)
+    transition_type: Literal["cut", "crossfade", "fade_in_out"]
+    duration_ms: int = Field(ge=0, le=8000)
+
+
+class StudioAutoMixRequest(NonBlankModel):
+    title: str = Field(min_length=1, max_length=120)
+    prompt: str = Field(default="Build from my saved moments", min_length=1, max_length=300)
+    mode: AutoMixMode | None = None
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class StudioBehaviorEventCreate(BaseModel):
+    event_type: Literal["segment_replay", "early_skip", "mix_like"]
+    saved_segment_id: int | None = Field(default=None, ge=1)
+    mix_id: int | None = Field(default=None, ge=1)
+
+
+class StudioBehaviorSignalRead(BaseModel):
+    saved_segment_id: int
+    save_score: float
+    replay_score: float
+    like_score: float
+    skip_penalty: float
+    total_adjustment: float
+
+
+class StudioAssistantMessage(NonBlankModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class StudioAssistantRequest(BaseModel):
+    messages: list[StudioAssistantMessage] = Field(min_length=1, max_length=12)
+    mix_id: int | None = Field(default=None, ge=1)
+    active_saved_segment_id: int | None = Field(default=None, ge=1)
+
+
+class StudioAssistantTransitionChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: int = Field(ge=1)
+    transition_type: Literal["cut", "crossfade", "fade_in_out"]
+    duration_ms: int = Field(ge=0, le=8000)
+
+
+class StudioAssistantRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recommendation_type: Literal[
+        "segment_bounds", "mix_order", "transition", "explanation", "unavailable"
+    ]
+    candidate_id: int | None = None
+    proposed_start_ms: int | None = Field(default=None, ge=0)
+    proposed_end_ms: int | None = Field(default=None, gt=0)
+    proposed_order: list[int] | None = None
+    transition_change: StudioAssistantTransitionChange | None = None
+    reason_tags: list[str] = Field(default_factory=list, max_length=8)
+    explanation: str
+    confidence: float = Field(ge=0, le=1)
+    requires_user_confirmation: bool = True
+
+
+class StudioAssistantRead(BaseModel):
+    available: bool
+    recommendation: StudioAssistantRecommendation
 
 
 class PreferenceRead(BaseModel):
@@ -625,6 +797,10 @@ class SelectedSegment(BaseModel):
     track: Track
     start_second: int = Field(ge=0)
     end_second: int = Field(ge=0)
+    # Studio can request sub-second boundaries without changing legacy
+    # session/mix callers. Renderers prefer these when supplied.
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, ge=0)
     method: Literal["chorus_detection", "whole_clip"]
     bpm: float | None = None
     # A genuine confidence signal for `bpm` (see
@@ -665,7 +841,7 @@ class SelectedSegment(BaseModel):
 
 class TransitionPlan(BaseModel):
     crossfade_ms: int = Field(ge=0)
-    style: Literal["crossfade", "cut"]
+    style: Literal["crossfade", "cut", "fade_in_out"]
     notes: str
     # Structured decision factors DeterministicTransitionPlanner.plan()
     # already computes internally but previously only folded into the free-

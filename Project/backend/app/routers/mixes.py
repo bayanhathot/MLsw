@@ -186,6 +186,11 @@ def update_mix(
     mix = _get_or_404(db, mix_id)
     if mix.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="You do not own this mix.")
+    if mix.is_studio:
+        raise HTTPException(
+            status_code=409,
+            detail="Use the Studio API to edit this revision-controlled mix.",
+        )
     mix.title = request.title
     mix.description = request.description
     mix.cover_url = request.cover_url
@@ -204,6 +209,11 @@ def publish_mix(
     mix = _get_or_404(db, mix_id)
     if mix.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="You do not own this mix.")
+    if mix.is_studio:
+        raise HTTPException(
+            status_code=409,
+            detail="Render and publish this mix through the Studio API.",
+        )
     if mix.status != "published":
         mix.status = "published"
         mix.published_at = utc_now()

@@ -70,6 +70,12 @@ x-backend-environment: &backend-environment
   ENABLE_COLD_SEED: ${ENABLE_COLD_SEED:-true}
   COLD_SEED_VERSION: ${COLD_SEED_VERSION:-v1}
   COLD_SEED_RANDOM_SEED: ${COLD_SEED_RANDOM_SEED:-2026}
+  STUDIO_ENABLED: ${STUDIO_ENABLED:-true}
+  STUDIO_AI_URL: ${STUDIO_AI_URL:-http://studio-ai-service:8001}
+  STUDIO_AI_TIMEOUT_SECONDS: ${STUDIO_AI_TIMEOUT_SECONDS:-20}
+  STUDIO_AI_INTERNAL_TOKEN: ${STUDIO_AI_INTERNAL_TOKEN:-}
+  STUDIO_MIN_SEGMENT_MS: ${STUDIO_MIN_SEGMENT_MS:-1000}
+  STUDIO_MAX_SEGMENT_MS: ${STUDIO_MAX_SEGMENT_MS:-300000}
 
 services:
   postgres:
@@ -268,6 +274,38 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  studio-ai-service:
+    image: "${STUDIO_AI_IMAGE:?STUDIO_AI_IMAGE is required}"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+      OLLAMA_THINK_ENABLED: ${OLLAMA_THINK_ENABLED:-false}
+      OLLAMA_QUEUE_WAIT_SECONDS: ${OLLAMA_QUEUE_WAIT_SECONDS:-2}
+      OLLAMA_MAX_CONCURRENCY: ${OLLAMA_MAX_CONCURRENCY:-4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      STUDIO_AI_TIMEOUT_SECONDS: ${STUDIO_AI_TIMEOUT_SECONDS:-20}
+      STUDIO_AI_MAX_CONTEXT_ITEMS: ${STUDIO_AI_MAX_CONTEXT_ITEMS:-50}
+      STUDIO_AI_INTERNAL_TOKEN: ${STUDIO_AI_INTERNAL_TOKEN:-}
+    expose:
+      - "8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

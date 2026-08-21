@@ -77,6 +77,11 @@ _ANALYZE_PREFIX = "analyze:"
 # codebase is aware of, so that shared bound is the only concurrency cap
 # in effect (see pipeline/external_track_cache.py's own module docstring).
 _ANALYZE_EXTERNAL_PREFIX = "analyze_external:"
+# Studio renders are CPU/IO-heavy media work, so they share this bounded
+# worker pool rather than running inside an HTTP request or creating a second
+# queue. The payload carries the exact draft revision; a worker drops stale
+# work if the draft changed while it was waiting.
+_STUDIO_RENDER_PREFIX = "studio_render:"
 
 # Compressed formats (mp3/ogg) vs. lossless (wav/flac) genuinely need
 # different ceilings for the same clip length -- a 3-minute uncompressed WAV
@@ -650,6 +655,19 @@ class UploadQueue:
             (-priority, next(self._sequence), f"{_ANALYZE_EXTERNAL_PREFIX}{external_track_id}")
         )
 
+    def submit_studio_render(
+        self, mix_id: int, owner_id: int, revision: int, priority: int = 4
+    ) -> None:
+        """Queue an exact Studio draft revision on the shared media workers."""
+
+        self._queue.put_nowait(
+            (
+                -priority,
+                next(self._sequence),
+                f"{_STUDIO_RENDER_PREFIX}{mix_id}:{owner_id}:{revision}",
+            )
+        )
+
     def submit_many(self, items: list[tuple[int, str, str, bytes, int]]) -> list[dict]:
         """Atomically accept a batch or enqueue none of it."""
 
@@ -824,6 +842,12 @@ class UploadQueue:
                 self._queue.task_done()
                 continue
 
+            if job_id.startswith(_STUDIO_RENDER_PREFIX):
+                payload = job_id[len(_STUDIO_RENDER_PREFIX) :]
+                self._run_studio_render(payload)
+                self._queue.task_done()
+                continue
+
             with self._lock:
                 job = self._jobs.get(job_id)
             if job is None or job["status"] == "cancelled":
@@ -941,6 +965,29 @@ class UploadQueue:
                             "analysis-complete callback failed for job %s", upload_job_id
                         )
                 self._set_status(upload_job_id, "completed", completed=True)
+
+    def _run_studio_render(self, payload: str) -> None:
+        """Render one still-current Studio revision in a worker-owned session."""
+
+        try:
+            mix_id_text, owner_id_text, revision_text = payload.split(":", 2)
+            mix_id = int(mix_id_text)
+            owner_id = int(owner_id_text)
+            revision = int(revision_text)
+
+            from app.database import database as db_module
+            from app.services import studio_service
+            from app.services.pipeline.audio_renderer import PydubAudioRenderer
+
+            with db_module.SessionLocal() as db:
+                mix = studio_service.owned_studio_mix(db, owner_id, mix_id)
+                if mix.revision != revision or mix.render_status != "rendering":
+                    return
+                studio_service.render_mix(
+                    db, mix, PydubAudioRenderer(), expected_revision=revision
+                )
+        except Exception:
+            logger.exception("Studio render job failed for payload=%s", payload)
 
 
 upload_queue = UploadQueue(

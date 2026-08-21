@@ -4,6 +4,7 @@ import { normalizePost } from './forumApi.js';
 import { normalizeMessage, normalizeNotification } from './messagingApi.js';
 import { normalizeMix } from './mixApi.js';
 import { normalizeSession } from './sessionApi.js';
+import { normalizeSavedSegment, normalizeStudioTrack } from './studioApi.js';
 import { normalizeUploadedAttachment } from './uploadApi.js';
 
 describe('backend response adapters', () => {
@@ -56,6 +57,42 @@ describe('backend response adapters', () => {
 		});
 		expect(mix.segments[0].audioUrl).toBe('/api/static/audio/demo.mp3');
 		expect(mix.segments[0].trackDurationSeconds).toBe(215);
+	});
+
+	it('normalizes Studio track and exact saved-segment millisecond fields', () => {
+		const track = normalizeStudioTrack({
+			source_type: 'audius',
+			source_track_id: 'abc',
+			title: 'Remote song',
+			artist: 'Artist',
+			duration_ms: 123456,
+			audio_url: '/api/studio/tracks/audius/abc/audio',
+			suggested_start_ms: 1234,
+			suggested_end_ms: 5432
+		});
+		const segment = normalizeSavedSegment({
+			id: 4,
+			user_id: 2,
+			source_type: 'catalog',
+			source_track_id: '9',
+			title: 'Upload',
+			artist: 'Owner',
+			source_audio_url: '/api/catalog/tracks/9/audio',
+			track_duration_ms: 60000,
+			start_ms: 1234,
+			end_ms: 5432,
+			label: 'Exact hook'
+		});
+
+		expect(track).toMatchObject({
+			sourceType: 'audius',
+			durationMs: 123456,
+			suggestedStartMs: 1234,
+			suggestedEndMs: 5432
+		});
+		expect(track.audioUrl).toBe('/api/studio/tracks/audius/abc/audio');
+		expect(segment).toMatchObject({ startMs: 1234, endMs: 5432, label: 'Exact hook' });
+		expect(segment.sourceAudioUrl).toBe('/api/catalog/tracks/9/audio');
 	});
 
 	it('normalizes anonymous forum posts without leaking an author id', () => {

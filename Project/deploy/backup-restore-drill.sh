@@ -38,6 +38,7 @@ postgres_db="$(grep -E '^POSTGRES_DB=' .env | tail -n1 | cut -d= -f2-)"
 # too.
 export BACKEND_IMAGE="${BACKEND_IMAGE:-unused}"
 export FRONTEND_IMAGE="${FRONTEND_IMAGE:-unused}"
+export STUDIO_AI_IMAGE="${STUDIO_AI_IMAGE:-unused}"
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 
 # Always drop the scratch database/volume, whether the drill below passes,

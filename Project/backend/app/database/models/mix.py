@@ -3,8 +3,11 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -25,6 +28,13 @@ class Mix(Base):
             "mode IS NULL OR mode IN ('workout', 'relaxation', 'emotional_tarab', 'party')",
             name="ck_mix_mode",
         ),
+        CheckConstraint(
+            "render_status IN ('not_rendered', 'rendering', 'ready', 'stale', 'failed')",
+            name="ck_mix_render_status",
+        ),
+        CheckConstraint(
+            "visibility IN ('private', 'public')", name="ck_mix_visibility"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -39,6 +49,19 @@ class Mix(Base):
     # The literal proposal mode used to generate this persisted mix. Null is
     # the existing custom/free-prompt path and keeps older rows compatible.
     mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_studio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    rendered_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    published_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    render_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="not_rendered"
+    )
+    rendered_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_segments_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    visibility: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="private"
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
@@ -46,6 +69,9 @@ class Mix(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -69,6 +95,9 @@ class MixSegment(Base):
     mix_id: Mapped[int] = mapped_column(
         ForeignKey("mixes.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    saved_segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("saved_segments.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     artist: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -81,11 +110,29 @@ class MixSegment(Base):
     )
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     source_track_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Studio keeps the exact source selection separate from the rendered
+    # composite offsets in start_second/end_second. Generated mixes leave
+    # these nullable and retain their historical contract unchanged.
+    source_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_start_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_end_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Full source-track duration, distinct from start/end which are offsets
     # into the rendered mix. Used by listening analytics to measure how much
     # time a selected moment saved versus playing its complete source track.
     track_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     genre: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vibe: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    musical_key: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    key_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    camelot: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    transition_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="crossfade"
+    )
+    transition_duration_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=4000
+    )
+    compatibility_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    compatibility_factors_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     mix = relationship("Mix", back_populates="segments")

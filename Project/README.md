@@ -63,6 +63,8 @@ docker compose exec -e ENABLE_COLD_SEED=true backend python -m app.seed
 | Catalog track upload with async BPM/key/segment analysis | Implemented |
 | Fuzzy artist-name catalog search (Postgres pg_trgm, pure-Python fallback) | Implemented |
 | Mix library, publishing, likes, saves | Implemented |
+| CueMix Studio: exact saved moments, manual timeline, transition preview, render/publish, saved-segment auto-mix | Implemented; waveform display is explicitly out of scope |
+| Studio AI assistant | Implemented as an isolated, internal, fail-open service sharing Ollama + Redis; recommendations require user confirmation |
 | Community: Friends/Explore/Discussions/People, posts/comments/votes, mix sharing, attachments | Implemented |
 | Public profiles, mutual friends, friend-only DMs, live/durable notifications, block/report | Implemented |
 | Music Identity analytics (listening statistics, most-replayed segment, average segment length, time saved, period filters, visibility controls) | Implemented; a "Listening DNA" ML feature is a stable but deliberately unimplemented contract |
@@ -90,6 +92,30 @@ by the browser:
 The API returns these values under `segment_analytics` in the Music Identity
 response. Empty states are explicit, and the UI repeats each formula in an
 accessible help tooltip.
+
+### CueMix Studio
+
+Authenticated users open `/studio` to search owned/public catalog music or
+Audius, preview and save exact millisecond-bounded moments, and arrange those
+saved moments into revision-controlled drafts. Each mix item snapshots its
+source bounds and metadata, so editing or deleting the library item cannot
+silently change an existing draft. Cut, crossfade, and fade-in/out controls
+have deterministic compatibility factors and real audio previews. A render is
+tied to one revision and runs on the existing bounded media queue; publishing
+requires the current revision and makes that version immutable. Editing
+continues by duplicating it into a new draft.
+
+Audius moments can be saved, arranged, previewed, and privately rendered, but
+provider audio cannot be republished as a CueMix-owned public asset. Public
+publishing is limited to the user's uploads and bundled demo tracks. Auto-mix
+uses saved moments, named modes, and bounded/decayed behavioral signals, and
+always returns an ordinary editable draft.
+
+`studio-ai-service` is reachable only by the backend over the Compose network.
+It shares the existing Ollama model and Redis concurrency controls, receives a
+bounded authoritative context, and returns schema-constrained suggestions; it
+has no database access and never mutates a draft. If it or Ollama is down, the
+chat reports unavailable while every manual Studio feature keeps working.
 
 ## Repo layout
 

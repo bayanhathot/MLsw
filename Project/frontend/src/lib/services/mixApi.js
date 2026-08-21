@@ -27,6 +27,14 @@ export function normalizeMix(value) {
 		status: raw.status === 'published' ? 'published' : 'draft',
 		createdAt: String(raw.createdAt ?? raw.created_at ?? ''),
 		publishedAt: raw.publishedAt ?? raw.published_at ?? null,
+		isStudio: Boolean(raw.isStudio ?? raw.is_studio),
+		revision: Number(raw.revision || 1),
+		renderedRevision: raw.rendered_revision == null ? null : Number(raw.rendered_revision),
+		publishedRevision: raw.published_revision == null ? null : Number(raw.published_revision),
+		renderStatus: String(raw.render_status || 'not_rendered'),
+		renderedAudioUrl: raw.rendered_audio_url ? String(raw.rendered_audio_url) : null,
+		publishedAudioUrl: raw.published_audio_url ? String(raw.published_audio_url) : null,
+		visibility: raw.visibility === 'public' ? 'public' : 'private',
 		segments,
 		owner:
 			raw.owner && typeof raw.owner === 'object'

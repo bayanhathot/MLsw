@@ -156,6 +156,12 @@
 				onclick={() => (menuOpen = false)}>Discover</a
 			>
 			{#if $authStore.status === 'authenticated'}<a
+					class:active={isCurrent('/studio')}
+					class="nav-link"
+					href={resolve('/studio')}
+					onclick={() => (menuOpen = false)}>Studio</a
+				>
+				<a
 					class:active={isCurrent('/community') || isCurrent('/forum')}
 					class="nav-link"
 					href={resolve('/community')}

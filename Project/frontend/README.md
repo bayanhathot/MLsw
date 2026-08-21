@@ -20,6 +20,9 @@ The production image serves the static build with unprivileged Nginx. Nginx prox
 - `/` — prompt-driven AI DJ session and media-event-driven player.
 - `/feed` — Discover: published mixes with full segment playback, likes, and saves.
 - `/library` — authenticated draft generation, editing, publishing, and saved mixes.
+- `/studio` — authenticated exact-moment library, manual mix timeline,
+  transition controls/previews, immutable revision publishing, saved-moment
+  auto-mix, and confirm-before-apply AI suggestions. No waveform is rendered.
 - `/community` — Friends / Explore / Discussions / People: posts, anonymous mode, attachments, comments, reversible votes, and the social graph.
 - `/messages` — authenticated direct messages, attachments, durable notifications, and live notification refresh.
 - `/users/[username]` — public listener profiles; `/profile` is the authenticated owner view with Music Identity analytics.

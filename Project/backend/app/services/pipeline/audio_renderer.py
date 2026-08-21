@@ -217,6 +217,21 @@ def _leading_trailing_silence_ms(clip: AudioSegment) -> tuple[int, int]:
     return leading_ms, trailing_ms
 
 
+def _segment_start_ms(segment: SelectedSegment) -> int:
+    return max(0, int(segment.start_ms if segment.start_ms is not None else segment.start_second * 1000))
+
+
+def _segment_end_ms(segment: SelectedSegment) -> int:
+    return max(
+        _segment_start_ms(segment),
+        int(segment.end_ms if segment.end_ms is not None else segment.end_second * 1000),
+    )
+
+
+def _segment_duration_ms(segment: SelectedSegment) -> int:
+    return max(0, _segment_end_ms(segment) - _segment_start_ms(segment))
+
+
 def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | None, str | None]:
     """Returns (clip, None, audio_sha256) on success, or (None, reason,
     None) on failure -- see _download's docstring for why the reason is
@@ -274,8 +289,8 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
         logger.warning("AudioRenderer could not decode %s: %s", track.source_track_id, exc)
         return None, f"decode_failed_{type(exc).__name__}", None
 
-    start_ms = max(0, segment.start_second * 1000)
-    end_ms = segment.end_second * 1000
+    start_ms = _segment_start_ms(segment)
+    end_ms = _segment_end_ms(segment)
     clip = audio[start_ms:end_ms] if end_ms > start_ms else audio[start_ms:]
 
     if audio_sha256 is not None and clip.dBFS < _SILENCE_TRIM_THRESHOLD_DBFS:
@@ -312,6 +327,23 @@ def _load_clip(segment: SelectedSegment) -> tuple[AudioSegment | None, str | Non
 
     clip = _apply_loudness_gain(clip, segment)
     return clip, None, audio_sha256
+
+
+def validate_selected_segment(segment: SelectedSegment) -> tuple[bool, str | None]:
+    """Decode and validate one exact manual Studio selection.
+
+    This deliberately reuses the renderer's canonical source loading,
+    timeout, bounds, remote fingerprint and absolute silence rules. The
+    additional dBFS check covers a silent window inside an otherwise-valid
+    local upload, which the whole-file upload guard cannot detect.
+    """
+
+    clip, reason, _audio_sha256 = _load_clip(segment)
+    if clip is None or len(clip) == 0:
+        return False, reason or "empty_selection"
+    if clip.dBFS < _SILENCE_TRIM_THRESHOLD_DBFS:
+        return False, "silent_or_near_silent_audio"
+    return True, None
 
 
 def _local_render_path(audio_url: str) -> Path | None:
@@ -444,7 +476,7 @@ class PydubAudioRenderer(AudioRenderer):
     def _render_single(self, segment: SelectedSegment) -> RenderedAudio:
         clip, reason, _audio_sha256 = _load_clip(segment)
         if clip is None:
-            duration = max(0, segment.end_second - segment.start_second)
+            duration = int(_segment_duration_ms(segment) / 1000)
             return RenderedAudio(
                 audio_url=segment.track.audio_url, offsets=[(0, duration)],
                 is_pass_through=True, fallback_reason=reason,
@@ -471,7 +503,7 @@ class PydubAudioRenderer(AudioRenderer):
         loaded = [_load_clip(segment) for segment in segments]
         clips = [clip for clip, _reason, _sha256 in loaded]
         if all(clip is None for clip in clips):
-            offsets = [(0, max(0, segment.end_second - segment.start_second)) for segment in segments]
+            offsets = [(0, int(_segment_duration_ms(segment) / 1000)) for segment in segments]
             first_reason = next((reason for _clip, reason, _sha256 in loaded if reason), None)
             return RenderedAudio(
                 audio_url=segments[0].track.audio_url, offsets=offsets,
@@ -498,7 +530,13 @@ class PydubAudioRenderer(AudioRenderer):
             if plan is not None and plan.style == "crossfade":
                 crossfade_ms = _clamped_crossfade_ms(composite, clip, plan.crossfade_ms)
             start_second = int((len(composite) - crossfade_ms) / 1000)
-            composite = composite.append(clip, crossfade=crossfade_ms)
+            if plan is not None and plan.style == "fade_in_out":
+                fade_ms = max(0, min(plan.crossfade_ms, len(composite), len(clip)))
+                composite = composite.fade_out(fade_ms).append(
+                    clip.fade_in(fade_ms), crossfade=0
+                )
+            else:
+                composite = composite.append(clip, crossfade=crossfade_ms)
             offsets.append((max(0, start_second), int(len(composite) / 1000)))
 
         return RenderedAudio(audio_url=_export(composite), offsets=offsets, is_pass_through=False)
@@ -508,9 +546,7 @@ class PydubAudioRenderer(AudioRenderer):
     ) -> StagedTrackRender:
         clip, reason, audio_sha256 = _load_clip(segment)
         if clip is None:
-            duration_ms = max(
-                0, (segment.end_second - segment.start_second) * 1000 - resume_offset_ms
-            )
+            duration_ms = max(0, _segment_duration_ms(segment) - resume_offset_ms)
             return StagedTrackRender(
                 body=StagedRender(
                     audio_url=segment.track.audio_url, duration_ms=duration_ms,
@@ -542,7 +578,7 @@ class PydubAudioRenderer(AudioRenderer):
         if tail_clip is None or next_clip is None:
             failure = StagedRender(
                 audio_url=next_segment.track.audio_url,
-                duration_ms=max(0, (next_segment.end_second - next_segment.start_second) * 1000),
+                duration_ms=_segment_duration_ms(next_segment),
                 is_pass_through=True,
                 fallback_reason=reason if next_clip is None else "reserved_tail_unavailable",
             )

@@ -34,6 +34,7 @@ mkdir -p "${BACKUP_ROOT}"
 # actually pull/run those services here).
 export BACKEND_IMAGE="${BACKEND_IMAGE:-unused}"
 export FRONTEND_IMAGE="${FRONTEND_IMAGE:-unused}"
+export STUDIO_AI_IMAGE="${STUDIO_AI_IMAGE:-unused}"
 compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 
 db_backup="${BACKUP_ROOT}/db-${timestamp}.sql.gz"

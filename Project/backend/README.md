@@ -20,11 +20,13 @@ frontend dev server proxies `/api` to `127.0.0.1:5000` by default.
 ## Layout
 
 - `app/routers/` — `auth`, `sessions`, `mixes`, `catalog`, `forum`, `social`,
-  `profiles`, `messaging`, `uploads`, `listening`, `debug`, `media`, `realtime`.
+  `profiles`, `messaging`, `uploads`, `listening`, `debug`, `media`, `realtime`,
+  `studio`.
 - `app/services/` — business logic, one module per concern
   (`session_manager`, `mix_service`, `prompt_parser`, `audius_service`,
   `audio_analysis`, `upload_queue`, `music_identity_service`,
-  `channel_hub`, `social_service`, `profile_service`, `auth_service`, ...).
+  `channel_hub`, `social_service`, `profile_service`, `auth_service`,
+  `studio_service`, `studio_ai_client`, ...).
 - `app/services/pipeline/` — the AI-DJ pipeline: `interfaces.py` defines the
   five stage ABCs (`VibeUnderstander`, `CandidateRetriever`,
   `SegmentSelector`, `TransitionPlanner`, `AudioRenderer`);
@@ -37,7 +39,7 @@ frontend dev server proxies `/api` to `127.0.0.1:5000` by default.
   scripts" below.
 - `app/database/models/` — SQLAlchemy models, one module per domain
   (`user`, `profile`, `session`, `mix`, `mix_social`, `catalog`, `forum`,
-  `social`, `messaging`, `music_identity`, `attachment`).
+  `social`, `messaging`, `music_identity`, `attachment`, `studio`).
 - `scripts/` — standalone evaluation scripts (`eval_preferences.py`,
   `eval_llm_reasoning.py`) — see [Evaluations](#evaluations) below.
 - `alembic/versions/` — migrations. Any model change must land with a
@@ -55,6 +57,30 @@ session's current intent; any intent mutation (new prompt, feedback, skip)
 invalidates it. This exists purely to avoid a visible stall between segments
 — it's not a correctness requirement, and every path that consumes a
 prepared result re-validates the fingerprint first.
+
+## CueMix Studio contracts
+
+`/studio/segments` stores an authenticated user's exact source bounds in
+milliseconds after server-side source authorization and audio validation.
+Studio mixes reuse `Mix`/`MixSegment`; they add optimistic revisions, immutable
+source snapshots, explicit transitions, compatibility factors, and
+revision-bound render/publish state. The existing renderer accepts the exact
+bounds without weakening legacy whole-second session callers. Full Studio
+renders are dispatched to `upload_queue.py`'s existing bounded worker pool;
+the mix row is the durable, revision-aware `rendering`/`ready`/`failed` status
+authority, stale queued revisions are discarded, and interrupted `rendering`
+revisions are requeued during backend startup.
+
+Provider tracks remain provider tracks: Audius segments can participate in
+private drafts/renders but `/studio/mixes/{id}/publish` rejects them. Catalog
+publishing also rejects another user's upload. Legacy `/mixes` update/publish
+routes reject Studio mixes so they cannot bypass revision and render checks.
+
+The optional `studio-ai-service` has no database access. `studio_ai_client.py`
+builds owned, bounded context and validates candidate IDs, bounds, complete
+orders, and transition targets before returning a suggestion to the browser.
+Recommendations are never applied implicitly; an unavailable/invalid response
+degrades to a normal 200 response explaining that manual editing remains.
 
 ## Bulk catalog upload
 
