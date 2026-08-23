@@ -713,7 +713,11 @@
 			<div class="library-head">
 				<h3>My segments</h3>
 				{#if savedSegments.length}
-					<input bind:value={segmentFilter} placeholder="Filter" aria-label="Filter saved segments" />
+					<input
+						bind:value={segmentFilter}
+						placeholder="Filter"
+						aria-label="Filter saved segments"
+					/>
 				{/if}
 			</div>
 			<div class="segment-list">
@@ -981,7 +985,8 @@
 								>
 									<span></span>
 								</div>
-							</div><small
+							</div>
+							<small
 								>{item.compatibilityFactors
 									? `Tempo ${item.compatibilityFactors.tempo} · Key ${item.compatibilityFactors.key} · Energy ${item.compatibilityFactors.energy} · Phrase ${item.compatibilityFactors.phrase}`
 									: 'Metadata unavailable'}</small

@@ -68,12 +68,10 @@
 	} = $props();
 
 	let volume = $state(72);
-	let compact = $state(defaultCompact);
-	// Re-applies whenever the route's default flips (entering/leaving Studio),
-	// but a manual toggle in between is left alone until that happens.
-	$effect(() => {
-		compact = defaultCompact;
-	});
+	// Writable derived: resets to the route's default whenever it flips
+	// (entering/leaving Studio), but a manual toggle in between overrides it
+	// until that happens, same as the $state+$effect mirror this replaced.
+	let compact = $derived(defaultCompact);
 	/** @type {HTMLAudioElement | null} */
 	let audioElement = $state(null);
 	let segmentIndex = $state(0);
@@ -657,7 +655,7 @@
 		pointer-events: none;
 	}
 
-	.player-deck :is(button, input, img, a) {
+	.player-deck :is(button, input, img) {
 		pointer-events: auto;
 	}
 

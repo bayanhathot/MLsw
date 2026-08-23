@@ -117,7 +117,12 @@
 			</button>
 		</section>
 	{:else if $sessionStore.status === APP_STATES.STARTING}
-		<section class="starting-card card" aria-label="Building your mix" aria-live="polite" aria-busy="true">
+		<section
+			class="starting-card card"
+			aria-label="Building your mix"
+			aria-live="polite"
+			aria-busy="true"
+		>
 			<div class="eq-bars" aria-hidden="true">
 				<span></span><span></span><span></span><span></span><span></span>
 			</div>
