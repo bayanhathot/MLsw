@@ -116,6 +116,17 @@
 				{$sessionStore.isChangingVibe ? 'Updating…' : 'Change vibe'}
 			</button>
 		</section>
+	{:else if $sessionStore.status === APP_STATES.STARTING}
+		<section class="starting-card card" aria-label="Building your mix" aria-live="polite" aria-busy="true">
+			<div class="eq-bars" aria-hidden="true">
+				<span></span><span></span><span></span><span></span><span></span>
+			</div>
+			<div>
+				<p class="eyebrow">Tuning in</p>
+				<p class="starting-step">{$sessionStore.currentStep || 'Creating your mix'}</p>
+				<p class="starting-prompt">{$sessionStore.prompt}</p>
+			</div>
+		</section>
 	{/if}
 
 	{#if $sessionStore.error}
@@ -179,6 +190,90 @@
 		margin: 0;
 		color: var(--text-soft);
 		font-size: 15px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.starting-card {
+		display: flex;
+		align-items: center;
+		gap: 20px;
+		width: min(1080px, 100%);
+		margin: -18px auto 30px;
+		padding: 18px 22px;
+		animation: promptIn 0.2s ease-out;
+	}
+
+	.starting-card > * {
+		position: relative;
+		z-index: 1;
+	}
+
+	.eq-bars {
+		display: flex;
+		flex: 0 0 auto;
+		align-items: flex-end;
+		justify-content: center;
+		gap: 5px;
+		width: 50px;
+		height: 50px;
+		border-radius: 14px;
+		background: rgba(125, 183, 255, 0.08);
+	}
+
+	.eq-bars span {
+		width: 4px;
+		height: 30%;
+		border-radius: 2px;
+		background: var(--accent-2);
+		animation: eq-bounce 1.1s ease-in-out infinite;
+	}
+
+	.eq-bars span:nth-child(1) {
+		animation-delay: -1s;
+	}
+	.eq-bars span:nth-child(2) {
+		animation-delay: -0.75s;
+	}
+	.eq-bars span:nth-child(3) {
+		animation-delay: -0.5s;
+	}
+	.eq-bars span:nth-child(4) {
+		animation-delay: -0.9s;
+	}
+	.eq-bars span:nth-child(5) {
+		animation-delay: -0.3s;
+	}
+
+	@keyframes eq-bounce {
+		0%,
+		100% {
+			height: 25%;
+		}
+		50% {
+			height: 85%;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.eq-bars span {
+			height: 60%;
+		}
+	}
+
+	.starting-step {
+		margin: 0;
+		color: var(--text-main);
+		font-size: 15px;
+		font-weight: 700;
+	}
+
+	.starting-prompt {
+		max-width: 760px;
+		overflow: hidden;
+		margin: 4px 0 0;
+		color: var(--text-muted);
+		font-size: 13px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
@@ -254,6 +349,10 @@
 		}
 
 		.prompt-preview {
+			white-space: normal;
+		}
+
+		.starting-prompt {
 			white-space: normal;
 		}
 	}

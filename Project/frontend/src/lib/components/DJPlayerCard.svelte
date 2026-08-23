@@ -13,6 +13,7 @@
 	 */
 
 	/** @type {{
+	 * defaultCompact?: boolean,
 	 * status?: AppStatus,
 	 * currentStep?: string,
 	 * progress?: number,
@@ -39,6 +40,7 @@
 	 * onPrepareNext?: () => Promise<string | null>
 	 * }} */
 	let {
+		defaultCompact = false,
 		status = APP_STATES.IDLE,
 		currentStep = '',
 		progress = 0,
@@ -66,6 +68,12 @@
 	} = $props();
 
 	let volume = $state(72);
+	let compact = $state(defaultCompact);
+	// Re-applies whenever the route's default flips (entering/leaving Studio),
+	// but a manual toggle in between is left alone until that happens.
+	$effect(() => {
+		compact = defaultCompact;
+	});
 	/** @type {HTMLAudioElement | null} */
 	let audioElement = $state(null);
 	let segmentIndex = $state(0);
@@ -242,6 +250,10 @@
 		onMediaPaused();
 	}
 
+	function toggleCompact() {
+		compact = !compact;
+	}
+
 	function handleStopClick() {
 		void flushListening(true, true);
 		onStop();
@@ -402,7 +414,23 @@
 	}
 </script>
 
-<section class="player-deck" class:stacked={mixPlayerActive} aria-label="Cuemix AI DJ player">
+<section
+	class="player-deck"
+	class:stacked={mixPlayerActive}
+	class:compact
+	aria-label="Cuemix AI DJ player"
+>
+	<button
+		class="compact-toggle"
+		type="button"
+		onclick={toggleCompact}
+		aria-pressed={compact}
+		aria-label={compact ? 'Expand DJ player' : 'Collapse DJ player'}
+		title={compact ? 'Expand DJ player' : 'Collapse DJ player'}
+	>
+		<span aria-hidden="true">{compact ? '▲' : '▼'}</span>
+	</button>
+
 	<div class="track-block">
 		{#if nowPlaying}
 			{#if nowPlaying.coverUrl}
@@ -423,41 +451,9 @@
 		{/if}
 	</div>
 
-	<div class="flow-block">
-		<div class="flow-status" aria-live="polite">
+	{#if compact}
+		<div class="compact-controls">
 			<span class:active={isPlaying} class="signal" aria-hidden="true"></span>
-			<div>
-				<p class="eyebrow">
-					{#if isStarting}
-						Starting AI DJ
-					{:else if isStopping}
-						Stopping AI DJ
-					{:else if isPlaybackBuffering}
-						Buffering
-					{:else if isPlaying}
-						AI DJ is playing
-					{:else if hasEnded}
-						Session finished
-					{:else if canControl}
-						AI DJ is paused
-					{:else if status === APP_STATES.STOPPED}
-						Session stopped
-					{:else}
-						Waiting for a vibe
-					{/if}
-				</p>
-				<p class="flow-line">{currentStep || 'Describe your vibe above.'}</p>
-			</div>
-		</div>
-
-		{#if isChangingVibe}
-			<p class="vibe-updating" aria-live="polite">
-				<span class="spinner" aria-hidden="true"></span>
-				New vibe accepted, processing — this track keeps playing until it's ready
-			</p>
-		{/if}
-
-		<div class="deck-controls">
 			<button
 				class="segment-button"
 				type="button"
@@ -466,7 +462,7 @@
 				onclick={() => changeSegment(-1)}>⏮</button
 			>
 			<button
-				class="play-button"
+				class="play-button small"
 				type="button"
 				onclick={onTogglePlay}
 				disabled={!canControl || isStopping}
@@ -482,88 +478,152 @@
 				aria-label="Next segment"
 				onclick={() => changeSegment(1)}>⏭</button
 			>
-			<button
-				class="stop-button"
-				type="button"
-				onclick={handleStopClick}
-				disabled={!canControl || isStopping}
-			>
-				{isStopping ? 'Stopping…' : 'Stop AI DJ'}
-			</button>
 		</div>
+	{:else}
+		<div class="flow-block">
+			<div class="flow-status" aria-live="polite">
+				<span class:active={isPlaying} class="signal" aria-hidden="true"></span>
+				<div>
+					<p class="eyebrow">
+						{#if isStarting}
+							Starting AI DJ
+						{:else if isStopping}
+							Stopping AI DJ
+						{:else if isPlaybackBuffering}
+							Buffering
+						{:else if isPlaying}
+							AI DJ is playing
+						{:else if hasEnded}
+							Session finished
+						{:else if canControl}
+							AI DJ is paused
+						{:else if status === APP_STATES.STOPPED}
+							Session stopped
+						{:else}
+							Waiting for a vibe
+						{/if}
+					</p>
+					<p class="flow-line">{currentStep || 'Describe your vibe above.'}</p>
+				</div>
+			</div>
 
-		<div class="progress-line">
-			<span>{formatTime(currentTime)}</span>
-			<input
-				class="progress-slider"
-				type="range"
-				min="0"
-				max="100"
-				step="0.1"
-				value={isStarting ? progress : progressPercent}
-				oninput={handleSeekInput}
-				disabled={!canControl || duration <= 0}
-				aria-label="Seek audio position"
-				aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
-			/>
-			<span>{formatTime(duration)}</span>
-		</div>
+			{#if isChangingVibe}
+				<p class="vibe-updating" aria-live="polite">
+					<span class="spinner" aria-hidden="true"></span>
+					New vibe accepted, processing — this track keeps playing until it's ready
+				</p>
+			{/if}
 
-		{#if playbackError}
-			<p class="playback-error" role="alert">{playbackError}</p>
-		{/if}
-
-		{#if audioUrl}
-			<audio
-				class="hidden-audio"
-				bind:this={audioElement}
-				src={audioUrl}
-				preload="metadata"
-				onloadedmetadata={handleLoadedMetadata}
-				ontimeupdate={syncTimeline}
-				onplay={trackedMediaPlaying}
-				onplaying={onMediaReady}
-				onpause={trackedMediaPaused}
-				onwaiting={onMediaWaiting}
-				oncanplay={onMediaReady}
-				onended={handleAudioEnded}
-				onerror={handleMediaError}
-			></audio>
-		{/if}
-
-		{#if preloadAudioUrl}
-			<!-- Gives the browser a head start fetching the already-prepared next
-			     track's bytes (design doc 4.3) -- not wired into playback at all,
-			     just a hint; the real swap happens when advance()'s own result
-			     replaces audioUrl above. -->
-			<audio class="hidden-audio" src={preloadAudioUrl} preload="auto" aria-hidden="true"></audio>
-		{/if}
-	</div>
-
-	<div class="coach-block">
-		<p class="eyebrow">Coach the DJ</p>
-		<div class="coach-row">
-			{#each COACH_OPTIONS as option (option)}
+			<div class="deck-controls">
 				<button
+					class="segment-button"
 					type="button"
-					class:active={selectedFeedback === option}
-					onclick={() => handleCoachFeedback(option)}
-					disabled={!canControl || isFeedbackPending || isStopping}
-					aria-pressed={selectedFeedback === option}
+					disabled={!canControl || !hasPrevious}
+					aria-label="Previous segment"
+					onclick={() => changeSegment(-1)}>⏮</button
 				>
-					{pendingFeedback === option ? 'Sending…' : option}
+				<button
+					class="play-button"
+					type="button"
+					onclick={onTogglePlay}
+					disabled={!canControl || isStopping}
+					aria-label={playLabel}
+					aria-pressed={isPlaying}
+				>
+					{isPlaybackBuffering && playbackRequested ? '…' : isPlaying ? 'Ⅱ' : '▶'}
 				</button>
-			{/each}
-		</div>
+				<button
+					class="segment-button"
+					type="button"
+					disabled={!canControl || !hasNext}
+					aria-label="Next segment"
+					onclick={() => changeSegment(1)}>⏭</button
+				>
+				<button
+					class="stop-button"
+					type="button"
+					onclick={handleStopClick}
+					disabled={!canControl || isStopping}
+				>
+					{isStopping ? 'Stopping…' : 'Stop AI DJ'}
+				</button>
+			</div>
 
-		<label class="volume-control">
-			<span aria-hidden="true">🔊</span>
-			<span class="sr-only">Volume</span>
-			<input type="range" min="0" max="100" value={volume} oninput={handleVolumeInput} />
-			<span class="volume-value">{volume}%</span>
-		</label>
-		<p class="coach-note">Your feedback guides the next choice.</p>
-	</div>
+			<div class="progress-line">
+				<span>{formatTime(currentTime)}</span>
+				<input
+					class="progress-slider"
+					type="range"
+					min="0"
+					max="100"
+					step="0.1"
+					value={isStarting ? progress : progressPercent}
+					oninput={handleSeekInput}
+					disabled={!canControl || duration <= 0}
+					aria-label="Seek audio position"
+					aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
+				/>
+				<span>{formatTime(duration)}</span>
+			</div>
+
+			{#if playbackError}
+				<p class="playback-error" role="alert">{playbackError}</p>
+			{/if}
+		</div>
+	{/if}
+
+	{#if audioUrl}
+		<audio
+			class="hidden-audio"
+			bind:this={audioElement}
+			src={audioUrl}
+			preload="metadata"
+			onloadedmetadata={handleLoadedMetadata}
+			ontimeupdate={syncTimeline}
+			onplay={trackedMediaPlaying}
+			onplaying={onMediaReady}
+			onpause={trackedMediaPaused}
+			onwaiting={onMediaWaiting}
+			oncanplay={onMediaReady}
+			onended={handleAudioEnded}
+			onerror={handleMediaError}
+		></audio>
+	{/if}
+
+	{#if preloadAudioUrl}
+		<!-- Gives the browser a head start fetching the already-prepared next
+		     track's bytes (design doc 4.3) -- not wired into playback at all,
+		     just a hint; the real swap happens when advance()'s own result
+		     replaces audioUrl above. -->
+		<audio class="hidden-audio" src={preloadAudioUrl} preload="auto" aria-hidden="true"></audio>
+	{/if}
+
+	{#if !compact}
+		<div class="coach-block">
+			<p class="eyebrow">Coach the DJ</p>
+			<div class="coach-row">
+				{#each COACH_OPTIONS as option (option)}
+					<button
+						type="button"
+						class:active={selectedFeedback === option}
+						onclick={() => handleCoachFeedback(option)}
+						disabled={!canControl || isFeedbackPending || isStopping}
+						aria-pressed={selectedFeedback === option}
+					>
+						{pendingFeedback === option ? 'Sending…' : option}
+					</button>
+				{/each}
+			</div>
+
+			<label class="volume-control">
+				<span aria-hidden="true">🔊</span>
+				<span class="sr-only">Volume</span>
+				<input type="range" min="0" max="100" value={volume} oninput={handleVolumeInput} />
+				<span class="volume-value">{volume}%</span>
+			</label>
+			<p class="coach-note">Your feedback guides the next choice.</p>
+		</div>
+	{/if}
 </section>
 
 <style>
@@ -586,13 +646,60 @@
 			0 22px 90px rgba(0, 0, 0, 0.62),
 			0 0 70px rgba(59, 130, 246, 0.12);
 		backdrop-filter: blur(18px);
-		transition: bottom 0.15s ease-out;
+		transition:
+			bottom 0.15s ease-out,
+			grid-template-columns 0.15s ease-out,
+			padding 0.15s ease-out;
+		/* On shorter viewports this fixed bar's own box can end up sitting over
+		   page content behind it (Studio's dense panels in particular) -- only
+		   its actual controls should capture clicks, not the empty space
+		   around them, so anything under that space stays reachable. */
+		pointer-events: none;
+	}
+
+	.player-deck :is(button, input, img, a) {
+		pointer-events: auto;
 	}
 
 	/* MiniMixPlayer.svelte sits at bottom: 16px with roughly an 80px tall
 	   bar -- clear it with a gap instead of overlapping directly. */
 	.player-deck.stacked {
 		bottom: 108px;
+	}
+
+	.player-deck.compact {
+		grid-template-columns: minmax(180px, 1fr) auto;
+		gap: 18px;
+		padding: 10px 20px;
+		border-radius: 18px;
+	}
+
+	.compact-toggle {
+		position: absolute;
+		top: -13px;
+		right: 22px;
+		display: grid;
+		width: 26px;
+		height: 26px;
+		place-items: center;
+		border: 1px solid rgba(125, 183, 255, 0.3);
+		border-radius: 50%;
+		background: #0b1729;
+		color: var(--text-soft);
+		font-size: 10px;
+		line-height: 1;
+	}
+
+	.compact-toggle:hover {
+		color: white;
+		border-color: var(--accent-2);
+	}
+
+	.compact-controls {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 10px;
 	}
 
 	.track-block,
@@ -624,6 +731,20 @@
 		background: linear-gradient(135deg, #264984, #6ea9ff);
 		color: white;
 		font-weight: 900;
+	}
+
+	.compact .cover {
+		width: 44px;
+		height: 44px;
+		border-radius: 10px;
+	}
+
+	.compact .track-copy h2 {
+		font-size: 14px;
+	}
+
+	.compact .track-copy p {
+		font-size: 12px;
 	}
 
 	.track-copy {
@@ -705,6 +826,17 @@
 		height: 44px;
 		background: rgba(125, 183, 255, 0.06);
 		color: var(--text-soft);
+	}
+
+	.play-button.small {
+		width: 46px;
+		height: 46px;
+		font-size: 18px;
+	}
+
+	.compact .segment-button {
+		width: 36px;
+		height: 36px;
 	}
 
 	.stop-button,
@@ -815,12 +947,17 @@
 	}
 
 	@media (max-width: 1180px) {
-		.player-deck {
-			position: static;
+		.player-deck,
+		.player-deck.compact {
+			position: relative;
 			grid-template-columns: 1fr;
 			width: 100%;
 			margin-top: 24px;
 			transform: none;
+		}
+
+		.compact-controls {
+			justify-content: flex-start;
 		}
 	}
 

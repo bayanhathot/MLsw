@@ -19,6 +19,7 @@
 <script>
 	import { onMount } from 'svelte';
 
+	import { page } from '$app/state';
 	import '../app.css';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import GlobalPlayer from '$lib/components/GlobalPlayer.svelte';
@@ -27,6 +28,11 @@
 	import { sessionStore } from '$lib/stores/sessionStore.js';
 
 	let { children } = $props();
+
+	// The Studio workspace already has a busy full-height layout of its own --
+	// the DJ deck defaults to its compact strip there so it doesn't eat the
+	// timeline's vertical space, and back to full size on every other route.
+	let defaultCompact = $derived(page.url.pathname.startsWith('/studio'));
 
 	onMount(() => {
 		authStore.checkAuth();
@@ -39,6 +45,7 @@
 	{@render children()}
 
 	<DJPlayerCard
+		{defaultCompact}
 		status={$sessionStore.status}
 		currentStep={$sessionStore.currentStep}
 		progress={$sessionStore.progress}

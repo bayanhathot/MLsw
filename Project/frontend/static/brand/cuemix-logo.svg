@@ -1,18 +1,17 @@
 <!--
   File: static/brand/cuemix-logo.svg
   Purpose: Public-URL copy of the Cuemix logo (served at /brand/cuemix-logo.svg),
-  used wherever a plain URL is needed instead of a bundled Svelte import --
+  used wherever a plain URL is needed instead of a bundled Svelte import,
   e.g. AudioRenderer's now-playing cover fallback (session_manager.COVER_URL).
   Keep in sync with src/assets/cuemix-logo.svg.
-  Note: the mark (the two angular slash shapes below) was originally drawn to
-  evoke a "Z"/"X" monogram for the old Zonix name -- carried over as-is
-  during the Cuemix rebrand since redrawing it is a design task, not a text
-  rename. Worth a real icon redesign pass if the mark itself should read as
-  a "C"/"M" monogram instead.
+  Note: the mark is two cue triangles facing each other, overlapping at their
+  tips: "cue" (the exact point you drop into a track) plus "mix" (two
+  sources blending into one), drawn from the product's own vocabulary rather
+  than a generic waveform/play-button glyph.
 -->
 <svg width="220" height="64" viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">Cuemix logo</title>
-  <desc id="desc">Cuemix wordmark with a compact angular mark</desc>
+  <desc id="desc">Cuemix wordmark with two overlapping cue-point triangles as its mark</desc>
   <defs>
     <linearGradient id="mark" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
       <stop stop-color="#7DB7FF"/>
@@ -30,8 +29,8 @@
   </defs>
   <g filter="url(#softGlow)">
     <rect x="0" y="8" width="48" height="48" rx="14" fill="url(#mark)"/>
-    <path d="M11 20H31L23 29H34L18 44H11L22 33H11L19 24H11V20Z" fill="white" fill-opacity="0.96"/>
-    <path d="M34 20H41L31 31L42 44H34L26 35L18 44H11L23 31L13 20H21L27 28L34 20Z" fill="#DDF0FF" fill-opacity="0.95"/>
+    <path d="M11 18L11 46L29 32Z" fill="white" fill-opacity="0.97"/>
+    <path d="M37 18L37 46L19 32Z" fill="white" fill-opacity="0.55"/>
   </g>
-  <text x="66" y="42" fill="#F7FBFF" font-family="Outfit, Inter, Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="9">CUEMIX</text>
+  <text x="66" y="42" fill="#F7FBFF" font-family="Outfit, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="9">CUEMIX</text>
 </svg>

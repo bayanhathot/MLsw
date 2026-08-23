@@ -120,9 +120,9 @@
 				media: player,
 				url,
 				height: 112,
-				waveColor: '#355071',
-				progressColor: '#64e0c1',
-				cursorColor: '#f7c873',
+				waveColor: '#333c48',
+				progressColor: '#3fe6bb',
+				cursorColor: '#ff9548',
 				cursorWidth: 2,
 				barWidth: 2,
 				barGap: 1,
@@ -207,7 +207,7 @@
 				id: 'user-selection',
 				start: normalized.startMs / 1000,
 				end: normalized.endMs / 1000,
-				color: 'rgba(80, 224, 190, 0.24)',
+				color: 'rgba(63, 230, 187, 0.22)',
 				drag: !disabled,
 				resize: !disabled,
 				minLength: Math.min(trackDuration, minimum) / 1000,
@@ -250,10 +250,10 @@
 
 	/** @param {string} kind */
 	function markerColor(kind) {
-		if (kind === 'ai') return 'rgba(247, 188, 92, 0.27)';
-		if (kind === 'phrase') return 'rgba(119, 156, 255, 0.52)';
-		if (kind === 'invalid') return 'rgba(255, 91, 123, 0.34)';
-		return 'rgba(84, 139, 255, 0.2)';
+		if (kind === 'ai') return 'rgba(255, 149, 72, 0.28)';
+		if (kind === 'phrase') return 'rgba(124, 158, 255, 0.5)';
+		if (kind === 'invalid') return 'rgba(255, 92, 114, 0.34)';
+		return 'rgba(124, 158, 255, 0.2)';
 	}
 </script>
 
@@ -297,17 +297,20 @@
 		min-height: 148px;
 		margin: 10px 0 14px;
 		padding: 10px;
-		border: 1px solid #243a58;
-		border-radius: 14px;
-		background: #07111f;
+		border: 1px solid rgba(255, 255, 255, 0.07);
+		border-radius: 10px;
+		background: #0a0c10;
+		box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.55);
 		overflow: hidden;
+		font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
 	}
 	.legend {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 9px;
 		margin-bottom: 8px;
-		color: #8095b2;
+		color: #5c6673;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
 		font-size: 9px;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
@@ -321,29 +324,30 @@
 		border-radius: 2px;
 	}
 	.legend .selected::before {
-		background: #50e0be;
+		background: #3fe6bb;
 	}
 	.legend .highlight::before {
-		background: #548bff;
+		background: #7c9eff;
 	}
 	.legend .phrase::before {
-		background: #779cff;
+		background: #7c9eff;
+		opacity: 0.6;
 	}
 	.legend .ai::before {
-		background: #f7bc5c;
+		background: #ff9548;
 	}
 	.waveform {
 		min-height: 112px;
 		cursor: crosshair;
 	}
 	.waveform::part(user-selection) {
-		border-inline: 2px solid #64e0c1;
+		border-inline: 2px solid #3fe6bb;
 		z-index: 10;
 	}
 	.waveform::part(region-handle-left),
 	.waveform::part(region-handle-right) {
 		width: 12px !important;
-		background: rgba(100, 224, 193, 0.88) !important;
+		background: rgba(63, 230, 187, 0.88) !important;
 	}
 	.waveform::part(phrase-marker) {
 		min-width: 2px;
@@ -354,13 +358,13 @@
 		display: grid;
 		place-items: center;
 		padding: 12px;
-		background: rgba(7, 17, 31, 0.88);
-		color: #8fa5c2;
+		background: rgba(10, 12, 16, 0.92);
+		color: #93a0b0;
 		font-size: 12px;
 		text-align: center;
 	}
 	.waveform-state.error {
-		color: #ffadbd;
+		color: #ff9aac;
 	}
 	.sr-only {
 		position: absolute;
