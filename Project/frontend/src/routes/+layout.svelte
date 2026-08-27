@@ -21,6 +21,7 @@
 
 	import { page } from '$app/state';
 	import '../app.css';
+	import { APP_STATES } from '$lib/constants/appStates.js';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import GlobalPlayer from '$lib/components/GlobalPlayer.svelte';
 	import DJPlayerCard from '$lib/components/DJPlayerCard.svelte';
@@ -33,6 +34,11 @@
 	// the DJ deck defaults to its compact strip there so it doesn't eat the
 	// timeline's vertical space, and back to full size on every other route.
 	let defaultCompact = $derived(page.url.pathname.startsWith('/studio'));
+	let isSignInPage = $derived(page.url.pathname === '/login');
+	// Keep the deck mounted so its audio survives SPA navigation, but do not
+	// show an empty player before the first session has playable music. A
+	// paused session remains visible so the user can resume it.
+	let shouldShowDjPlayer = $derived(!isSignInPage && $sessionStore.status === APP_STATES.PLAYING);
 
 	onMount(() => {
 		authStore.checkAuth();
@@ -44,34 +50,38 @@
 
 	{@render children()}
 
-	<DJPlayerCard
-		{defaultCompact}
-		status={$sessionStore.status}
-		currentStep={$sessionStore.currentStep}
-		progress={$sessionStore.progress}
-		session={$sessionStore.session}
-		isPlaying={$sessionStore.isPlaying}
-		playbackRequested={$sessionStore.playbackRequested}
-		isPlaybackBuffering={$sessionStore.isPlaybackBuffering}
-		hasEnded={$sessionStore.hasEnded}
-		isStopping={$sessionStore.isStopping}
-		isFeedbackPending={$sessionStore.isFeedbackPending}
-		pendingFeedback={$sessionStore.pendingFeedback}
-		isChangingVibe={$sessionStore.isChangingVibe}
-		selectedFeedback={$sessionStore.selectedFeedback}
-		playbackError={$sessionStore.playbackError}
-		onTogglePlay={sessionStore.togglePlay}
-		onStop={sessionStore.stop}
-		onFeedback={sessionStore.sendFeedback}
-		onMediaPlaying={sessionStore.mediaPlaying}
-		onMediaPaused={sessionStore.mediaPaused}
-		onMediaWaiting={sessionStore.mediaWaiting}
-		onMediaReady={sessionStore.mediaReady}
-		onMediaEnded={sessionStore.mediaEnded}
-		onMediaError={sessionStore.mediaError}
-		onPrepareNext={sessionStore.prepareNext}
-	/>
-	<GlobalPlayer />
+	<div hidden={!shouldShowDjPlayer}>
+		<DJPlayerCard
+			{defaultCompact}
+			status={$sessionStore.status}
+			currentStep={$sessionStore.currentStep}
+			progress={$sessionStore.progress}
+			session={$sessionStore.session}
+			isPlaying={$sessionStore.isPlaying}
+			playbackRequested={$sessionStore.playbackRequested}
+			isPlaybackBuffering={$sessionStore.isPlaybackBuffering}
+			hasEnded={$sessionStore.hasEnded}
+			isStopping={$sessionStore.isStopping}
+			isFeedbackPending={$sessionStore.isFeedbackPending}
+			pendingFeedback={$sessionStore.pendingFeedback}
+			isChangingVibe={$sessionStore.isChangingVibe}
+			selectedFeedback={$sessionStore.selectedFeedback}
+			playbackError={$sessionStore.playbackError}
+			onTogglePlay={sessionStore.togglePlay}
+			onStop={sessionStore.stop}
+			onFeedback={sessionStore.sendFeedback}
+			onMediaPlaying={sessionStore.mediaPlaying}
+			onMediaPaused={sessionStore.mediaPaused}
+			onMediaWaiting={sessionStore.mediaWaiting}
+			onMediaReady={sessionStore.mediaReady}
+			onMediaEnded={sessionStore.mediaEnded}
+			onMediaError={sessionStore.mediaError}
+			onPrepareNext={sessionStore.prepareNext}
+		/>
+	</div>
+	<div hidden={isSignInPage}>
+		<GlobalPlayer />
+	</div>
 </div>
 
 <style>

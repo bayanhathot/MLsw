@@ -316,9 +316,12 @@ test('the AI DJ player survives navigating away from the home route', async ({ p
 	});
 
 	await page.goto('/');
+	const djPlayer = page.locator('section[aria-label="Cuemix AI DJ player"]');
+	await expect(djPlayer).toBeHidden();
 	await page.getByPlaceholder(/emotional Arabic vocals/).fill('chill focus beats');
 	await page.getByRole('button', { name: /Start AI DJ/ }).click();
 
+	await expect(djPlayer).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Persistent Track' })).toBeVisible();
 	const audioSrcOnHome = await page.locator('audio.hidden-audio').getAttribute('src');
 	expect(audioSrcOnHome).toContain('e2e-fixture-track.mp3');
@@ -330,6 +333,11 @@ test('the AI DJ player survives navigating away from the home route', async ({ p
 	await expect(page).toHaveURL(/\/feed$/);
 	await expect(page.getByRole('heading', { name: 'Persistent Track' })).toBeVisible();
 	await expect(page.locator('audio.hidden-audio')).toHaveAttribute('src', audioSrcOnHome ?? '');
+
+	// Auth pages should stay focused on authentication even if a global
+	// player session is still mounted in the root layout.
+	await page.goto('/login');
+	await expect(djPlayer).toBeHidden();
 
 	expect(unexpectedRequests).toEqual([]);
 });
