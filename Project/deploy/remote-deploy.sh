@@ -40,9 +40,9 @@ set_managed_env() {
 # Compose defaults alone would leave those VMs stale. The model name and
 # internal token remain operator-owned; these non-secret runtime limits are
 # deliberately deployment-owned for the course test environment.
-set_managed_env STUDIO_AI_TIMEOUT_SECONDS "35"
+set_managed_env STUDIO_AI_TIMEOUT_SECONDS "250"
 set_managed_env STUDIO_AI_KEEP_ALIVE "-1"
-set_managed_env STUDIO_AI_MODEL_TIMEOUT_SECONDS "30"
+set_managed_env STUDIO_AI_MODEL_TIMEOUT_SECONDS "240"
 set_managed_env STUDIO_AI_MAX_CONTEXT_ITEMS "30"
 set_managed_env STUDIO_AI_MAX_OUTPUT_TOKENS "700"
 set_managed_env STUDIO_AI_TEMPERATURE "0.15"

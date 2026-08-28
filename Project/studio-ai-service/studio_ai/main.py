@@ -6,6 +6,7 @@ mutates product state.
 """
 
 import json
+import logging
 import os
 from time import perf_counter
 
@@ -17,6 +18,7 @@ from pydantic import ValidationError
 from studio_ai.schemas import ChatRequest, Recommendation
 
 app = FastAPI(title="CueMix Studio AI", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 
 def _authorize(token: str | None) -> None:
@@ -27,6 +29,24 @@ def _authorize(token: str | None) -> None:
 
 def _model_name() -> str:
     return os.getenv("STUDIO_AI_MODEL", os.getenv("OLLAMA_MODEL", "")).strip()
+
+
+def _recommendation_from_raw(raw: object) -> Recommendation:
+    if not isinstance(raw, str):
+        return Recommendation.model_validate(raw)
+
+    content = raw.strip()
+    try:
+        decoded = json.loads(content)
+    except json.JSONDecodeError:
+        # Qwen3 + Ollama can prefix schema-constrained output with a stray
+        # {" while thinking is enabled (ollama/ollama#10929). Repair only
+        # that exact known signature; every other malformed response remains
+        # invalid and is rejected below.
+        if not content.startswith('{"{'):
+            raise
+        decoded = json.loads(content[2:])
+    return Recommendation.model_validate(decoded)
 
 
 def _bounded_context(request: ChatRequest) -> dict:
@@ -127,7 +147,7 @@ def chat(
     if not base_url or not model:
         raise HTTPException(status_code=503, detail="Studio AI is unavailable.")
     timeout = max(
-        1.0, min(45.0, float(os.getenv("STUDIO_AI_MODEL_TIMEOUT_SECONDS", "30")))
+        1.0, min(240.0, float(os.getenv("STUDIO_AI_MODEL_TIMEOUT_SECONDS", "240")))
     )
     queue_wait = max(
         0.05, min(10.0, float(os.getenv("OLLAMA_QUEUE_WAIT_SECONDS", "2")))
@@ -155,7 +175,9 @@ def chat(
                     # deliberately mandatory here even when the lightweight home-page
                     # prompt classifier disables it.
                     "think": True,
-                    "keep_alive": os.getenv("STUDIO_AI_KEEP_ALIVE", "-1"),
+                    "keep_alive": prompt_parser._ollama_keep_alive_payload(
+                        os.getenv("STUDIO_AI_KEEP_ALIVE", "-1")
+                    ),
                     "options": {
                         "temperature": max(
                             0.0,
@@ -172,16 +194,24 @@ def chat(
         payload = response.json()
         message = payload.get("message") if isinstance(payload, dict) else None
         raw = message.get("content") if isinstance(message, dict) else None
-        decoded = json.loads(raw) if isinstance(raw, str) else raw
-        recommendation = Recommendation.model_validate(decoded)
+        recommendation = _recommendation_from_raw(raw)
         recommendation.requires_user_confirmation = True
         outcome = prompt_parser._OLLAMA_OUTCOME_SUCCESS
         return recommendation
     except httpx.TimeoutException:
         outcome = prompt_parser._OLLAMA_OUTCOME_TIMEOUT
         raise HTTPException(status_code=504, detail="Studio AI timed out.") from None
+    except httpx.HTTPStatusError as exc:
+        outcome = prompt_parser._OLLAMA_OUTCOME_HTTP_ERROR
+        logger.warning(
+            "Ollama rejected Studio request: status=%s response=%s",
+            exc.response.status_code,
+            exc.response.text[:300],
+        )
+        raise HTTPException(status_code=503, detail="Ollama request failed.") from None
     except httpx.HTTPError:
         outcome = prompt_parser._OLLAMA_OUTCOME_HTTP_ERROR
+        logger.warning("Ollama Studio request failed", exc_info=True)
         raise HTTPException(status_code=503, detail="Ollama request failed.") from None
     except (ValueError, TypeError, ValidationError):
         outcome = prompt_parser._OLLAMA_OUTCOME_INVALID_RESPONSE

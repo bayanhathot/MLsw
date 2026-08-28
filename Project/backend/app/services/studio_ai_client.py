@@ -250,7 +250,7 @@ def chat(
     base_url = os.getenv("STUDIO_AI_URL", "").strip().rstrip("/")
     if not base_url:
         return _unavailable("AI Mix Assistant is not configured; manual Studio remains available.")
-    timeout = max(1.0, min(50.0, float(os.getenv("STUDIO_AI_TIMEOUT_SECONDS", "35"))))
+    timeout = max(1.0, min(255.0, float(os.getenv("STUDIO_AI_TIMEOUT_SECONDS", "250"))))
     payload = {
         "messages": [message.model_dump() for message in request.messages],
         "context": _context(db, user_id, request),

@@ -134,9 +134,9 @@ _OLLAMA_SEMAPHORE_POLL_SECONDS = 0.05
 # How long an acquired slot is leased for before it self-expires. The queue
 # wait was already spent *before* acquiring, so this only needs to cover the
 # actual model call: the lightweight parser caps at 20s while Studio's
-# always-thinking reasoning path caps at 45s, plus slack for scheduling and
+# always-thinking reasoning path caps at 240s, plus slack for scheduling and
 # network jitter around the release call itself.
-_OLLAMA_LEASE_SECONDS = 60.0
+_OLLAMA_LEASE_SECONDS = 270.0
 
 # Atomic prune-then-acquire: two replicas racing this at once can never both
 # see "room" and both add, since ZCARD is read and ZADD is written inside the
@@ -237,6 +237,22 @@ def _acquire_ollama_slot(timeout_seconds: float):
 # OLLAMA_QUEUE_WAIT_SECONDS would otherwise risk pushing this stage past
 # what the request can actually afford -- see parse_prompt.
 _OLLAMA_STAGE_BUDGET_SECONDS = 15.0
+
+
+def _ollama_keep_alive_payload(value: str | None = None) -> str | int:
+    """Return the API representation Ollama expects for ``keep_alive``.
+
+    Ollama accepts duration strings such as ``30m`` but its HTTP API requires
+    sentinel values such as ``-1`` and ``0`` to be JSON numbers, not strings.
+    Environment variables are always strings, so normalize only integer
+    values and leave duration syntax untouched.
+    """
+
+    raw = (value if value is not None else os.getenv("OLLAMA_KEEP_ALIVE", "-1")).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
 
 # Debug-panel observability only (routers/debug.py): the outcome of the most
 # recent actual Ollama call this process made. Never consulted by the parse
@@ -742,12 +758,11 @@ def parse_prompt(prompt: str) -> PromptIntent:
         # Ollama unloads an idle model from memory after its keep-alive window
         # (5 minutes by default), so a request after any gap pays a full
         # reload-from-disk before it can even start generating. A per-request
-        # "keep_alive" overrides the server-level default on every call (per
-        # Ollama's API docs), refreshing the timer on each real use on top of
-        # the container-level OLLAMA_KEEP_ALIVE setting. Passed through as-is
-        # -- Ollama accepts its own duration syntax directly ("-1", "30m",
-        # "1h"), so this never tries to parse/validate the format itself.
-        keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
+        # "keep_alive" overrides the server-level default on every call,
+        # refreshing the timer on each real use on top of the container-level
+        # OLLAMA_KEEP_ALIVE setting. Duration syntax stays a string, while
+        # integer sentinels are normalized to JSON numbers for Ollama's API.
+        keep_alive = _ollama_keep_alive_payload()
         with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
             response = client.post(
                 f"{base_url}/api/generate",

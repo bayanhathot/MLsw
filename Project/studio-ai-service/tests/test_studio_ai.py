@@ -102,7 +102,7 @@ def test_chat_reuses_capacity_guard_and_returns_structured_result(monkeypatch):
     assert response.json()["requires_user_confirmation"] is True
     assert posted["url"] == "http://ollama/api/chat"
     assert posted["json"]["think"] is True
-    assert posted["json"]["keep_alive"] == "-1"
+    assert posted["json"]["keep_alive"] == -1
     assert [message["role"] for message in posted["json"]["messages"]] == [
         "system",
         "user",
@@ -111,6 +111,40 @@ def test_chat_reuses_capacity_guard_and_returns_structured_result(monkeypatch):
     ]
     assert "AUTHORITATIVE_CONTEXT=" in posted["json"]["messages"][0]["content"]
     assert released == [True]
+
+
+def test_known_qwen_thinking_prefix_is_repaired_narrowly(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    monkeypatch.setattr(
+        "studio_ai.main.prompt_parser._acquire_ollama_slot", lambda _timeout: lambda: None
+    )
+    monkeypatch.setattr("studio_ai.main.prompt_parser._record_ollama_call", lambda *_: None)
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": '{"' + json.dumps(_plan())}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("studio_ai.main.httpx.Client", Client)
+    response = TestClient(app).post("/internal/studio-ai/chat", json=_request())
+    assert response.status_code == 200
+    assert response.json()["recommendation_type"] == "plan"
 
 
 def test_internal_route_hides_behind_shared_token(monkeypatch):

@@ -188,11 +188,11 @@ def test_ollama_keep_alive_defaults_to_never_unload_but_is_configurable(monkeypa
     monkeypatch.setattr(httpx.Client, "post", fake_post)
 
     prompt_parser.parse_prompt("chill lofi beats")
-    assert payloads[0]["keep_alive"] == "-1"  # unset env var -> never unload
+    assert payloads[0]["keep_alive"] == -1  # API requires numeric sentinel
 
     monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "30m")
     prompt_parser.parse_prompt("chill lofi beats")
-    assert payloads[1]["keep_alive"] == "30m"  # passed through as-is, unparsed
+    assert payloads[1]["keep_alive"] == "30m"  # duration syntax remains a string
 
 
 def test_concurrent_parse_prompt_calls_respect_the_ollama_slot_bound(monkeypatch):

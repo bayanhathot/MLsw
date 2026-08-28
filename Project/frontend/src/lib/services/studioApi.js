@@ -240,7 +240,10 @@ export function chatWithStudioAssistant(messages, mixId, activeSavedSegmentId) {
 			mix_id: mixId || null,
 			active_saved_segment_id: activeSavedSegmentId || null
 		}),
-		timeoutMs: 45_000
+		// The required 8B always-thinking model can take roughly four minutes
+		// on a CPU-only host. Keep the browser ceiling just above the backend's
+		// bounded 250-second timeout so the server remains the source of truth.
+		timeoutMs: 265_000
 	});
 }
 
