@@ -34,6 +34,19 @@ set_managed_env() {
   mv "${temporary}" .env
 }
 
+# Keep the Studio assistant's bounded reasoning contract consistent across
+# upgrades. The production .env survives deployments and older installations
+# may contain the prototype's shorter timeout/output settings, so relying on
+# Compose defaults alone would leave those VMs stale. The model name and
+# internal token remain operator-owned; these non-secret runtime limits are
+# deliberately deployment-owned for the course test environment.
+set_managed_env STUDIO_AI_TIMEOUT_SECONDS "35"
+set_managed_env STUDIO_AI_KEEP_ALIVE "-1"
+set_managed_env STUDIO_AI_MODEL_TIMEOUT_SECONDS "30"
+set_managed_env STUDIO_AI_MAX_CONTEXT_ITEMS "30"
+set_managed_env STUDIO_AI_MAX_OUTPUT_TOKENS "700"
+set_managed_env STUDIO_AI_TEMPERATURE "0.15"
+
 if [ -n "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED:-}" ]; then
   case "${MANAGED_AUDIUS_ANALYSIS_CACHE_ENABLED}" in
     true|false) ;;
@@ -70,10 +83,10 @@ compose=(docker compose --env-file .env --file docker-compose.prod.yml)
 "${compose[@]}" pull
 # Service dependencies wait for PostgreSQL and require the one-shot migration
 # and upload-volume ownership initialization to complete successfully. ollama
-# has no dependents (backend deliberately isn't gated on it, see
-# docker-compose.prod.yml), so it must be listed explicitly here or `up`
-# would never create it at all on a fresh VM.
-"${compose[@]}" up --detach --remove-orphans backend studio-ai-service frontend caddy ollama
+# and its keepalive sidecar have no dependents (backend deliberately isn't
+# gated on them, see docker-compose.prod.yml), so both must be listed
+# explicitly here or `up` would never create them on a fresh VM.
+"${compose[@]}" up --detach --remove-orphans backend studio-ai-service frontend caddy ollama ollama-keepalive
 "${compose[@]}" ps
 
 # Prove the recreated backend received the managed values. This catches the

@@ -243,3 +243,23 @@ export function chatWithStudioAssistant(messages, mixId, activeSavedSegmentId) {
 		timeoutMs: 45_000
 	});
 }
+
+/** @param {import('../types.js').StudioAssistantRecommendation} recommendation @param {number|null|undefined} mixId */
+export async function applyStudioAssistantPlan(recommendation, mixId) {
+	const hasMixChanges =
+		Boolean(recommendation.proposed_order) || Boolean(recommendation.transition_changes?.length);
+	const raw = await apiRequest('/studio/assistant/apply', {
+		method: 'POST',
+		body: JSON.stringify({
+			mix_id: hasMixChanges ? mixId || null : null,
+			expected_revision: hasMixChanges ? recommendation.base_revision : null,
+			proposed_order: recommendation.proposed_order,
+			transition_changes: recommendation.transition_changes || [],
+			segment_bound_change: recommendation.segment_bound_change
+		})
+	});
+	return {
+		mix: raw?.mix ? normalizeMix(raw.mix) : null,
+		savedSegment: raw?.saved_segment ? normalizeSavedSegment(raw.saved_segment) : null
+	};
+}

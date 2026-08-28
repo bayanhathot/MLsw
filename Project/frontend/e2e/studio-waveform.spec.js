@@ -74,36 +74,46 @@ async function mockStudio(page, { brokenAudio = false, assistantSuggestion = fal
 						}
 					]
 				: [];
-		} else if (path === '/api/studio/segments/7' && request.method() === 'PATCH') {
-			payload = {
-				id: 7,
-				user_id: 1,
-				source_type: 'catalog',
-				source_track_id: '101',
-				title: 'Waveform Fixture',
-				artist: 'CueMix Tests',
-				source_audio_url: '/api/catalog/tracks/101/audio',
-				track_duration_ms: 10000,
-				start_ms: 5000,
-				end_ms: 7000,
-				label: 'My range',
-				created_from: 'manual',
-				created_at: '2026-08-21T00:00:00Z',
-				updated_at: '2026-08-21T00:01:00Z'
-			};
 		} else if (path === '/api/studio/assistant/chat' && request.method() === 'POST') {
 			payload = {
+				available: true,
 				recommendation: {
-					recommendation_type: 'segment_bounds',
-					candidate_id: 7,
-					proposed_start_ms: 5000,
-					proposed_end_ms: 7000,
+					recommendation_type: 'plan',
+					base_revision: null,
+					remembered_constraints: ['Find a stronger hook'],
 					proposed_order: null,
-					transition_change: null,
+					transition_changes: [],
+					segment_bound_change: {
+						candidate_id: 7,
+						proposed_start_ms: 5000,
+						proposed_end_ms: 7000
+					},
+					calculations: null,
+					warnings: [],
 					reason_tags: ['detected_hook'],
 					explanation: 'Try the detected hook.',
 					confidence: 0.9,
 					requires_user_confirmation: true
+				}
+			};
+		} else if (path === '/api/studio/assistant/apply' && request.method() === 'POST') {
+			payload = {
+				mix: null,
+				saved_segment: {
+					id: 7,
+					user_id: 1,
+					source_type: 'catalog',
+					source_track_id: '101',
+					title: 'Waveform Fixture',
+					artist: 'CueMix Tests',
+					source_audio_url: '/api/catalog/tracks/101/audio',
+					track_duration_ms: 10000,
+					start_ms: 5000,
+					end_ms: 7000,
+					label: 'My range',
+					created_from: 'manual',
+					created_at: '2026-08-21T00:00:00Z',
+					updated_at: '2026-08-21T00:01:00Z'
 				}
 			};
 		} else if (path === '/api/studio/mixes') payload = [];
@@ -196,7 +206,7 @@ test('Studio shows AI bounds separately and applies them only after confirmation
 		timeout: 15000
 	});
 
-	await page.getByPlaceholder(/Keep this segment/).fill('Find a stronger hook');
+	await page.getByPlaceholder(/Keep the first track/).fill('Find a stronger hook');
 	await page.getByRole('button', { name: 'Ask assistant' }).click();
 	await expect(page.getByRole('button', { name: 'Play AI', exact: true })).toBeVisible();
 	await expect(page.getByTestId('studio-waveform').locator('[part~="ai-marker"]')).toBeVisible();
@@ -207,11 +217,11 @@ test('Studio shows AI bounds separately and applies them only after confirmation
 	await page.getByRole('button', { name: 'Keep Mine', exact: true }).click();
 	await expect(page.getByRole('button', { name: 'Play AI', exact: true })).toHaveCount(0);
 
-	await page.getByPlaceholder(/Keep this segment/).fill('Show the hook again');
+	await page.getByPlaceholder(/Keep the first track/).fill('Show the hook again');
 	await page.getByRole('button', { name: 'Ask assistant' }).click();
-	await expect(page.getByRole('button', { name: 'Apply after validation' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Confirm and apply plan' })).toBeVisible();
 
-	await page.getByRole('button', { name: 'Apply after validation' }).click();
+	await page.getByRole('button', { name: 'Confirm and apply plan' }).click();
 	await expect(page.getByTestId('waveform-selection')).toHaveAttribute('data-start-ms', '5000');
 	await expect(page.getByTestId('waveform-selection')).toHaveAttribute('data-end-ms', '7000');
 });

@@ -7,6 +7,7 @@
 	import WaveformSegmentEditor from '$lib/components/WaveformSegmentEditor.svelte';
 	import {
 		addSegmentToMix,
+		applyStudioAssistantPlan,
 		autoMixFromSaved,
 		chatWithStudioAssistant,
 		createSavedSegment,
@@ -237,7 +238,8 @@
 				label: 'Detected highlight'
 			});
 		}
-		const recommendationCandidateId = recommendation?.candidate_id;
+		const bound = recommendation?.segment_bound_change;
+		const recommendationCandidateId = bound?.candidate_id;
 		const candidate = recommendationCandidateId
 			? savedSegments.find((segment) => segment.id === recommendationCandidateId)
 			: null;
@@ -245,13 +247,13 @@
 			candidate &&
 			candidate.sourceType === selectedTrack.sourceType &&
 			candidate.sourceTrackId === selectedTrack.sourceTrackId &&
-			recommendation?.proposed_start_ms != null &&
-			recommendation?.proposed_end_ms != null
+			bound?.proposed_start_ms != null &&
+			bound?.proposed_end_ms != null
 		) {
 			markers.push({
 				kind: 'ai',
-				startMs: recommendation.proposed_start_ms,
-				endMs: recommendation.proposed_end_ms,
+				startMs: bound.proposed_start_ms,
+				endMs: bound.proposed_end_ms,
 				label: 'AI suggestion'
 			});
 		}
@@ -553,58 +555,31 @@
 	}
 
 	async function applyRecommendation() {
-		if (!recommendation) return;
+		if (!recommendation || recommendation.recommendation_type !== 'plan') return;
+		busy = 'assistant-apply';
+		error = '';
 		try {
-			if (
-				recommendation.recommendation_type === 'segment_bounds' &&
-				recommendation.candidate_id &&
-				recommendation.proposed_start_ms != null &&
-				recommendation.proposed_end_ms != null
-			) {
-				const updated = await updateSavedSegment(recommendation.candidate_id, {
-					start_ms: recommendation.proposed_start_ms,
-					end_ms: recommendation.proposed_end_ms
-				});
+			const applied = await applyStudioAssistantPlan(recommendation, activeMix?.id);
+			if (applied.mix) replaceMix(applied.mix);
+			if (applied.savedSegment) {
+				const updated = applied.savedSegment;
 				savedSegments = savedSegments.map((row) => (row.id === updated.id ? updated : row));
 				await previewSaved(updated, false, false);
-			} else if (
-				recommendation.recommendation_type === 'mix_order' &&
-				activeMix &&
-				recommendation.proposed_order
-			) {
-				replaceMix(
-					await reorderStudioMix(activeMix.id, activeMix.revision, recommendation.proposed_order)
-				);
-			} else if (
-				recommendation.recommendation_type === 'transition' &&
-				activeMix &&
-				recommendation.transition_change
-			) {
-				const change = recommendation.transition_change;
-				replaceMix(
-					await updateStudioTransition(
-						activeMix.id,
-						change.item_id,
-						activeMix.revision,
-						change.transition_type,
-						change.duration_ms
-					)
-				);
 			}
-			notice = 'Recommendation validated and applied.';
+			recommendation = null;
+			notice = 'The complete assistant plan was validated and applied atomically.';
 		} catch (requestError) {
-			error = requestError instanceof Error ? requestError.message : 'Recommendation was rejected.';
+			error = requestError instanceof Error ? requestError.message : 'Assistant plan was rejected.';
+		} finally {
+			busy = '';
 		}
 	}
 
 	async function playAiRecommendation() {
-		if (
-			!recommendation?.candidate_id ||
-			recommendation.proposed_start_ms == null ||
-			recommendation.proposed_end_ms == null
-		)
+		const bound = recommendation?.segment_bound_change;
+		if (!bound?.candidate_id || bound.proposed_start_ms == null || bound.proposed_end_ms == null)
 			return;
-		const candidate = savedSegments.find((segment) => segment.id === recommendation?.candidate_id);
+		const candidate = savedSegments.find((segment) => segment.id === bound.candidate_id);
 		if (!candidate) return;
 		if (
 			!selectedTrack ||
@@ -613,11 +588,7 @@
 		) {
 			await previewSaved(candidate, false, false);
 		}
-		await cueAudio(
-			candidate.sourceAudioUrl,
-			recommendation.proposed_start_ms,
-			recommendation.proposed_end_ms
-		);
+		await cueAudio(candidate.sourceAudioUrl, bound.proposed_start_ms, bound.proposed_end_ms);
 	}
 
 	async function compareRecommendation() {
@@ -652,6 +623,12 @@
 		const total = Math.max(0, Number(ms) || 0) / 1000;
 		const minutes = Math.floor(total / 60);
 		return `${minutes}:${(total % 60).toFixed(1).padStart(4, '0')}`;
+	}
+
+	/** @param {number} itemId */
+	function assistantItemLabel(itemId) {
+		const item = activeMix?.segments.find((segment) => segment.id === itemId);
+		return item ? `${item.title} — ${item.artist}` : `Mix item ${itemId}`;
 	}
 </script>
 
@@ -859,7 +836,7 @@
 		<aside class:collapsed={!assistantOpen} class="panel assistant-panel">
 			<div class="panel-title">
 				<div>
-					<p class="eyebrow">Local LLM</p>
+					<p class="eyebrow">Local LLM · always thinking</p>
 					<h2>AI Mix Assistant</h2>
 				</div>
 				<button class="ghost" onclick={() => (assistantOpen = !assistantOpen)}
@@ -873,8 +850,9 @@
 						>
 							<b>{message.role === 'user' ? 'You' : 'Assistant'}</b>{message.content}
 						</p>{:else}<p class="empty">
-							Ask for stronger sections, smoother transitions, or a new energy arc. The assistant
-							can suggest, never mutate.
+							Give the analyst several constraints at once: duration, locked tracks, energy arc, BPM
+							jumps, and transition style. It remembers this conversation and waits for your
+							confirmation before applying a plan.
 						</p>{/each}
 				</div>
 				<form
@@ -887,11 +865,11 @@
 					<textarea
 						bind:value={assistantInput}
 						maxlength="2000"
-						placeholder="Keep this segment, but make the next transition smoother…"
+						placeholder="Keep the first track, stay under 2:30, increase energy, and minimize BPM jumps…"
 					></textarea><button
 						class="primary"
 						disabled={!assistantInput.trim() || busy === 'assistant'}
-						>{busy === 'assistant' ? 'Thinking…' : 'Ask assistant'}</button
+						>{busy === 'assistant' ? 'Reasoning…' : 'Ask assistant'}</button
 					>
 				</form>
 				{#if recommendation}<article class="recommendation">
@@ -899,21 +877,100 @@
 							>{Math.round(recommendation.confidence * 100)}% grounded confidence</strong
 						>
 						<p>{recommendation.explanation}</p>
+						{#if recommendation.remembered_constraints?.length}
+							<section class="assistant-detail">
+								<b>Remembered constraints</b>
+								<ul>
+									{#each recommendation.remembered_constraints as constraint, constraintIndex (`${constraint}-${constraintIndex}`)}<li
+										>
+											{constraint}
+										</li>{/each}
+								</ul>
+							</section>
+						{/if}
+						{#if recommendation.calculations}
+							<div class="assistant-math">
+								<span
+									>Current<strong
+										>{formatTime(recommendation.calculations.current_duration_ms)}</strong
+									></span
+								>
+								<span
+									>Proposed<strong
+										>{formatTime(recommendation.calculations.proposed_duration_ms)}</strong
+									></span
+								>
+								<span
+									>Overlap<strong
+										>{formatTime(recommendation.calculations.transition_overlap_ms)}</strong
+									></span
+								>
+								<span
+									>BPM jump<strong
+										>{recommendation.calculations.average_bpm_jump == null
+											? 'No data'
+											: recommendation.calculations.average_bpm_jump.toFixed(1)}</strong
+									></span
+								>
+							</div>
+						{/if}
+						{#if recommendation.proposed_order?.length}
+							<section class="assistant-detail">
+								<b>Proposed order</b>
+								<ol>
+									{#each recommendation.proposed_order as itemId (itemId)}<li>
+											{assistantItemLabel(itemId)}
+										</li>{/each}
+								</ol>
+							</section>
+						{/if}
+						{#if recommendation.transition_changes?.length}
+							<section class="assistant-detail">
+								<b>Transition changes</b>
+								<ul>
+									{#each recommendation.transition_changes as change (change.item_id)}<li>
+											{assistantItemLabel(change.item_id)}: {change.transition_type.replaceAll(
+												'_',
+												' '
+											)}
+											· {(change.duration_ms / 1000).toFixed(1)}s
+										</li>{/each}
+								</ul>
+							</section>
+						{/if}
+						{#if recommendation.segment_bound_change}
+							<p class="assistant-bound">
+								Saved segment range: {formatTime(
+									recommendation.segment_bound_change.proposed_start_ms
+								)}–{formatTime(recommendation.segment_bound_change.proposed_end_ms)}
+							</p>
+						{/if}
+						{#if recommendation.warnings?.length}
+							<section class="assistant-detail warning-list">
+								<b>Warnings</b>
+								<ul>
+									{#each recommendation.warnings as warning, warningIndex (`${warning}-${warningIndex}`)}<li
+										>
+											{warning}
+										</li>{/each}
+								</ul>
+							</section>
+						{/if}
 						{#if recommendation.reason_tags?.length}<small
 								>{recommendation.reason_tags.join(' · ')}</small
 							>{/if}
 						<div class="row-actions">
-							{#if recommendation.recommendation_type === 'segment_bounds'}
+							{#if recommendation.segment_bound_change}
 								<button onclick={playAiRecommendation}>Play AI</button><button
 									onclick={compareRecommendation}>Compare</button
 								>
 							{/if}
-							<button
-								class="accent"
-								disabled={recommendation.recommendation_type === 'unavailable' ||
-									recommendation.recommendation_type === 'explanation'}
-								onclick={applyRecommendation}>Apply after validation</button
-							><button onclick={keepMine}>Keep Mine</button>
+							{#if recommendation.recommendation_type === 'plan'}<button
+									class="accent"
+									disabled={busy === 'assistant-apply'}
+									onclick={applyRecommendation}
+									>{busy === 'assistant-apply' ? 'Validating…' : 'Confirm and apply plan'}</button
+								>{/if}<button onclick={keepMine}>Keep Mine</button>
 						</div>
 					</article>{/if}
 			{/if}
@@ -1564,6 +1621,59 @@
 		margin: 0;
 		color: var(--text-dim);
 		font-size: 12px;
+	}
+	.assistant-detail {
+		display: grid;
+		gap: 5px;
+		padding-top: 7px;
+		border-top: 1px solid rgba(255, 149, 72, 0.2);
+	}
+	.assistant-detail b {
+		color: var(--text);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.assistant-detail ul,
+	.assistant-detail ol {
+		display: grid;
+		gap: 3px;
+		margin: 0;
+		padding-left: 18px;
+		color: var(--text-dim);
+		font-size: 11px;
+	}
+	.assistant-math {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 6px;
+	}
+	.assistant-math span {
+		display: grid;
+		gap: 2px;
+		padding: 7px;
+		border: 1px solid rgba(255, 149, 72, 0.25);
+		border-radius: 7px;
+		color: var(--text-faint);
+		font-family: var(--font-mono);
+		font-size: 9px;
+		text-transform: uppercase;
+	}
+	.assistant-math strong {
+		color: var(--text);
+		font-size: 12px;
+		text-transform: none;
+	}
+	.assistant-bound {
+		padding: 7px;
+		border-radius: 7px;
+		background: var(--well);
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+	.warning-list {
+		color: var(--amber);
 	}
 	.timeline-panel {
 		display: grid;

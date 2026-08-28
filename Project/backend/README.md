@@ -77,10 +77,12 @@ publishing also rejects another user's upload. Legacy `/mixes` update/publish
 routes reject Studio mixes so they cannot bypass revision and render checks.
 
 The optional `studio-ai-service` has no database access. `studio_ai_client.py`
-builds owned, bounded context and validates candidate IDs, bounds, complete
-orders, and transition targets before returning a suggestion to the browser.
-Recommendations are never applied implicitly; an unavailable/invalid response
-degrades to a normal 200 response explaining that manual editing remains.
+builds owned, bounded context and independently validates candidate IDs,
+bounds, complete orders, transition targets, draft revisions, and duration/BPM
+calculations before returning a structured multi-step plan to the browser.
+Plans are never applied implicitly. A confirmed plan is revalidated and applied
+atomically by the backend; an unavailable/invalid response degrades to a normal
+200 response explaining that manual editing remains.
 
 ## Bulk catalog upload
 

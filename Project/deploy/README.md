@@ -57,11 +57,21 @@ launch args for `BACKEND_WORKERS` (which only ever reaches `uvicorn`'s
 because CI intentionally preserves the VM's `.env`, so a stale explicit value
 would otherwise override a newer Compose default.
 
+The same deploy script refreshes the Studio assistant's non-secret runtime
+contract (`STUDIO_AI_TIMEOUT_SECONDS`, `STUDIO_AI_KEEP_ALIVE`, model timeout,
+context/output limits, and temperature). This prevents an existing VM from
+retaining the prototype's shorter timeout while leaving the operator-selected
+`OLLAMA_MODEL` and secret `STUDIO_AI_INTERNAL_TOKEN` untouched.
+
 The Studio AI container is internal-only and shares the production Ollama and
-Redis services. Its `/ready` result depends on the configured model being
-present; failed readiness is reported during deployment but does not take down
-the backend because the assistant is deliberately fail-open. Manual Studio
-editing, rendering, and publishing do not depend on it.
+Redis services. Its `/ready` result requires the configured model to be present
+and loaded in memory. Studio requests always enable reasoning and send
+`STUDIO_AI_KEEP_ALIVE=-1`; the production keepalive sidecar also reloads the
+model after a VM/container restart and is explicitly started by every deploy.
+Failed readiness is reported during
+deployment but does not take down the backend because the assistant is
+deliberately fail-open. Manual Studio editing, rendering, and publishing do not
+depend on it.
 
 ### Horizontal scaling
 

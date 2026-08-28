@@ -347,12 +347,18 @@ def test_studio_assistant_fails_open_and_validates_grounded_bounds(
 
         def json(self):
             return {
-                "recommendation_type": "segment_bounds",
-                "candidate_id": saved["id"],
-                "proposed_start_ms": 1200,
-                "proposed_end_ms": 4800,
+                "recommendation_type": "plan",
+                "base_revision": None,
+                "remembered_constraints": ["Keep the vocal phrase"],
                 "proposed_order": None,
-                "transition_change": None,
+                "transition_changes": [],
+                "segment_bound_change": {
+                    "candidate_id": saved["id"],
+                    "proposed_start_ms": 1200,
+                    "proposed_end_ms": 4800,
+                },
+                "calculations": None,
+                "warnings": [],
                 "reason_tags": ["phrase"],
                 "explanation": "A grounded alternative.",
                 "confidence": 0.8,
@@ -377,18 +383,27 @@ def test_studio_assistant_fails_open_and_validates_grounded_bounds(
     grounded = client.post("/studio/assistant/chat", json=request)
     assert grounded.status_code == 200
     assert grounded.json()["available"] is True
-    assert grounded.json()["recommendation"]["candidate_id"] == saved["id"]
+    assert (
+        grounded.json()["recommendation"]["segment_bound_change"]["candidate_id"]
+        == saved["id"]
+    )
 
     monkeypatch.setattr(
         Response,
         "json",
         lambda _self: {
-            "recommendation_type": "segment_bounds",
-            "candidate_id": saved["id"],
-            "proposed_start_ms": 1200,
-            "proposed_end_ms": 600_001,
+            "recommendation_type": "plan",
+            "base_revision": None,
+            "remembered_constraints": [],
             "proposed_order": None,
-            "transition_change": None,
+            "transition_changes": [],
+            "segment_bound_change": {
+                "candidate_id": saved["id"],
+                "proposed_start_ms": 1200,
+                "proposed_end_ms": 600_001,
+            },
+            "calculations": None,
+            "warnings": [],
             "reason_tags": ["unsafe"],
             "explanation": "An invalid out-of-range suggestion.",
             "confidence": 0.8,
@@ -398,3 +413,132 @@ def test_studio_assistant_fails_open_and_validates_grounded_bounds(
     rejected = client.post("/studio/assistant/chat", json=request)
     assert rejected.status_code == 200
     assert rejected.json()["available"] is False
+
+
+def test_studio_assistant_recalculates_and_atomically_applies_multi_step_plan(
+    client, db_session, monkeypatch
+):
+    owner = register_and_login(client)
+    tracks = [
+        _catalog_track(db_session, owner["id"], title="AI Plan One"),
+        _catalog_track(db_session, owner["id"], title="AI Plan Two"),
+        _catalog_track(db_session, owner["id"], title="AI Plan Three"),
+    ]
+    for track, bpm in zip(tracks, (120, 124, 128), strict=True):
+        track.bpm = bpm
+    db_session.commit()
+    saved = [
+        _save(client, track.id, 1000, 21_000, f"Plan {index}")
+        for index, track in enumerate(tracks, start=1)
+    ]
+    mix = client.post("/studio/mixes", json={"title": "Assistant plan"}).json()
+    for segment in saved:
+        mix = client.post(
+            f"/studio/mixes/{mix['id']}/items",
+            json={
+                "saved_segment_id": segment["id"],
+                "expected_revision": mix["revision"],
+            },
+        ).json()
+    order = [item["id"] for item in reversed(mix["segments"])]
+    changes = [
+        {"item_id": order[0], "transition_type": "crossfade", "duration_ms": 4000},
+        {"item_id": order[1], "transition_type": "cut", "duration_ms": 0},
+    ]
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "recommendation_type": "plan",
+                "base_revision": 999,
+                "remembered_constraints": [
+                    "Keep all three tracks",
+                    "Minimize BPM jumps",
+                ],
+                "proposed_order": order,
+                "transition_changes": changes,
+                "segment_bound_change": None,
+                # Deliberately wrong: the authoritative backend must replace model math.
+                "calculations": {
+                    "current_duration_ms": 0,
+                    "proposed_duration_ms": 0,
+                    "transition_overlap_ms": 0,
+                    "average_bpm_jump": 0,
+                    "known_bpm_pairs": 0,
+                },
+                "warnings": [],
+                "reason_tags": ["constraint-solving", "duration-math"],
+                "explanation": "Reverse the arc and use one controlled overlap.",
+                "confidence": 0.9,
+                "requires_user_confirmation": False,
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setenv("STUDIO_AI_URL", "http://studio-ai-service:8001")
+    monkeypatch.setattr("app.services.studio_ai_client.httpx.Client", Client)
+    chat = client.post(
+        "/studio/assistant/chat",
+        json={
+            "mix_id": mix["id"],
+            "messages": [
+                {"role": "user", "content": "Keep all tracks."},
+                {"role": "assistant", "content": "What should I optimize?"},
+                {"role": "user", "content": "Minimize BPM jumps and use one crossfade."},
+            ],
+        },
+    )
+    assert chat.status_code == 200, chat.text
+    recommendation = chat.json()["recommendation"]
+    assert recommendation["base_revision"] == mix["revision"]
+    assert recommendation["requires_user_confirmation"] is True
+    assert recommendation["calculations"] == {
+        "current_duration_ms": recommendation["calculations"]["current_duration_ms"],
+        "proposed_duration_ms": 56_000,
+        "transition_overlap_ms": 4_000,
+        "average_bpm_jump": 4.0,
+        "known_bpm_pairs": 2,
+    }
+
+    applied = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": recommendation["base_revision"],
+            "proposed_order": recommendation["proposed_order"],
+            "transition_changes": recommendation["transition_changes"],
+            "segment_bound_change": None,
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    applied_mix = applied.json()["mix"]
+    assert applied_mix["revision"] == mix["revision"] + 1
+    assert [item["id"] for item in applied_mix["segments"]] == order
+    assert applied_mix["segments"][0]["transition_type"] == "crossfade"
+    assert applied_mix["segments"][0]["transition_duration_ms"] == 4000
+    assert applied_mix["segments"][1]["transition_type"] == "cut"
+
+    stale = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": recommendation["base_revision"],
+            "proposed_order": recommendation["proposed_order"],
+            "transition_changes": recommendation["transition_changes"],
+        },
+    )
+    assert stale.status_code == 409

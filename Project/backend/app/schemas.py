@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class UserCreate(BaseModel):
@@ -342,19 +342,41 @@ class StudioAssistantTransitionChange(BaseModel):
     duration_ms: int = Field(ge=0, le=8000)
 
 
+class StudioAssistantSegmentBoundChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: int = Field(ge=1)
+    proposed_start_ms: int = Field(ge=0)
+    proposed_end_ms: int = Field(gt=0)
+
+
+class StudioAssistantCalculations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_duration_ms: int = Field(ge=0)
+    proposed_duration_ms: int = Field(ge=0)
+    transition_overlap_ms: int = Field(ge=0)
+    average_bpm_jump: float | None = Field(default=None, ge=0)
+    known_bpm_pairs: int = Field(default=0, ge=0)
+
+
 class StudioAssistantRecommendation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     recommendation_type: Literal[
-        "segment_bounds", "mix_order", "transition", "explanation", "unavailable"
+        "explanation", "clarification", "plan", "unavailable"
     ]
-    candidate_id: int | None = None
-    proposed_start_ms: int | None = Field(default=None, ge=0)
-    proposed_end_ms: int | None = Field(default=None, gt=0)
-    proposed_order: list[int] | None = None
-    transition_change: StudioAssistantTransitionChange | None = None
+    base_revision: int | None = Field(default=None, ge=1)
+    remembered_constraints: list[str] = Field(default_factory=list, max_length=8)
+    proposed_order: list[int] | None = Field(default=None, min_length=1, max_length=50)
+    transition_changes: list[StudioAssistantTransitionChange] = Field(
+        default_factory=list, max_length=5
+    )
+    segment_bound_change: StudioAssistantSegmentBoundChange | None = None
+    calculations: StudioAssistantCalculations | None = None
+    warnings: list[str] = Field(default_factory=list, max_length=8)
     reason_tags: list[str] = Field(default_factory=list, max_length=8)
-    explanation: str
+    explanation: str = Field(min_length=1, max_length=1000)
     confidence: float = Field(ge=0, le=1)
     requires_user_confirmation: bool = True
 
@@ -362,6 +384,34 @@ class StudioAssistantRecommendation(BaseModel):
 class StudioAssistantRead(BaseModel):
     available: bool
     recommendation: StudioAssistantRecommendation
+
+
+class StudioAssistantPlanApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mix_id: int | None = Field(default=None, ge=1)
+    expected_revision: int | None = Field(default=None, ge=1)
+    proposed_order: list[int] | None = Field(default=None, min_length=1, max_length=50)
+    transition_changes: list[StudioAssistantTransitionChange] = Field(
+        default_factory=list, max_length=5
+    )
+    segment_bound_change: StudioAssistantSegmentBoundChange | None = None
+
+    @model_validator(mode="after")
+    def validate_plan(self):
+        has_mix_changes = self.proposed_order is not None or bool(self.transition_changes)
+        if not has_mix_changes and self.segment_bound_change is None:
+            raise ValueError("An assistant plan must contain at least one change.")
+        if has_mix_changes and (self.mix_id is None or self.expected_revision is None):
+            raise ValueError("Mix changes require a mix and expected revision.")
+        if not has_mix_changes and (self.mix_id is not None or self.expected_revision is not None):
+            raise ValueError("Mix metadata is only valid when the plan changes a mix.")
+        return self
+
+
+class StudioAssistantPlanApplyRead(BaseModel):
+    mix: MixRead | None = None
+    saved_segment: SavedSegmentRead | None = None
 
 
 class PreferenceRead(BaseModel):

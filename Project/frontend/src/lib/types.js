@@ -65,13 +65,27 @@
  * @property {'cut'|'crossfade'|'fade_in_out'} transition_type
  * @property {number} duration_ms
  *
+ * @typedef {Object} StudioSegmentBoundChange
+ * @property {number} candidate_id
+ * @property {number} proposed_start_ms
+ * @property {number} proposed_end_ms
+ *
+ * @typedef {Object} StudioPlanCalculations
+ * @property {number} current_duration_ms
+ * @property {number} proposed_duration_ms
+ * @property {number} transition_overlap_ms
+ * @property {number|null} average_bpm_jump
+ * @property {number} known_bpm_pairs
+ *
  * @typedef {Object} StudioAssistantRecommendation
- * @property {'segment_bounds'|'mix_order'|'transition'|'explanation'|'unavailable'} recommendation_type
- * @property {number|null} candidate_id
- * @property {number|null} proposed_start_ms
- * @property {number|null} proposed_end_ms
+ * @property {'explanation'|'clarification'|'plan'|'unavailable'} recommendation_type
+ * @property {number|null} base_revision
+ * @property {string[]} remembered_constraints
  * @property {number[]|null} proposed_order
- * @property {StudioTransitionChange|null} transition_change
+ * @property {StudioTransitionChange[]} transition_changes
+ * @property {StudioSegmentBoundChange|null} segment_bound_change
+ * @property {StudioPlanCalculations|null} calculations
+ * @property {string[]} warnings
  * @property {string[]} reason_tags
  * @property {string} explanation
  * @property {number} confidence

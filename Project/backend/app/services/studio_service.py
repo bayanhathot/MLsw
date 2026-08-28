@@ -244,9 +244,14 @@ def owned_segment(db: Session, user_id: int, segment_id: int) -> SavedSegment:
     return row
 
 
-def update_saved_segment(db: Session, row: SavedSegment, request) -> SavedSegment:
-    start_ms = request.start_ms if request.start_ms is not None else row.start_ms
-    end_ms = request.end_ms if request.end_ms is not None else row.end_ms
+def _prepare_saved_segment_update(
+    db: Session,
+    row: SavedSegment,
+    *,
+    start_ms: int,
+    end_ms: int,
+    label: str | None = None,
+) -> None:
     validate_bounds(start_ms, end_ms, row.track_duration_ms)
     if start_ms != row.start_ms or end_ms != row.end_ms:
         source_row, track = resolve_track(
@@ -262,9 +267,17 @@ def update_saved_segment(db: Session, row: SavedSegment, request) -> SavedSegmen
             )
     row.start_ms = start_ms
     row.end_ms = end_ms
-    if request.label is not None:
-        row.label = request.label
+    if label is not None:
+        row.label = label
     row.updated_at = utc_now()
+
+
+def update_saved_segment(db: Session, row: SavedSegment, request) -> SavedSegment:
+    start_ms = request.start_ms if request.start_ms is not None else row.start_ms
+    end_ms = request.end_ms if request.end_ms is not None else row.end_ms
+    _prepare_saved_segment_update(
+        db, row, start_ms=start_ms, end_ms=end_ms, label=request.label
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -495,6 +508,14 @@ def reorder_mix(
     current_ids = [item.id for item in mix.segments]
     if len(segment_ids) != len(set(segment_ids)) or set(segment_ids) != set(current_ids):
         raise HTTPException(status_code=422, detail="Reorder must contain every item exactly once.")
+    _apply_mix_order(db, mix, segment_ids)
+    recompute_transitions(db, mix, planner)
+    _touch(mix)
+    db.commit()
+    return _owned_studio_mix(db, mix.owner_id, mix.id)
+
+
+def _apply_mix_order(db: Session, mix: Mix, segment_ids: list[int]) -> None:
     by_id = {item.id: item for item in mix.segments}
     # Move through temporary negative positions so the unique constraint is
     # never violated mid-flush on PostgreSQL or SQLite.
@@ -505,10 +526,6 @@ def reorder_mix(
         by_id[item_id].position = position
     db.flush()
     db.refresh(mix)
-    recompute_transitions(db, mix, planner)
-    _touch(mix)
-    db.commit()
-    return _owned_studio_mix(db, mix.owner_id, mix.id)
 
 
 def remove_mix_item(
@@ -544,6 +561,98 @@ def update_transition(db: Session, mix: Mix, item_id: int, request, planner) -> 
     _touch(mix)
     db.commit()
     return _owned_studio_mix(db, mix.owner_id, mix.id)
+
+
+def apply_assistant_plan(db: Session, user_id: int, request, planner):
+    """Validate and atomically apply a user-confirmed bounded assistant plan."""
+
+    mix = None
+    saved = None
+    has_actual_change = False
+    has_mix_changes = request.proposed_order is not None or bool(
+        request.transition_changes
+    )
+    if has_mix_changes:
+        mix = owned_studio_mix(db, user_id, request.mix_id)
+        _require_draft(mix)
+        _require_revision(mix, request.expected_revision)
+        current_ids = {item.id for item in mix.segments}
+        if request.proposed_order is not None and (
+            len(request.proposed_order) != len(set(request.proposed_order))
+            or set(request.proposed_order) != current_ids
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Assistant order must contain every current item exactly once.",
+            )
+        effective_order = request.proposed_order or [
+            item.id for item in sorted(mix.segments, key=lambda row: row.position)
+        ]
+        current_order = [
+            item.id for item in sorted(mix.segments, key=lambda row: row.position)
+        ]
+        transition_ids = [change.item_id for change in request.transition_changes]
+        if len(transition_ids) != len(set(transition_ids)):
+            raise HTTPException(
+                status_code=422,
+                detail="An assistant plan may change each transition only once.",
+            )
+        for change in request.transition_changes:
+            if change.item_id not in current_ids or effective_order[-1] == change.item_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Assistant transition must target an item with a following item.",
+                )
+            if change.transition_type == "cut" and change.duration_ms != 0:
+                raise HTTPException(
+                    status_code=422, detail="A cut transition must have zero duration."
+                )
+        by_id = {item.id: item for item in mix.segments}
+        has_actual_change = effective_order != current_order or any(
+            change.transition_type != by_id[change.item_id].transition_type
+            or change.duration_ms != by_id[change.item_id].transition_duration_ms
+            for change in request.transition_changes
+        )
+
+    if request.segment_bound_change is not None:
+        bound = request.segment_bound_change
+        saved = owned_segment(db, user_id, bound.candidate_id)
+        has_actual_change = has_actual_change or (
+            bound.proposed_start_ms != saved.start_ms
+            or bound.proposed_end_ms != saved.end_ms
+        )
+        _prepare_saved_segment_update(
+            db,
+            saved,
+            start_ms=bound.proposed_start_ms,
+            end_ms=bound.proposed_end_ms,
+        )
+
+    if not has_actual_change:
+        raise HTTPException(
+            status_code=422, detail="Assistant plan does not change the current draft."
+        )
+
+    if mix is not None:
+        if request.proposed_order is not None:
+            _apply_mix_order(db, mix, request.proposed_order)
+            recompute_transitions(db, mix, planner)
+        by_id = {item.id: item for item in mix.segments}
+        for change in request.transition_changes:
+            item = by_id[change.item_id]
+            item.transition_type = change.transition_type
+            item.transition_duration_ms = (
+                0 if change.transition_type == "cut" else change.duration_ms
+            )
+        if request.transition_changes:
+            recompute_transitions(db, mix, planner, preserve_types=True)
+        _touch(mix)
+
+    db.commit()
+    applied_mix = _owned_studio_mix(db, user_id, mix.id) if mix is not None else None
+    if saved is not None:
+        db.refresh(saved)
+    return applied_mix, saved
 
 
 def _persisted_transition(item: MixSegment) -> TransitionPlan:

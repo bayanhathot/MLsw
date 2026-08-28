@@ -133,9 +133,10 @@ _OLLAMA_SEMAPHORE_KEY = "cuemix:ollama_semaphore"
 _OLLAMA_SEMAPHORE_POLL_SECONDS = 0.05
 # How long an acquired slot is leased for before it self-expires. The queue
 # wait was already spent *before* acquiring, so this only needs to cover the
-# actual model call: OLLAMA_TIMEOUT_SECONDS' own max (20s) plus slack for
-# scheduling/network jitter around the release call itself.
-_OLLAMA_LEASE_SECONDS = 30.0
+# actual model call: the lightweight parser caps at 20s while Studio's
+# always-thinking reasoning path caps at 45s, plus slack for scheduling and
+# network jitter around the release call itself.
+_OLLAMA_LEASE_SECONDS = 60.0
 
 # Atomic prune-then-acquire: two replicas racing this at once can never both
 # see "room" and both add, since ZCARD is read and ZADD is written inside the

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.schemas import (
+    StudioAssistantCalculations,
     StudioAssistantRead,
     StudioAssistantRecommendation,
     StudioAssistantRequest,
@@ -54,11 +55,15 @@ def _context(db: Session, user_id: int, request: StudioAssistantRequest) -> dict
             "items": [
                 {
                     "item_id": item.id,
+                    "position": item.position,
                     "saved_segment_id": item.saved_segment_id,
                     "title": item.title,
                     "artist": item.artist,
                     "start_ms": item.source_start_ms,
                     "end_ms": item.source_end_ms,
+                    "duration_ms": max(
+                        0, (item.source_end_ms or 0) - (item.source_start_ms or 0)
+                    ),
                     "bpm": item.bpm,
                     "key": item.camelot or item.musical_key,
                     "transition_type": item.transition_type,
@@ -68,6 +73,10 @@ def _context(db: Session, user_id: int, request: StudioAssistantRequest) -> dict
                 for item in row.segments
             ],
         }
+        current = _plan_calculations(row, None, [])
+        mix["current_duration_ms"] = current.current_duration_ms
+        mix["current_transition_overlap_ms"] = current.transition_overlap_ms
+        mix["current_average_bpm_jump"] = current.average_bpm_jump
     identity = music_identity_service.build_music_identity(db, user_id, "30d")
     return {
         "active_segment": active,
@@ -75,7 +84,71 @@ def _context(db: Session, user_id: int, request: StudioAssistantRequest) -> dict
         "listener_summary": identity["summary"],
         "top_genres": identity["genres"][:3],
         "top_vibes": identity["vibes"][:3],
+        "planning_limits": {
+            "max_transition_changes": 5,
+            "duration_formula": "sum(item duration) - effective outgoing non-cut overlap",
+        },
     }
+
+
+def _ordered_items(mix, proposed_order: list[int] | None):
+    by_id = {item.id: item for item in mix.segments}
+    ids = proposed_order or [
+        item.id for item in sorted(mix.segments, key=lambda row: row.position)
+    ]
+    return [by_id[item_id] for item_id in ids]
+
+
+def _item_duration_ms(item) -> int:
+    return max(0, (item.source_end_ms or 0) - (item.source_start_ms or 0))
+
+
+def _plan_calculations(
+    mix, proposed_order: list[int] | None, transition_changes: list
+) -> StudioAssistantCalculations:
+    items = _ordered_items(mix, proposed_order)
+    changes = {change.item_id: change for change in transition_changes}
+    overlap_ms = 0
+    bpm_jumps: list[float] = []
+    for index, item in enumerate(items[:-1]):
+        following = items[index + 1]
+        change = changes.get(item.id)
+        transition_type = change.transition_type if change else item.transition_type
+        duration_ms = change.duration_ms if change else item.transition_duration_ms
+        if transition_type != "cut":
+            overlap_ms += max(
+                0,
+                min(
+                    duration_ms,
+                    max(0, _item_duration_ms(item) - 1),
+                    max(0, _item_duration_ms(following) - 1),
+                ),
+            )
+        if item.bpm is not None and following.bpm is not None:
+            bpm_jumps.append(abs(float(item.bpm) - float(following.bpm)))
+    selected_ms = sum(_item_duration_ms(item) for item in items)
+    proposed_ms = max(0, selected_ms - overlap_ms)
+    current_items = _ordered_items(mix, None)
+    current_overlap_ms = 0
+    for index, item in enumerate(current_items[:-1]):
+        following = current_items[index + 1]
+        if item.transition_type != "cut":
+            current_overlap_ms += max(
+                0,
+                min(
+                    item.transition_duration_ms,
+                    max(0, _item_duration_ms(item) - 1),
+                    max(0, _item_duration_ms(following) - 1),
+                ),
+            )
+    current_selected_ms = sum(_item_duration_ms(item) for item in current_items)
+    return StudioAssistantCalculations(
+        current_duration_ms=max(0, current_selected_ms - current_overlap_ms),
+        proposed_duration_ms=proposed_ms,
+        transition_overlap_ms=overlap_ms,
+        average_bpm_jump=(round(sum(bpm_jumps) / len(bpm_jumps), 2) if bpm_jumps else None),
+        known_bpm_pairs=len(bpm_jumps),
+    )
 
 
 def _validate_recommendation(
@@ -84,50 +157,91 @@ def _validate_recommendation(
     request: StudioAssistantRequest,
     recommendation: StudioAssistantRecommendation,
 ) -> None:
-    candidate_id = recommendation.candidate_id or request.active_saved_segment_id
-    if recommendation.proposed_start_ms is not None or recommendation.proposed_end_ms is not None:
-        if candidate_id is None:
-            raise ValueError("Segment-bound suggestions require an owned candidate.")
-        saved = studio_service.owned_segment(db, user_id, candidate_id)
-        if recommendation.proposed_start_ms is None or recommendation.proposed_end_ms is None:
-            raise ValueError("Both proposed bounds are required.")
+    if recommendation.recommendation_type != "plan":
+        if (
+            recommendation.proposed_order is not None
+            or recommendation.transition_changes
+            or recommendation.segment_bound_change is not None
+        ):
+            raise ValueError("Only a plan may contain proposed changes.")
+        recommendation.base_revision = None
+        recommendation.calculations = None
+        recommendation.requires_user_confirmation = True
+        return
+
+    if (
+        recommendation.proposed_order is None
+        and not recommendation.transition_changes
+        and recommendation.segment_bound_change is None
+    ):
+        raise ValueError("An assistant plan must contain at least one change.")
+
+    has_actual_bound_change = False
+    if recommendation.segment_bound_change is not None:
+        bound = recommendation.segment_bound_change
+        if (
+            request.active_saved_segment_id is None
+            or bound.candidate_id != request.active_saved_segment_id
+        ):
+            raise ValueError("Segment-bound plans may only target the active segment.")
+        saved = studio_service.owned_segment(db, user_id, bound.candidate_id)
         studio_service.validate_bounds(
-            recommendation.proposed_start_ms,
-            recommendation.proposed_end_ms,
+            bound.proposed_start_ms,
+            bound.proposed_end_ms,
             saved.track_duration_ms,
         )
-        recommendation.candidate_id = candidate_id
-    if recommendation.proposed_order is not None:
+        has_actual_bound_change = (
+            bound.proposed_start_ms != saved.start_ms
+            or bound.proposed_end_ms != saved.end_ms
+        )
+
+    has_mix_changes = (
+        recommendation.proposed_order is not None or recommendation.transition_changes
+    )
+    if has_mix_changes:
         if request.mix_id is None:
-            raise ValueError("An order suggestion requires a mix.")
+            raise ValueError("Mix changes require an active mix.")
         mix = studio_service.owned_studio_mix(db, user_id, request.mix_id)
         expected = {item.id for item in mix.segments}
-        if set(recommendation.proposed_order) != expected or len(
-            recommendation.proposed_order
-        ) != len(expected):
-            raise ValueError("Suggested order does not match the current mix.")
-    if recommendation.transition_change is not None:
-        if request.mix_id is None:
-            raise ValueError("A transition suggestion requires a mix.")
-        mix = studio_service.owned_studio_mix(db, user_id, request.mix_id)
-        item = next(
-            (
-                row
-                for row in mix.segments
-                if row.id == recommendation.transition_change.item_id
-            ),
-            None,
-        )
-        if item is None:
-            raise ValueError("Suggested transition item is not in the current mix.")
-        ordered = sorted(mix.segments, key=lambda row: row.position)
-        if ordered[-1].id == item.id:
-            raise ValueError("The final mix item has no outgoing transition.")
-        if (
-            recommendation.transition_change.transition_type == "cut"
-            and recommendation.transition_change.duration_ms != 0
+        proposed_order = recommendation.proposed_order
+        if proposed_order is not None and (
+            set(proposed_order) != expected or len(proposed_order) != len(expected)
         ):
-            raise ValueError("A cut transition must have zero duration.")
+            raise ValueError("Suggested order does not match the current mix.")
+        effective_order = proposed_order or [
+            item.id for item in sorted(mix.segments, key=lambda row: row.position)
+        ]
+        current_order = [
+            item.id for item in sorted(mix.segments, key=lambda row: row.position)
+        ]
+        change_ids = [change.item_id for change in recommendation.transition_changes]
+        if len(change_ids) != len(set(change_ids)):
+            raise ValueError("A plan may change each transition only once.")
+        for change in recommendation.transition_changes:
+            if change.item_id not in expected:
+                raise ValueError("Suggested transition item is not in the current mix.")
+            if effective_order[-1] == change.item_id:
+                raise ValueError("The final mix item has no outgoing transition.")
+            if change.transition_type == "cut" and change.duration_ms != 0:
+                raise ValueError("A cut transition must have zero duration.")
+        by_id = {item.id: item for item in mix.segments}
+        has_actual_mix_change = effective_order != current_order or any(
+            change.transition_type != by_id[change.item_id].transition_type
+            or change.duration_ms != by_id[change.item_id].transition_duration_ms
+            for change in recommendation.transition_changes
+        )
+        if not has_actual_mix_change and not has_actual_bound_change:
+            raise ValueError("Assistant plan does not change the current draft.")
+        recommendation.base_revision = mix.revision
+        recommendation.calculations = _plan_calculations(
+            mix, proposed_order, recommendation.transition_changes
+        )
+    else:
+        if not has_actual_bound_change:
+            raise ValueError("Assistant plan does not change the active segment.")
+        recommendation.base_revision = None
+        recommendation.calculations = None
+    recommendation.requires_user_confirmation = True
 
 
 def chat(
@@ -136,7 +250,7 @@ def chat(
     base_url = os.getenv("STUDIO_AI_URL", "").strip().rstrip("/")
     if not base_url:
         return _unavailable("AI Mix Assistant is not configured; manual Studio remains available.")
-    timeout = max(1.0, min(45.0, float(os.getenv("STUDIO_AI_TIMEOUT_SECONDS", "20"))))
+    timeout = max(1.0, min(50.0, float(os.getenv("STUDIO_AI_TIMEOUT_SECONDS", "35"))))
     payload = {
         "messages": [message.model_dump() for message in request.messages],
         "context": _context(db, user_id, request),

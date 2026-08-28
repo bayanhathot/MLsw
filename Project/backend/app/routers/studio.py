@@ -20,6 +20,8 @@ from app.schemas import (
     SavedSegmentRead,
     SavedSegmentUpdate,
     StudioAssistantRead,
+    StudioAssistantPlanApplyRead,
+    StudioAssistantPlanApplyRequest,
     StudioAssistantRequest,
     StudioAutoMixRequest,
     StudioBehaviorEventCreate,
@@ -491,3 +493,18 @@ def assistant_chat(
     db: Session = Depends(get_db),
 ):
     return studio_ai_client.chat(db, current_user.id, request)
+
+
+@router.post("/assistant/apply", response_model=StudioAssistantPlanApplyRead)
+def assistant_apply(
+    request: StudioAssistantPlanApplyRequest,
+    _: None = Depends(_studio_enabled),
+    __: None = Depends(write_rate_limit),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    planner: TransitionPlanner = Depends(get_transition_planner),
+):
+    mix, saved = studio_service.apply_assistant_plan(
+        db, current_user.id, request, planner
+    )
+    return StudioAssistantPlanApplyRead(mix=mix, saved_segment=saved)
