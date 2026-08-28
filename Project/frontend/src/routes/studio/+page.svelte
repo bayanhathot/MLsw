@@ -76,6 +76,9 @@
 	let skipReportedSegmentId = $state(null);
 
 	let activeMix = $derived(mixes.find((mix) => mix.id === activeMixId) || null);
+	let activeMixHasProviderAudio = $derived(
+		Boolean(activeMix?.segments.some((segment) => segment.source !== 'catalog'))
+	);
 	let filteredSegments = $derived(
 		savedSegments.filter((segment) => {
 			const query = segmentFilter.trim().toLowerCase();
@@ -459,10 +462,14 @@
 
 	async function renderMix() {
 		if (!activeMix) return;
+		const remainsPrivate = activeMixHasProviderAudio;
 		busy = 'render';
+		error = '';
 		try {
 			replaceMix(await renderStudioMix(activeMix.id));
-			notice = 'Current draft revision rendered.';
+			notice = remainsPrivate
+				? 'Audius mix rendered and saved privately. You can play the full render below.'
+				: 'Current draft revision rendered.';
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Render failed.';
 		} finally {
@@ -472,11 +479,20 @@
 
 	async function publishMix() {
 		if (!activeMix) return;
+		if (activeMixHasProviderAudio) {
+			error = '';
+			notice = 'Audius mixes stay private because provider audio cannot be republished publicly.';
+			return;
+		}
+		busy = 'publish';
+		error = '';
 		try {
 			replaceMix(await publishStudioMix(activeMix.id));
 			notice = 'Immutable rendered version published.';
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Could not publish.';
+		} finally {
+			busy = '';
 		}
 	}
 
@@ -1023,12 +1039,22 @@
 						disabled={!activeMix.segments.length || busy === 'render'}
 						onclick={renderMix}
 						>{busy === 'render' ? 'Rendering…' : 'Render current revision'}</button
-					><button
-						class="accent"
-						disabled={activeMix.renderStatus !== 'ready' ||
-							activeMix.renderedRevision !== activeMix.revision}
-						onclick={publishMix}>Publish immutable render</button
-					>{/if}{#if activeMix.renderedAudioUrl}<button
+					>
+					{#if activeMixHasProviderAudio}
+						<p class="publish-note" role="status">
+							Audius audio can be rendered and played here, but the mix stays private and is not
+							republished as a public CueMix asset.
+						</p>
+					{:else}
+						<button
+							class="accent"
+							disabled={activeMix.renderStatus !== 'ready' ||
+								activeMix.renderedRevision !== activeMix.revision ||
+								busy === 'publish'}
+							onclick={publishMix}
+							>{busy === 'publish' ? 'Publishing…' : 'Publish immutable render'}</button
+						>
+					{/if}{/if}{#if activeMix.renderedAudioUrl}<button
 						onclick={() => cueAudio(activeMix.renderedAudioUrl || '', 0, 0)}
 						>Play full render</button
 					>{/if}
@@ -1275,6 +1301,13 @@
 	.auto-mix button:hover,
 	.transition-card button:hover {
 		border-color: var(--text-faint);
+	}
+	.publish-note {
+		flex: 1 1 300px;
+		margin: 0;
+		color: var(--text-dim);
+		font-size: 12px;
+		line-height: 1.45;
 	}
 	.primary {
 		border-color: var(--text) !important;
