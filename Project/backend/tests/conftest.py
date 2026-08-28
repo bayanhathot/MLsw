@@ -1,12 +1,13 @@
 import os
+import tempfile
 import time
+from pathlib import Path
 
 import dotenv
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 # Must run before any `app.*` import: app/database/database.py and
 # app/core/security.py both call dotenv.load_dotenv() at their own import
@@ -57,19 +58,30 @@ from app.main import app
 from app.services import audius_service, session_candidate_pool
 from app.services.upload_queue import upload_queue as _upload_queue
 
+# Upload and analysis workers run concurrently with polling requests. A
+# StaticPool-backed in-memory SQLite database gives every thread the same
+# DB-API connection, so one session can commit/rollback another session's
+# transaction. That surfaced intermittently in CI as "cannot rollback - no
+# transaction is active". Use a process-private temporary database file so
+# SQLAlchemy can give concurrent sessions separate connections, like
+# production PostgreSQL does. TemporaryDirectory cleans it up at process exit.
+_test_database_dir = tempfile.TemporaryDirectory(prefix="cuemix-pytest-")
+_test_database_path = Path(_test_database_dir.name) / "cuemix.sqlite3"
 test_engine = create_engine(
-    "sqlite+pysqlite://",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
+    f"sqlite+pysqlite:///{_test_database_path.as_posix()}",
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
 
 
 @event.listens_for(test_engine, "connect")
 def enable_foreign_keys(dbapi_connection, _):
     dbapi_connection.execute("PRAGMA foreign_keys=ON")
+    dbapi_connection.execute("PRAGMA busy_timeout=30000")
 
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+with test_engine.connect() as connection:
+    connection.exec_driver_sql("PRAGMA journal_mode=WAL")
 Base.metadata.create_all(bind=test_engine)
 
 
