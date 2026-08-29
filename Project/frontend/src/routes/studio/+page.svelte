@@ -1130,7 +1130,6 @@
 				value={autoMode}
 				compact
 				onChange={(mode) => (autoMode = mode)}
-				onDefaultPrompt={(prompt) => (autoPrompt = prompt)}
 			/><button class="accent" disabled={!savedSegments.length} onclick={createAutoMix}
 				>Generate editable draft</button
 			>

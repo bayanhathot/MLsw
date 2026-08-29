@@ -5,21 +5,19 @@
 	 * @type {{
 	 *   value?: import('$lib/types.js').AutoMixMode | null,
 	 *   compact?: boolean,
-	 *   onChange?: (value: import('$lib/types.js').AutoMixMode | null) => void,
-	 *   onDefaultPrompt?: (prompt: string) => void
+	 *   onChange?: (value: import('$lib/types.js').AutoMixMode | null) => void
 	 * }}
 	 */
-	let { value = null, compact = false, onChange = () => {}, onDefaultPrompt = () => {} } = $props();
+	let { value = null, compact = false, onChange = () => {} } = $props();
 
 	/** @param {(typeof AUTO_MIX_MODES)[number]} mode */
 	function choose(mode) {
 		onChange(/** @type {import('$lib/types.js').AutoMixMode} */ (mode.value));
-		onDefaultPrompt(mode.defaultPrompt);
 	}
 </script>
 
 <fieldset class:compact class="mode-selector">
-	<legend>Auto-mix mode <span>deterministic preset</span></legend>
+	<legend>Auto-mix mode <span>influences your prompt</span></legend>
 	<div class="mode-options">
 		{#each AUTO_MIX_MODES as mode (mode.value)}
 			<button
@@ -41,7 +39,7 @@
 			onclick={() => onChange(null)}
 		>
 			<strong>Custom</strong>
-			{#if !compact}<small>Use only your free-text prompt</small>{/if}
+			{#if !compact}<small>Use only your prompt</small>{/if}
 		</button>
 	</div>
 </fieldset>

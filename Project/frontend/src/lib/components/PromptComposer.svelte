@@ -98,11 +98,6 @@
 		onPromptChange(preset.prompt);
 	}
 
-	/** @param {string} defaultPrompt */
-	function useModeDefaultPrompt(defaultPrompt) {
-		if (!prompt.trim()) onPromptChange(defaultPrompt);
-	}
-
 	/** @param {SubmitEvent} event */
 	function handleSubmit(event) {
 		event.preventDefault();
@@ -151,12 +146,7 @@
 		</div>
 
 		<div class="mode-row">
-			<AutoMixModeSelector
-				value={mode}
-				compact={isOverlay}
-				onChange={onModeChange}
-				onDefaultPrompt={useModeDefaultPrompt}
-			/>
+			<AutoMixModeSelector value={mode} compact={isOverlay} onChange={onModeChange} />
 		</div>
 	</div>
 </form>

@@ -4,26 +4,22 @@ export const AUTO_MIX_MODES = Object.freeze([
 	Object.freeze({
 		value: 'workout',
 		label: 'Workout',
-		description: 'High energy · electronic, hip-hop, rock',
-		defaultPrompt: 'high-energy workout mix'
+		description: 'High energy · electronic, hip-hop, rock'
 	}),
 	Object.freeze({
 		value: 'relaxation',
 		label: 'Relaxation',
-		description: 'Low energy · ambient, lofi, classical',
-		defaultPrompt: 'calm relaxation mix'
+		description: 'Low energy · ambient, lofi, classical'
 	}),
 	Object.freeze({
 		value: 'emotional_tarab',
 		label: 'Emotional / Tarab',
-		description: 'Emotional vocals · Arabic music',
-		defaultPrompt: 'emotional Arabic Tarab vocals'
+		description: 'Emotional vocals · Arabic music'
 	}),
 	Object.freeze({
 		value: 'party',
 		label: 'Party',
-		description: 'High energy · pop, house, electronic',
-		defaultPrompt: 'upbeat party mix'
+		description: 'High energy · pop, house, electronic'
 	})
 ]);
 

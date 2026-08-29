@@ -24,4 +24,8 @@ describe('literal auto-mix modes', () => {
 		expect(autoMixModeLabel('emotional_tarab')).toBe('Emotional / Tarab');
 		expect(autoMixModeLabel(null)).toBe('Custom');
 	});
+
+	it('keeps mode metadata separate from user-authored prompt text', () => {
+		expect(AUTO_MIX_MODES.every((mode) => !('defaultPrompt' in mode))).toBe(true);
+	});
 });

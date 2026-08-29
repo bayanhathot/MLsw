@@ -229,6 +229,49 @@ test('guest home page only shows the static preset shortcuts', async ({ page }) 
 	expect(unexpectedRequests).toEqual([]);
 });
 
+test('auto-mix modes influence but never replace the user prompt', async ({ page }) => {
+	const unexpectedRequests = await mockApi(page, {
+		sessionStartResponse: {
+			id: 'session-e2e-mode-influence',
+			prompt: 'slow jazz for reading without vocals',
+			mode: 'relaxation',
+			now_playing: { title: 'Reading Track', artist: 'Test Artist' },
+			audio_url: '/media/e2e-fixture-track.mp3',
+			segments: [],
+			reasoning: {}
+		}
+	});
+
+	await page.goto('/');
+	const prompt = page.getByPlaceholder(/emotional Arabic vocals/);
+
+	// Selecting a mode with an empty composer must not manufacture a ready-made prompt.
+	await page.getByRole('button', { name: 'Workout' }).click();
+	await expect(prompt).toHaveValue('');
+	await expect(page.getByRole('button', { name: /Start AI DJ/ })).toBeDisabled();
+
+	// Changing the influence after typing must preserve the user's wording exactly.
+	await prompt.fill('slow jazz for reading without vocals');
+	await page.getByRole('button', { name: 'Relaxation' }).click();
+	await expect(prompt).toHaveValue('slow jazz for reading without vocals');
+	await expect(page.getByRole('button', { name: 'Relaxation' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+
+	const startRequestPromise = page.waitForRequest(
+		(request) =>
+			new URL(request.url()).pathname === '/api/sessions/start' && request.method() === 'POST'
+	);
+	await page.getByRole('button', { name: /Start AI DJ/ }).click();
+	const startRequest = await startRequestPromise;
+	expect(startRequest.postDataJSON()).toEqual({
+		prompt: 'slow jazz for reading without vocals',
+		mode: 'relaxation'
+	});
+	expect(unexpectedRequests).toEqual([]);
+});
+
 test('authenticated home page shows a personalized shortcut chip ahead of the static presets', async ({
 	page
 }) => {

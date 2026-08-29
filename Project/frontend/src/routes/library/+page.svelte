@@ -173,14 +173,7 @@
 
 	<form class="create-card card" onsubmit={handleCreate}>
 		<label for="mix-prompt">Generate a persistent mix</label>
-		<AutoMixModeSelector
-			value={draftMode}
-			compact
-			onChange={(mode) => (draftMode = mode)}
-			onDefaultPrompt={(prompt) => {
-				if (!draftPrompt.trim()) draftPrompt = prompt;
-			}}
-		/>
+		<AutoMixModeSelector value={draftMode} compact onChange={(mode) => (draftMode = mode)} />
 		<div class="create-controls">
 			<input
 				id="mix-prompt"
