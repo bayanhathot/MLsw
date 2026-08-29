@@ -1,4 +1,5 @@
 <script>
+	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { tick } from 'svelte';
@@ -28,6 +29,13 @@
 		updateStudioTransition
 	} from '$lib/services/studioApi.js';
 	import { authStore } from '$lib/stores/authStore.js';
+	import {
+		clearStudioAssistantHistory,
+		loadStudioAssistantHistory,
+		MAX_STUDIO_ASSISTANT_MESSAGES,
+		saveStudioAssistantHistory,
+		studioSegmentTip
+	} from '$lib/utils/studioAssistant.js';
 	import { normalizeWaveformRange } from '$lib/utils/waveform.js';
 
 	let loaded = $state(false);
@@ -68,6 +76,8 @@
 	let assistantInput = $state('');
 	/** @type {{role:'user'|'assistant',content:string}[]} */
 	let assistantMessages = $state([]);
+	/** @type {number|null} */
+	let assistantHistoryUserId = $state(null);
 	/** @type {import('$lib/types.js').StudioAssistantRecommendation|null} */
 	let recommendation = $state(null);
 	let compareNextAi = $state(true);
@@ -107,6 +117,27 @@
 			loaded = true;
 			void loadWorkspace();
 		}
+	});
+
+	$effect(() => {
+		const userId = $authStore.status === 'authenticated' ? ($authStore.user?.id ?? null) : null;
+		if (!browser || userId == null) {
+			if (assistantHistoryUserId != null) {
+				assistantHistoryUserId = null;
+				assistantMessages = [];
+				recommendation = null;
+			}
+			return;
+		}
+		if (assistantHistoryUserId === userId) return;
+		assistantHistoryUserId = userId;
+		assistantMessages = loadStudioAssistantHistory(window.localStorage, userId);
+		recommendation = null;
+	});
+
+	$effect(() => {
+		if (!browser || assistantHistoryUserId == null) return;
+		saveStudioAssistantHistory(window.localStorage, assistantHistoryUserId, assistantMessages);
 	});
 
 	async function loadWorkspace() {
@@ -529,7 +560,7 @@
 		assistantMessages = [
 			...assistantMessages,
 			/** @type {{role:'user',content:string}} */ ({ role: 'user', content })
-		].slice(-12);
+		].slice(-MAX_STUDIO_ASSISTANT_MESSAGES);
 		assistantInput = '';
 		busy = 'assistant';
 		try {
@@ -546,12 +577,25 @@
 					role: 'assistant',
 					content: result.recommendation.explanation
 				})
-			].slice(-12);
+			].slice(-MAX_STUDIO_ASSISTANT_MESSAGES);
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Assistant unavailable.';
 		} finally {
 			busy = '';
 		}
+	}
+
+	function clearAssistantConversation() {
+		if (
+			assistantMessages.length &&
+			!confirm('Clear your saved Studio assistant conversation on this browser?')
+		)
+			return;
+		if (browser && assistantHistoryUserId != null) {
+			clearStudioAssistantHistory(window.localStorage, assistantHistoryUserId);
+		}
+		assistantMessages = [];
+		recommendation = null;
 	}
 
 	async function applyRecommendation() {
@@ -839,9 +883,15 @@
 					<p class="eyebrow">Local LLM · always thinking</p>
 					<h2>AI Mix Assistant</h2>
 				</div>
-				<button class="ghost" onclick={() => (assistantOpen = !assistantOpen)}
-					>{assistantOpen ? 'Collapse' : 'Open'}</button
-				>
+				<div class="assistant-header-actions">
+					{#if assistantMessages.length}<button
+							class="ghost"
+							disabled={busy === 'assistant'}
+							onclick={clearAssistantConversation}>Clear chat</button
+						>{/if}<button class="ghost" onclick={() => (assistantOpen = !assistantOpen)}
+						>{assistantOpen ? 'Collapse' : 'Open'}</button
+					>
+				</div>
 			</div>
 			{#if assistantOpen}
 				<div class="chat-log">
@@ -865,6 +915,7 @@
 					<textarea
 						bind:value={assistantInput}
 						maxlength="2000"
+						aria-label="Message AI Mix Assistant"
 						placeholder="Keep the first track, stay under 2:30, increase energy, and minimize BPM jumps…"
 					></textarea><button
 						class="primary"
@@ -1012,6 +1063,7 @@
 			</div>
 			<div class="timeline">
 				{#each activeMix.segments as item, index (item.id)}
+					{@const assistantTip = studioSegmentTip(item, activeMix.segments[index + 1])}
 					<article class="timeline-item">
 						<header>
 							<span>{index + 1}</span>
@@ -1046,6 +1098,16 @@
 								disabled={activeMix.status === 'published'}
 								onclick={() => removeItem(item)}>Remove</button
 							>
+						</div>
+						<div
+							class="segment-assistant-tip"
+							class:critical={assistantTip.tone === 'critical'}
+							class:warning={assistantTip.tone === 'warning'}
+							class:good={assistantTip.tone === 'good'}
+							role="note"
+						>
+							<span>Assistant tip · {assistantTip.title}</span>
+							<p>{assistantTip.message}</p>
 						</div>
 					</article>
 					{#if index < activeMix.segments.length - 1}<div class="transition-card">
@@ -1573,6 +1635,11 @@
 	.assistant-panel.collapsed {
 		align-self: start;
 	}
+	.assistant-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
 	.chat-log p {
 		display: grid;
 		gap: 4px;
@@ -1691,7 +1758,7 @@
 	}
 	.timeline-item {
 		display: grid;
-		min-width: 220px;
+		min-width: 250px;
 		gap: 10px;
 		padding: 13px;
 		border: 1px solid var(--seam);
@@ -1731,6 +1798,50 @@
 	}
 	.item-actions button {
 		padding: 6px 8px;
+	}
+	.segment-assistant-tip {
+		display: grid;
+		gap: 5px;
+		margin: 2px -13px -13px;
+		padding: 10px 13px;
+		border-top: 1px solid var(--seam);
+		border-radius: 0 0 10px 10px;
+		background: var(--well);
+	}
+	.segment-assistant-tip span {
+		color: var(--text-faint);
+		font-family: var(--font-mono);
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+	.segment-assistant-tip p {
+		margin: 0;
+		color: var(--text-dim);
+		font-size: 11px;
+		line-height: 1.45;
+	}
+	.segment-assistant-tip.good {
+		border-top-color: rgba(63, 230, 187, 0.35);
+		background: var(--cyan-dim);
+	}
+	.segment-assistant-tip.good span {
+		color: var(--cyan);
+	}
+	.segment-assistant-tip.warning {
+		border-top-color: rgba(255, 149, 72, 0.35);
+		background: var(--amber-dim);
+	}
+	.segment-assistant-tip.warning span {
+		color: var(--amber);
+	}
+	.segment-assistant-tip.critical {
+		border-top-color: rgba(255, 92, 119, 0.45);
+		background: rgba(255, 92, 119, 0.08);
+	}
+	.segment-assistant-tip.critical span {
+		color: #ff9aac;
 	}
 	.transition-card {
 		display: grid;

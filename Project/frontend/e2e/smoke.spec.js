@@ -40,7 +40,7 @@ const emptyIdentity = {
 /**
  * Mock the API boundary while exercising the production Svelte UI.
  * @param {import('@playwright/test').Page} page
- * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void, sessionStartResponse?: Record<string, any>, catalogBatchJobResponse?: Record<string, any>, catalogBatchStatusResponse?: Record<string, any> }} options
+ * @param {{ authenticated?: boolean, promptShortcuts?: { prompt: string, count: number }[], onRealtimeSocket?: (socket: import('@playwright/test').WebSocketRoute) => void, sessionStartResponse?: Record<string, any>, catalogBatchJobResponse?: Record<string, any>, catalogBatchStatusResponse?: Record<string, any>, studioMixesResponse?: Record<string, any>[], studioAssistantResponse?: Record<string, any>, onStudioAssistantRequest?: (body: Record<string, any>) => void }} options
  */
 async function mockApi(
 	page,
@@ -50,7 +50,10 @@ async function mockApi(
 		onRealtimeSocket,
 		sessionStartResponse,
 		catalogBatchJobResponse,
-		catalogBatchStatusResponse
+		catalogBatchStatusResponse,
+		studioMixesResponse,
+		studioAssistantResponse,
+		onStudioAssistantRequest
 	} = {}
 ) {
 	const unexpectedRequests = [];
@@ -68,6 +71,19 @@ async function mockApi(
 
 		if (path === '/api/sessions/start' && request.method() === 'POST' && sessionStartResponse) {
 			payload = sessionStartResponse;
+		} else if (
+			path === '/api/studio/assistant/chat' &&
+			request.method() === 'POST' &&
+			studioAssistantResponse
+		) {
+			onStudioAssistantRequest?.(request.postDataJSON());
+			payload = studioAssistantResponse;
+		} else if (path === '/api/studio/mixes' && request.method() === 'GET' && studioMixesResponse) {
+			payload = studioMixesResponse;
+		} else if (path === '/api/studio/segments' && studioMixesResponse) {
+			payload = [];
+		} else if (path === '/api/studio/tracks/search' && studioMixesResponse) {
+			payload = [];
 		} else if (
 			path === '/api/catalog/tracks/batch-jobs' &&
 			request.method() === 'POST' &&
@@ -213,6 +229,111 @@ test('authenticated library, Music Identity profile, and messages load their API
 	await page.getByRole('link', { name: 'Messages' }).click();
 	await expect(page.getByRole('heading', { name: 'Messages' })).toBeVisible();
 	await expect(page.getByText('No conversations yet')).toBeVisible();
+	expect(unexpectedRequests).toEqual([]);
+});
+
+test('Studio restores assistant history and shows grounded segment tips after refresh', async ({
+	page
+}) => {
+	const assistantRequests = [];
+	const studioMix = {
+		id: 17,
+		title: 'Course demo mix',
+		status: 'draft',
+		is_studio: true,
+		revision: 3,
+		render_status: 'not_rendered',
+		visibility: 'private',
+		segments: [
+			{
+				id: 101,
+				position: 1,
+				title: 'Fast opener',
+				artist: 'Test Artist',
+				source: 'catalog',
+				source_audio_url: '/api/catalog/tracks/1/audio',
+				source_start_ms: 0,
+				source_end_ms: 20_000,
+				bpm: 128,
+				transition_type: 'cut',
+				transition_duration_ms: 0,
+				compatibility_score: 35,
+				compatibility_factors_json: { tempo: 15, key: 80, energy: 60, phrase: 70 }
+			},
+			{
+				id: 102,
+				position: 2,
+				title: 'Slow closer',
+				artist: 'Test Artist',
+				source: 'catalog',
+				source_audio_url: '/api/catalog/tracks/2/audio',
+				source_start_ms: 0,
+				source_end_ms: 20_000,
+				bpm: 92,
+				transition_type: 'cut',
+				transition_duration_ms: 0,
+				compatibility_score: null,
+				compatibility_factors_json: null
+			}
+		]
+	};
+	const assistantResponse = {
+		available: true,
+		recommendation: {
+			recommendation_type: 'clarification',
+			base_revision: null,
+			remembered_constraints: ['keep the opener'],
+			proposed_order: null,
+			transition_changes: [],
+			segment_bound_change: null,
+			calculations: null,
+			warnings: [],
+			reason_tags: ['conversation_memory'],
+			explanation: 'I remember that constraint. What should I optimize next?',
+			confidence: 0.86,
+			requires_user_confirmation: true
+		}
+	};
+	const unexpectedRequests = await mockApi(page, {
+		authenticated: true,
+		studioMixesResponse: [studioMix],
+		studioAssistantResponse: assistantResponse,
+		onStudioAssistantRequest: (body) => assistantRequests.push(body)
+	});
+
+	await page.goto('/studio');
+	await expect(page.getByRole('heading', { name: 'CueMix Studio' })).toBeVisible();
+	await expect(page.getByText('Assistant tip · Low compatibility')).toBeVisible();
+	await expect(page.getByText(/Large tempo jump \(128 → 92 BPM\)/)).toBeVisible();
+
+	await page.getByLabel('Message AI Mix Assistant').fill('Keep the opener');
+	await page.getByRole('button', { name: 'Ask assistant' }).click();
+	await expect(
+		page.locator('.chat-log').getByText('I remember that constraint. What should I optimize next?')
+	).toBeVisible();
+	await expect
+		.poll(() =>
+			page.evaluate(() => localStorage.getItem('cuemix:studio-assistant-history:v1:user:1'))
+		)
+		.toContain('Keep the opener');
+
+	await page.reload();
+	await expect(page.locator('.chat-log').getByText('Keep the opener')).toBeVisible();
+	await expect(
+		page.locator('.chat-log').getByText('I remember that constraint. What should I optimize next?')
+	).toBeVisible();
+
+	await page.getByLabel('Message AI Mix Assistant').fill('Now minimize BPM jumps');
+	await page.getByRole('button', { name: 'Ask assistant' }).click();
+	await expect.poll(() => assistantRequests.length).toBe(2);
+	expect(assistantRequests[1].messages).toEqual([
+		{ role: 'user', content: 'Keep the opener' },
+		{
+			role: 'assistant',
+			content: 'I remember that constraint. What should I optimize next?'
+		},
+		{ role: 'user', content: 'Now minimize BPM jumps' }
+	]);
 	expect(unexpectedRequests).toEqual([]);
 });
 
