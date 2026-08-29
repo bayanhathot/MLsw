@@ -6,7 +6,6 @@
 	import MusicIdentityDashboard from '$lib/components/profile/MusicIdentityDashboard.svelte';
 	import {
 		getMyMusicIdentity,
-		getMyPreferences,
 		getMyProfile,
 		getPublicProfile,
 		updateMusicIdentityPrivacy,
@@ -20,9 +19,6 @@
 	let profile = $state(/** @type {Record<string, any> | null} */ (null));
 	let publicProfile = $state(/** @type {Record<string, any> | null} */ (null));
 	let identity = $state(/** @type {Record<string, any> | null} */ (null));
-	let preferences = $state(
-		/** @type {{ feedback: string, score: number, count: number }[]} */ ([])
-	);
 	let editing = $state(false);
 	let privacyBusy = $state(false);
 	let displayName = $state('');
@@ -48,16 +44,14 @@
 		loading = true;
 		error = '';
 		try {
-			const [profileResult, publicResult, identityResult, preferenceResult] = await Promise.all([
+			const [profileResult, publicResult, identityResult] = await Promise.all([
 				getMyProfile(),
 				getPublicProfile(username),
-				getMyMusicIdentity(),
-				getMyPreferences()
+				getMyMusicIdentity()
 			]);
 			profile = profileResult;
 			publicProfile = publicResult;
 			identity = identityResult;
-			preferences = Array.isArray(preferenceResult) ? preferenceResult : [];
 			displayName = String(profileResult.display_name || '');
 			avatarUrl = String(profileResult.avatar_url || '');
 			bio = String(profileResult.bio || '');
@@ -269,35 +263,6 @@
 					<div><strong>{publicProfile.stats.received_downvotes}</strong><span>Downvotes</span></div>
 				</div>
 			</section>
-
-			<section class="preferences-card">
-				<div class="card-title">
-					<div>
-						<p>Personalization memory</p>
-						<h2>Remembered DJ directions</h2>
-					</div>
-					<span>{preferences.length} signals</span>
-				</div>
-				{#if preferences.length}
-					<ul class="preferences">
-						{#each preferences.slice(0, 6) as preference (preference.feedback)}
-							<li>
-								<div>
-									<strong>{preference.feedback.replaceAll('_', ' ')}</strong><span
-										>Used {preference.count} times</span
-									>
-								</div>
-								<span class="strength">{preference.score}</span>
-							</li>
-						{/each}
-					</ul>
-				{:else}
-					<div class="small-empty">
-						<strong>No remembered directions yet</strong>
-						<p>Coach the DJ during a session to build preference signals.</p>
-					</div>
-				{/if}
-			</section>
 		</div>
 	{/if}
 </main>
@@ -359,8 +324,7 @@
 		color: var(--text-muted);
 	}
 	.settings-panel,
-	.community-card,
-	.preferences-card {
+	.community-card {
 		padding: 24px;
 		border: 1px solid rgba(125, 183, 255, 0.16);
 		border-radius: 24px;
@@ -441,7 +405,7 @@
 	}
 	.secondary-grid {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: 1fr;
 		gap: 18px;
 	}
 	.card-title > span {
@@ -471,69 +435,9 @@
 		color: #71839b;
 		font-size: 11px;
 	}
-	.preferences {
-		display: grid;
-		gap: 8px;
-		margin: 20px 0 0;
-		padding: 0;
-		list-style: none;
-	}
-	.preferences li {
-		display: flex;
-		justify-content: space-between;
-		gap: 12px;
-		align-items: center;
-		padding: 12px 13px;
-		border: 1px solid rgba(255, 255, 255, 0.055);
-		border-radius: 14px;
-		background: rgba(255, 255, 255, 0.018);
-		text-transform: capitalize;
-	}
-	.preferences li > div {
-		display: grid;
-		gap: 3px;
-	}
-	.preferences strong {
-		color: #dce9fa;
-		font-size: 13px;
-	}
-	.preferences li span {
-		color: #71839b;
-		font-size: 11px;
-	}
-	.strength {
-		display: grid;
-		width: 31px;
-		height: 31px;
-		place-items: center;
-		border: 1px solid rgba(125, 183, 255, 0.18);
-		border-radius: 10px;
-		background: rgba(125, 183, 255, 0.06);
-		color: #9fc8ff !important;
-		font-weight: 900;
-	}
-	.small-empty {
-		display: grid;
-		min-height: 160px;
-		place-content: center;
-		text-align: center;
-	}
-	.small-empty strong {
-		color: #dfeaff;
-	}
-	.small-empty p {
-		margin: 6px 0 0;
-		color: #788ba5;
-		font-size: 13px;
-	}
 	@keyframes spin {
 		to {
 			transform: rotate(360deg);
-		}
-	}
-	@media (max-width: 900px) {
-		.secondary-grid {
-			grid-template-columns: 1fr;
 		}
 	}
 	@media (max-width: 680px) {
