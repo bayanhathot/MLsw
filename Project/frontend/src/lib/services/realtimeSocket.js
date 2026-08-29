@@ -189,7 +189,7 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * Subscribe to a channel ("post:42", "feed:discussion", "conversation:7").
+ * Subscribe to a channel ("post:42", "feed:discussion", "conversation:7:19").
  * Safe to call before the socket is open -- the subscription is queued and
  * flushed on connect. `onResync` is optional and fires once after a
  * *re*connect (never the first connect) so the caller can refetch via REST

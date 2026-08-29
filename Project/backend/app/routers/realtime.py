@@ -17,7 +17,7 @@ from app.database.models.forum import ForumPost
 from app.database.models.user import User
 from app.routers.auth import ACCESS_TOKEN_COOKIE_NAME
 from app.services import forum_service, social_service
-from app.services.channel_hub import channel_hub
+from app.services.channel_hub import channel_hub, conversation_participants
 
 router = APIRouter(tags=["realtime"])
 
@@ -32,8 +32,9 @@ def _parse_channel_id(channel: str, prefix: str) -> int | None:
 def _authorize_subscribe(db: Session, channel: str, user_id: int) -> bool:
     """Same visibility/ownership rules as the equivalent REST GET endpoints:
     forum_service.can_view_post for "post:{id}" (see forum.py's
-    _visible_or_404), social_service.are_friends for "conversation:{id}"
-    (see messaging.py's /messages/{username}). "feed:{kind}" and
+    _visible_or_404), and exact two-participant membership plus friendship
+    for "conversation:{first_id}:{second_id}" (see messaging.py's
+    /messages/{username}). "feed:{kind}" and
     "user:{own_id}" need nothing beyond the connection already being
     authenticated. "admin_debug" (routers/admin_debug.py) uses the exact
     same access rule as that router's own REST endpoints -- any
@@ -57,10 +58,14 @@ def _authorize_subscribe(db: Session, channel: str, user_id: int) -> bool:
         post = db.query(ForumPost).filter(ForumPost.id == post_id).first()
         return post is not None and forum_service.can_view_post(db, post, user_id)
     if channel.startswith("conversation:"):
-        other_id = _parse_channel_id(channel, "conversation:")
-        if other_id is None:
+        participants = conversation_participants(channel)
+        if participants is None or user_id not in participants:
             return False
-        return social_service.are_friends(db, user_id, other_id)
+        other_id = participants[1] if participants[0] == user_id else participants[0]
+        return (
+            social_service.are_friends(db, user_id, other_id)
+            and not social_service.is_blocked_between(db, user_id, other_id)
+        )
     return False
 
 

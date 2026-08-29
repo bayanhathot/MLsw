@@ -8,7 +8,7 @@
 	import ForumPostCard from '$lib/components/ForumPostCard.svelte';
 	import UserCard from '$lib/components/UserCard.svelte';
 	import { createPost, getPosts, normalizePost } from '$lib/services/forumApi.js';
-	import { subscribe } from '$lib/services/realtimeSocket.js';
+	import { onUserEvent, subscribe } from '$lib/services/realtimeSocket.js';
 	import {
 		acceptFriendRequest,
 		cancelFriendRequest,
@@ -62,6 +62,8 @@
 	let refreshTimer = null;
 	/** @type {(() => void)[]} */
 	let feedUnsubscribers = [];
+	/** @type {(() => void) | null} */
+	let unsubscribePrivateFeed = null;
 	let initializedFor = $state('');
 
 	onMount(() => {
@@ -84,12 +86,14 @@
 			initializedFor = username;
 			void loadActive();
 			subscribeToFeed(activeTab);
+			subscribeToPrivateFeed();
 		}
 	});
 
 	onDestroy(() => {
 		if (refreshTimer) clearTimeout(refreshTimer);
 		unsubscribeFromFeed();
+		unsubscribeFromPrivateFeed();
 	});
 
 	/** "feed:{kind}" is keyed by ForumPost.kind (discussion/status/mix_share),
@@ -105,6 +109,31 @@
 	function unsubscribeFromFeed() {
 		for (const unsubscribe of feedUnsubscribers) unsubscribe();
 		feedUnsubscribers = [];
+	}
+
+	function scheduleFeedRefresh() {
+		if (refreshTimer) clearTimeout(refreshTimer);
+		refreshTimer = setTimeout(() => void loadActive(), 300);
+	}
+
+	function unsubscribeFromPrivateFeed() {
+		if (unsubscribePrivateFeed) {
+			unsubscribePrivateFeed();
+			unsubscribePrivateFeed = null;
+		}
+	}
+
+	/** Friends-only changes arrive only on each authorized user's private
+	 * channel and contain no post content. REST applies the current friendship
+	 * and blocking rules when this refresh runs. */
+	function subscribeToPrivateFeed() {
+		unsubscribeFromPrivateFeed();
+		unsubscribePrivateFeed = onUserEvent(
+			(type) => {
+				if (type === 'feed_changed') scheduleFeedRefresh();
+			},
+			{ onResync: () => void loadActive() }
+		);
 	}
 
 	/** @param {'friends'|'explore'|'discussions'|'people'} mode */
@@ -126,13 +155,9 @@
 	/** @param {unknown} raw @param {'friends'|'explore'|'discussions'} mode */
 	function handleLivePostCreated(raw, mode) {
 		if (mode === 'friends') {
-			// The payload alone doesn't say whether the author is a friend --
-			// "feed:{kind}" broadcasts every post of that kind to every
-			// authenticated subscriber (see routers/realtime.py), unfiltered
-			// by audience. A debounced refetch through the REST feed (which
-			// *does* apply that filter) is the safe way to pick this up.
-			if (refreshTimer) clearTimeout(refreshTimer);
-			refreshTimer = setTimeout(() => void loadActive(), 300);
+			// Public feed events still need the REST friendship filter in this
+			// mode; friends-only changes use the private handler above.
+			scheduleFeedRefresh();
 			return;
 		}
 		let post;

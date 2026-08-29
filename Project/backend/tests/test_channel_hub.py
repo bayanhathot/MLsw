@@ -12,7 +12,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from conftest import register_and_login
 
-from app.services.channel_hub import ChannelHub
+from app.routers.realtime import _authorize_subscribe
+from app.services.channel_hub import ChannelHub, conversation_channel
 
 
 class _FakeWebSocket:
@@ -135,13 +136,16 @@ def test_ws_channel_endpoint_rejects_unauthorized_post_and_conversation_subscrip
         json={"title": "Friends only", "body": "secret", "visibility": "friends"},
     ).json()
     alice_id = client.get("/auth/me").json()["id"]
+    bob_id = second_client.get("/auth/me").json()["id"]
 
     with second_client.websocket_connect("/ws") as socket:
         socket.send_json({"action": "subscribe", "channel": f"post:{post['id']}"})
         error = socket.receive_json()
         assert error["type"] == "error"
 
-        socket.send_json({"action": "subscribe", "channel": f"conversation:{alice_id}"})
+        socket.send_json(
+            {"action": "subscribe", "channel": conversation_channel(alice_id, bob_id)}
+        )
         error = socket.receive_json()
         assert error["type"] == "error"
 
@@ -151,3 +155,36 @@ def test_ws_channel_endpoint_rejects_unauthorized_post_and_conversation_subscrip
         socket.send_text("not json")
         error = socket.receive_json()
         assert error["type"] == "error"
+
+
+def test_conversation_channel_rejects_a_friend_who_is_not_a_participant(
+    client, second_client, third_client, db_session
+):
+    """Bob may be Alice's friend, but cannot subscribe to Alice and Carol's
+    private conversation."""
+
+    alice = register_and_login(client, "alice", "alice@example.com")
+    bob = register_and_login(second_client, "bob", "bob@example.com")
+    carol = register_and_login(third_client, "carol", "carol@example.com")
+
+    assert client.post("/friends/requests/bob").status_code == 201
+    bob_request = next(
+        item["id"]
+        for item in second_client.get("/friends/requests").json()
+        if item["sender_username"] == "alice"
+    )
+    assert second_client.post(f"/friends/requests/{bob_request}/accept").status_code == 200
+
+    assert client.post("/friends/requests/carol").status_code == 201
+    carol_request = next(
+        item["id"]
+        for item in third_client.get("/friends/requests").json()
+        if item["sender_username"] == "alice"
+    )
+    assert third_client.post(f"/friends/requests/{carol_request}/accept").status_code == 200
+
+    private_pair = conversation_channel(alice["id"], carol["id"])
+    assert _authorize_subscribe(db_session, private_pair, alice["id"]) is True
+    assert _authorize_subscribe(db_session, private_pair, carol["id"]) is True
+    assert _authorize_subscribe(db_session, private_pair, bob["id"]) is False
+    assert _authorize_subscribe(db_session, f"conversation:{alice['id']}", alice["id"]) is False

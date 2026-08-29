@@ -17,12 +17,12 @@ def _upload_audio(uploading_client, filename="clip.mp3"):
     return job["attachment"]
 
 
-def _make_friends(client, second_client):
-    request = client.post("/friends/requests/bob")
+def _make_friends(client, second_client, receiver_username="bob", sender_username="alice"):
+    request = client.post(f"/friends/requests/{receiver_username}")
     assert request.status_code == 201
     request_id = next(
         item["id"] for item in second_client.get("/friends/requests").json()
-        if item["sender_username"] == "alice"
+        if item["sender_username"] == sender_username
     )
     assert second_client.post(f"/friends/requests/{request_id}/accept").status_code == 200
 
@@ -299,13 +299,13 @@ def test_channel_hub_receives_typed_events_for_posts_and_comments(client, second
     assert data == {"comment_id": comment["id"]}
 
 
-def test_channel_hub_receives_message_created_on_both_conversation_channels(client, second_client, monkeypatch):
-    """"conversation:{id}" is keyed by the *other* participant's user id
-    (routers/realtime.py), so one DM must fan out as two channel_hub events
-    -- one per side's own view of the conversation -- plus the usual
-    "user:{recipient_id}" notification mirror."""
+def test_channel_hub_receives_message_created_on_exact_pair_channel(client, second_client, monkeypatch):
+    """A DM uses one channel containing both participant ids, plus the
+    recipient's private notification channel."""
 
     from unittest.mock import AsyncMock
+
+    from app.services.channel_hub import conversation_channel
 
     publish = AsyncMock()
     monkeypatch.setattr("app.routers.messaging.channel_hub.publish", publish)
@@ -319,7 +319,52 @@ def test_channel_hub_receives_message_created_on_both_conversation_channels(clie
 
     calls = {call.args[0]: call.args for call in publish.await_args_list}
     assert calls[f"user:{bob_id}"][1] == "notification"
-    assert calls[f"conversation:{bob_id}"][1] == "message_created"
-    assert calls[f"conversation:{bob_id}"][2]["body"] == "hi bob"
-    assert calls[f"conversation:{alice_id}"][1] == "message_created"
-    assert calls[f"conversation:{alice_id}"][2]["body"] == "hi bob"
+    pair_channel = conversation_channel(alice_id, bob_id)
+    assert calls[pair_channel][1] == "message_created"
+    assert calls[pair_channel][2]["body"] == "hi bob"
+    assert len([call for call in publish.await_args_list if call.args[1] == "message_created"]) == 1
+
+
+def test_friends_only_feed_events_never_reach_a_stranger_or_contain_post_data(
+    client, second_client, third_client, monkeypatch
+):
+    """Friends-only feed changes target only the author/current friends and
+    carry a REST-refresh signal instead of the post's private fields."""
+
+    from unittest.mock import AsyncMock
+
+    publish = AsyncMock()
+    monkeypatch.setattr("app.routers.forum.channel_hub.publish", publish)
+    alice = register_and_login(client, "alice", "alice@example.com")
+    bob = register_and_login(second_client, "bob", "bob@example.com")
+    carol = register_and_login(third_client, "carol", "carol@example.com")
+    _make_friends(client, second_client)
+    publish.reset_mock()
+
+    secret_title = "private title for accepted friends"
+    secret_body = "private body that must never enter a shared feed"
+    created = client.post(
+        "/posts",
+        json={
+            "title": secret_title,
+            "body": secret_body,
+            "kind": "discussion",
+            "visibility": "friends",
+        },
+    )
+    assert created.status_code == 201
+
+    calls = [call.args for call in publish.await_args_list]
+    assert {call[0] for call in calls} == {f"user:{alice['id']}", f"user:{bob['id']}"}
+    assert all(call[1:] == ("feed_changed", {"kind": "discussion"}) for call in calls)
+    assert all(call[0] != f"user:{carol['id']}" for call in calls)
+    assert all(not call[0].startswith("feed:") for call in calls)
+    assert secret_title not in repr(calls)
+    assert secret_body not in repr(calls)
+
+    publish.reset_mock()
+    assert client.delete(f"/posts/{created.json()['id']}").status_code == 204
+    feed_calls = [call.args for call in publish.await_args_list if call.args[1] == "feed_changed"]
+    assert {call[0] for call in feed_calls} == {f"user:{alice['id']}", f"user:{bob['id']}"}
+    assert all(call[2] == {"kind": "discussion"} for call in feed_calls)
+    assert all(call[0] != f"user:{carol['id']}" for call in feed_calls)

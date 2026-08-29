@@ -15,7 +15,7 @@ from app.routers.auth import get_current_user
 from app.schemas import AttachmentRead, ConversationRead, MessageCreate, MessageRead, NotificationRead
 from app.services import forum_service, social_service
 from app.services.auth_service import get_user_by_username
-from app.services.channel_hub import channel_hub
+from app.services.channel_hub import channel_hub, conversation_channel
 
 router = APIRouter(tags=["messaging"])
 
@@ -121,13 +121,15 @@ async def send_message(
             "direct_message": message_read.model_dump(mode="json"),
         }
         await channel_hub.publish(f"user:{recipient.id}", "notification", notification_payload)
-    # "conversation:{id}" is keyed by the *other* participant's user id (see
-    # routers/realtime.py's subscribe authorization), so the same DM is one
-    # event on two differently-named channels -- one per side's own view of
-    # this conversation.
+    # One canonical channel names both participants. Authorization therefore
+    # requires membership in this exact pair; being friends with either user
+    # is no longer enough to observe their other conversations.
     message_payload = message_read.model_dump(mode="json")
-    await channel_hub.publish(f"conversation:{recipient.id}", "message_created", message_payload)
-    await channel_hub.publish(f"conversation:{current_user.id}", "message_created", message_payload)
+    await channel_hub.publish(
+        conversation_channel(current_user.id, recipient.id),
+        "message_created",
+        message_payload,
+    )
     return message_read
 
 

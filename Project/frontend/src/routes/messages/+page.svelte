@@ -121,14 +121,24 @@
 		}
 	}
 
-	/** "conversation:{id}" is keyed by the *other* participant's user id
-	 * (see routers/realtime.py), so this only ever targets the thread
-	 * currently open on screen. */
+	/** The canonical channel contains both participant ids in ascending order,
+	 * so it can only represent this exact conversation. */
 	function subscribeToConversation() {
 		unsubscribeFromConversation();
-		if (otherUserId == null) return;
+		const myId = Number($authStore.user?.id);
+		const otherId = Number(otherUserId);
+		if (
+			!Number.isInteger(myId) ||
+			!Number.isInteger(otherId) ||
+			myId <= 0 ||
+			otherId <= 0 ||
+			myId === otherId
+		) {
+			return;
+		}
+		const [firstId, secondId] = [myId, otherId].sort((a, b) => a - b);
 		unsubscribeConversation = subscribe(
-			`conversation:${otherUserId}`,
+			`conversation:${firstId}:${secondId}`,
 			(type, data) => {
 				if (type !== 'message_created') return;
 				try {

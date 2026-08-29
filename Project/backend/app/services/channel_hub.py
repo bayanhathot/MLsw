@@ -2,8 +2,10 @@
 
 The sole real-time system for forum/messaging/social/mixes events. Every
 connection is auto-subscribed to "user:{their_id}" on connect, plus zero or
-more explicit channels ("post:42", "feed:discussions", "conversation:7")
-added via .subscribe().
+more explicit channels ("post:42", "feed:discussions",
+"conversation:7:19") added via .subscribe(). Conversation channels contain
+both participant ids in ascending order so they cannot be mistaken for every
+conversation involving one user.
 
 Redis is the single source of truth for delivery, even within one process:
 publish() only writes to one fixed Redis channel; a single background task
@@ -28,6 +30,30 @@ _REDIS_CHANNEL = "cuemix:channel_hub"
 # See stop_listener()'s own comment: bounds how long app shutdown will ever
 # wait on the listener task's cleanup before giving up on it.
 _LISTENER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+
+def conversation_channel(user_id: int, other_id: int) -> str:
+    """Return the one canonical channel shared by exactly two users."""
+
+    first, second = sorted((user_id, other_id))
+    if first <= 0 or first == second:
+        raise ValueError("A conversation needs two distinct positive user ids.")
+    return f"conversation:{first}:{second}"
+
+
+def conversation_participants(channel: str) -> tuple[int, int] | None:
+    """Parse a canonical conversation channel, rejecting legacy/forged names."""
+
+    parts = channel.split(":")
+    if len(parts) != 3 or parts[0] != "conversation":
+        return None
+    try:
+        first, second = int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if first <= 0 or first >= second:
+        return None
+    return first, second
 
 
 def sync_publish(channel: str, event_type: str, data: dict) -> None:

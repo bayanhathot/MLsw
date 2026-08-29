@@ -1,5 +1,7 @@
 """Music-first community posts with a dedicated discussion mode."""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -15,6 +17,31 @@ from app.services import forum_service, social_service
 from app.services.channel_hub import channel_hub
 
 router = APIRouter(prefix="/posts", tags=["community"])
+
+
+async def _publish_created_post(db: Session, post: ForumPost, public_payload: dict) -> None:
+    """Publish a new post without exposing friends-only post data.
+
+    Public posts can safely use the shared kind feed. Friends-only posts use
+    each authorized user's private channel and carry only an invalidation;
+    the client then reloads through the permission-checked REST feed.
+    """
+
+    if post.visibility == "public":
+        await channel_hub.publish(f"feed:{post.kind}", "post_created", public_payload)
+        return
+
+    audience = social_service.friend_ids(db, post.author_id) | {post.author_id}
+    await asyncio.gather(
+        *(
+            channel_hub.publish(
+                f"user:{user_id}",
+                "feed_changed",
+                {"kind": post.kind},
+            )
+            for user_id in sorted(audience)
+        )
+    )
 
 
 def _visible_or_404(db: Session, post_id: int, viewer_id: int | None) -> ForumPost:
@@ -61,7 +88,7 @@ async def create_post(
     db.commit()
     db.refresh(post)
     result = forum_service.build_post(db, post, current_user.id)
-    await channel_hub.publish(f"feed:{post.kind}", "post_created", result.model_dump(mode="json"))
+    await _publish_created_post(db, post, result.model_dump(mode="json"))
     return result
 
 
@@ -107,13 +134,23 @@ async def delete_post(post_id: int, _: None = Depends(write_rate_limit), current
     if post.author_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the author can delete this post.")
     kind = post.kind  # capture before delete -- the object is gone after db.commit()
+    visibility = post.visibility
+    audience = social_service.friend_ids(db, post.author_id) | {post.author_id}
     media_paths = forum_service.attachment_paths(db, "post", post.id)
     for comment in db.query(ForumComment).filter_by(post_id=post.id).all():
         media_paths.extend(forum_service.attachment_paths(db, "comment", comment.id))
     db.delete(post)
     db.commit()
     forum_service.delete_files(media_paths)
-    await channel_hub.publish(f"feed:{kind}", "post_deleted", {"post_id": post_id})
+    if visibility == "public":
+        await channel_hub.publish(f"feed:{kind}", "post_deleted", {"post_id": post_id})
+    else:
+        await asyncio.gather(
+            *(
+                channel_hub.publish(f"user:{user_id}", "feed_changed", {"kind": kind})
+                for user_id in sorted(audience)
+            )
+        )
     await channel_hub.publish(f"post:{post_id}", "post_deleted", {"post_id": post_id})
 
 
