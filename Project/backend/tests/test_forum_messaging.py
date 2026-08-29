@@ -70,6 +70,7 @@ def test_public_anonymous_post_comment_votes_and_profile_stats(client, second_cl
     assert client.post(f"/posts/comments/{comment['id']}/vote", json={"value": 1}).json()["score"] == 1
     stats = client.get("/users/alice/stats").json()
     assert stats["post_count"] == 1
+    assert stats["comment_count"] == 1
     assert stats["received_downvotes"] == 1
 
 
@@ -145,6 +146,32 @@ def test_profile_partial_updates(client):
     assert profile["display_name"] == "Alice"
     assert profile["favorite_genres"] == ["house", "lofi"]
     assert profile["bio"] == "music fan"
+
+
+def test_profile_rejects_invalid_music_interests_without_changing_saved_profile(client):
+    register_and_login(client)
+    saved = client.patch(
+        "/users/me/profile", json={"favorite_genres": ["House", "Jazz"]}
+    )
+    assert saved.status_code == 200
+    assert saved.json()["favorite_genres"] == ["house", "jazz"]
+
+    invalid_lists = [
+        [f"genre-{index}" for index in range(21)],
+        ["House", "house"],
+        ["House", "   "],
+        ["x" * 41],
+    ]
+    for favorite_genres in invalid_lists:
+        response = client.patch(
+            "/users/me/profile", json={"favorite_genres": favorite_genres}
+        )
+        assert response.status_code == 422
+
+    assert client.get("/users/me/profile").json()["favorite_genres"] == [
+        "house",
+        "jazz",
+    ]
 
 
 def test_friends_only_post_attachment_is_hidden_from_non_friends(client, second_client, third_client):
@@ -262,8 +289,9 @@ def test_channel_hub_receives_typed_events_for_posts_and_comments(client, second
     post = client.post("/posts", json={"title": "Hello", "body": "world", "kind": "discussion"}).json()
     channel, event_type, data = publish.await_args.args
     assert channel == "feed:discussion"
-    assert event_type == "post_created"
-    assert data["id"] == post["id"]
+    assert event_type == "feed_changed"
+    assert data == {"kind": "discussion"}
+    assert post["title"] not in repr(data)
 
     publish.reset_mock()
     voted = second_client.post(f"/posts/{post['id']}/vote", json={"value": 1}).json()
@@ -277,8 +305,12 @@ def test_channel_hub_receives_typed_events_for_posts_and_comments(client, second
     ).json()
     calls = {call.args[0]: call.args for call in publish.await_args_list}
     assert calls[f"user:{post['author_id']}"][1] == "notification"
-    assert calls[f"post:{post['id']}"][1] == "comment_created"
-    assert calls[f"post:{post['id']}"][2]["id"] == comment["id"]
+    assert calls[f"post:{post['id']}"] == (
+        f"post:{post['id']}",
+        "comments_changed",
+        {"post_id": post["id"]},
+    )
+    assert comment["body"] not in repr(calls[f"post:{post['id']}"])
 
     publish.reset_mock()
     comment_vote = client.post(f"/posts/comments/{comment['id']}/vote", json={"value": 1}).json()
@@ -295,8 +327,8 @@ def test_channel_hub_receives_typed_events_for_posts_and_comments(client, second
     assert second_client.delete(f"/posts/{post['id']}/comments/{comment['id']}").status_code == 204
     channel, event_type, data = publish.await_args.args
     assert channel == f"post:{post['id']}"
-    assert event_type == "comment_deleted"
-    assert data == {"comment_id": comment["id"]}
+    assert event_type == "comments_changed"
+    assert data == {"post_id": post["id"]}
 
 
 def test_channel_hub_receives_message_created_on_exact_pair_channel(client, second_client, monkeypatch):

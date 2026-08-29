@@ -19,16 +19,21 @@ from app.services.channel_hub import channel_hub
 router = APIRouter(prefix="/posts", tags=["community"])
 
 
-async def _publish_created_post(db: Session, post: ForumPost, public_payload: dict) -> None:
-    """Publish a new post without exposing friends-only post data.
+async def _publish_created_post(db: Session, post: ForumPost) -> None:
+    """Publish a new-post invalidation without exposing viewer-specific data.
 
-    Public posts can safely use the shared kind feed. Friends-only posts use
-    each authorized user's private channel and carry only an invalidation;
-    the client then reloads through the permission-checked REST feed.
+    PostRead contains viewer-specific fields such as ``can_delete`` and is
+    built for the author at creation time. Broadcasting that object on a
+    shared feed made every connected viewer briefly see the author's delete
+    controls and also bypassed per-viewer block filtering. Both public and
+    friends-only posts therefore carry only an invalidation; clients reload
+    through the permission-checked REST feed.
     """
 
     if post.visibility == "public":
-        await channel_hub.publish(f"feed:{post.kind}", "post_created", public_payload)
+        await channel_hub.publish(
+            f"feed:{post.kind}", "feed_changed", {"kind": post.kind}
+        )
         return
 
     audience = social_service.friend_ids(db, post.author_id) | {post.author_id}
@@ -88,7 +93,7 @@ async def create_post(
     db.commit()
     db.refresh(post)
     result = forum_service.build_post(db, post, current_user.id)
-    await _publish_created_post(db, post, result.model_dump(mode="json"))
+    await _publish_created_post(db, post)
     return result
 
 
@@ -222,6 +227,10 @@ async def create_comment(
         parent = forum_service.comment_or_404(db, request.parent_comment_id)
         if parent.post_id != post.id:
             raise HTTPException(status_code=422, detail="Reply must target a comment on the same post.")
+        if social_service.is_blocked_between(db, current_user.id, parent.author_id):
+            # A blocked comment is absent from the REST thread. Do not leave a
+            # direct-ID reply path that can target it anyway.
+            raise HTTPException(status_code=404, detail="Comment not found.")
         if parent.parent_comment_id is not None:
             raise HTTPException(status_code=422, detail="Replies can only be one level deep.")
     comment = ForumComment(
@@ -250,7 +259,13 @@ async def create_comment(
     if reply_notification:
         reply_payload = NotificationRead.model_validate(reply_notification).model_dump(mode="json")
         await channel_hub.publish(f"user:{parent.author_id}", "notification", reply_payload)
-    await channel_hub.publish(f"post:{post.id}", "comment_created", result.model_dump(mode="json"))
+    # CommentRead is viewer-specific (notably can_delete) and the shared post
+    # channel may include listeners who have blocked this comment's author.
+    # Send only an invalidation and let every listener reload through the
+    # permission-checked REST endpoints.
+    await channel_hub.publish(
+        f"post:{post.id}", "comments_changed", {"post_id": post.id}
+    )
     return result
 
 
@@ -268,13 +283,12 @@ async def delete_comment(post_id: int, comment_id: int, _: None = Depends(write_
     media_paths = forum_service.attachment_paths(db, "comment", comment.id)
     for reply in replies:
         media_paths.extend(forum_service.attachment_paths(db, "comment", reply.id))
-    reply_ids = [reply.id for reply in replies]
     db.delete(comment)
     db.commit()
     forum_service.delete_files(media_paths)
-    await channel_hub.publish(f"post:{post_id}", "comment_deleted", {"comment_id": comment_id})
-    for reply_id in reply_ids:
-        await channel_hub.publish(f"post:{post_id}", "comment_deleted", {"comment_id": reply_id})
+    await channel_hub.publish(
+        f"post:{post_id}", "comments_changed", {"post_id": post_id}
+    )
 
 
 def _visible_comment_or_404(db: Session, comment_id: int, viewer_id: int) -> ForumComment:

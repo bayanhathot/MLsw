@@ -6,6 +6,7 @@
 
 	import AttachmentMedia from '$lib/components/AttachmentMedia.svelte';
 	import AttachmentUploader from '$lib/components/AttachmentUploader.svelte';
+	import { reconcileConversationMessage } from '$lib/services/communityState.js';
 	import {
 		getConversation,
 		getConversations,
@@ -77,7 +78,15 @@
 				try {
 					const notification = normalizeNotification(data);
 					const incoming = notification.direct_message;
-					if (incoming) applyIncomingMessage(incoming);
+					if (incoming) {
+						const activeIncoming =
+							incoming.recipient_username === $authStore.user?.username &&
+							incoming.sender_username === activeUsername;
+						applyIncomingMessage(incoming);
+						// Reading an already-open thread must update durable read_at,
+						// not just hide its local badge.
+						if (activeIncoming) void refreshActiveThread();
+					}
 				} catch {
 					// Best-effort realtime/indicator behavior; REST state remains authoritative.
 				}
@@ -88,22 +97,15 @@
 
 	/** @param {import('$lib/types.js').DirectMessage} incoming */
 	function applyIncomingMessage(incoming) {
-		if (incoming.sender_username === activeUsername) {
-			if (!messages.some((item) => item.id === incoming.id)) messages = [...messages, incoming];
-			return;
-		}
-		const existing = conversations.find((item) => item.username === incoming.sender_username);
-		conversations = [
-			{
-				username: incoming.sender_username,
-				displayName: existing?.displayName || incoming.sender_username,
-				avatarUrl: existing?.avatarUrl || null,
-				lastMessage: incoming.body,
-				lastMessageAt: incoming.created_at,
-				unreadCount: (existing?.unreadCount || 0) + 1
-			},
-			...conversations.filter((item) => item.username !== incoming.sender_username)
-		];
+		const reconciled = reconcileConversationMessage(
+			conversations,
+			messages,
+			incoming,
+			$authStore.user?.username || '',
+			activeUsername
+		);
+		conversations = reconciled.conversations;
+		messages = reconciled.messages;
 	}
 
 	async function refreshConversationList() {
@@ -155,8 +157,15 @@
 		if (!activeUsername) return;
 		try {
 			messages = await getConversation(activeUsername);
+			notifyConversationRead();
 		} catch {
 			// Best-effort realtime resync; REST state remains authoritative.
+		}
+	}
+
+	function notifyConversationRead() {
+		if (typeof window !== 'undefined') {
+			window.dispatchEvent(new Event('cuemix:conversation-read'));
 		}
 	}
 
@@ -185,6 +194,7 @@
 		error = '';
 		try {
 			messages = await getConversation(username);
+			notifyConversationRead();
 			conversations = conversations.map((item) =>
 				item.username === username ? { ...item, unreadCount: 0 } : item
 			);

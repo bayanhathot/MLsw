@@ -7,6 +7,7 @@
 	import AttachmentUploader from '$lib/components/AttachmentUploader.svelte';
 	import ForumPostCard from '$lib/components/ForumPostCard.svelte';
 	import UserCard from '$lib/components/UserCard.svelte';
+	import { reconcileById } from '$lib/services/communityState.js';
 	import { createPost, getPosts, normalizePost } from '$lib/services/forumApi.js';
 	import { onUserEvent, subscribe } from '$lib/services/realtimeSocket.js';
 	import {
@@ -146,6 +147,7 @@
 				(type, data) => {
 					if (type === 'post_created') handleLivePostCreated(data, mode);
 					else if (type === 'post_deleted') handleLivePostDeleted(data);
+					else if (type === 'feed_changed') scheduleFeedRefresh();
 				},
 				{ onResync: () => void loadActive() }
 			)
@@ -252,7 +254,7 @@
 				visibility: activeTab === 'friends' ? 'friends' : visibility,
 				attachmentIds: attachments.map((item) => Number(item.id))
 			});
-			posts = [post, ...posts];
+			posts = reconcileById(posts, post, 'start').items;
 			body = '';
 			title = '';
 			anonymous = false;

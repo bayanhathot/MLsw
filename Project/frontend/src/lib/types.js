@@ -321,7 +321,7 @@
  * @property {number} received_upvotes
  * @property {number} received_downvotes
  * @property {number} post_count
- * @property {number} comment_count
+ * @property {number} comment_count Comments from other users on this user's posts.
  */
 
 /**

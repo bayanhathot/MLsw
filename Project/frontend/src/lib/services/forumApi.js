@@ -89,6 +89,11 @@ export async function getPosts({ limit = 10, offset = 0, mode = 'explore', signa
 	return response.map(normalizePost);
 }
 
+/** @param {number} postId @param {{ signal?: AbortSignal }} [options] */
+export async function getPost(postId, { signal } = {}) {
+	return normalizePost(await apiRequest(`/posts/${postId}`, { signal }));
+}
+
 /** @param {number} postId */
 export function deletePost(postId) {
 	return apiRequest(`/posts/${postId}`, { method: 'DELETE' });

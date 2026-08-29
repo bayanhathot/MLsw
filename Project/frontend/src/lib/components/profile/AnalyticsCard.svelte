@@ -1,9 +1,22 @@
 <script>
-	/** @type {{ label: string, value: string, detail?: string, icon?: string, accent?: string, tooltip?: string }} */
-	let { label, value, detail = '', icon = '◌', accent = 'blue', tooltip = '' } = $props();
+	/** @type {{ label: string, value: string, detail?: string, icon?: string, accent?: string, tooltip?: string, testId?: string }} */
+	let {
+		label,
+		value,
+		detail = '',
+		icon = '◌',
+		accent = 'blue',
+		tooltip = '',
+		testId = ''
+	} = $props();
 </script>
 
-<article class="metric-card" class:violet={accent === 'violet'} class:cyan={accent === 'cyan'}>
+<article
+	class="metric-card"
+	class:violet={accent === 'violet'}
+	class:cyan={accent === 'cyan'}
+	data-testid={testId || undefined}
+>
 	<div class="metric-top">
 		<span class="metric-icon" aria-hidden="true">{icon}</span>
 		<span class="metric-label">{label}</span>

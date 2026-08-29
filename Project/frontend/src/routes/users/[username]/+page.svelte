@@ -46,6 +46,16 @@
 	/** @type {Record<string, string>} */
 	let mixBusy = $state({});
 
+	/** @param {number} seconds */
+	function duration(seconds) {
+		const safe = Math.max(0, Number(seconds || 0));
+		const hours = Math.floor(safe / 3600);
+		const minutes = Math.floor((safe % 3600) / 60);
+		if (hours) return `${hours.toLocaleString()}h ${minutes}m`;
+		if (minutes) return `${minutes}m`;
+		return `${Math.floor(safe)}s`;
+	}
+
 	$effect(() => {
 		if (username && username !== trackedUsername) {
 			trackedUsername = username;
@@ -252,12 +262,19 @@
 		<section class="social-bar">
 			<div class="counts">
 				<button type="button" onclick={() => (activeTab = 'friends')}
-					><strong>{profile.friend_count || 0}</strong><span>Friends</span></button
+					><strong data-testid="public-profile-friends-summary">{profile.friend_count || 0}</strong
+					><span>Friends</span></button
 				><button type="button" onclick={() => (activeTab = 'mixes')}
-					><strong>{profile.published_mix_count || 0}</strong><span>Mixes</span></button
+					><strong data-testid="public-profile-mixes-summary"
+						>{profile.published_mix_count || 0}</strong
+					><span>Mixes</span></button
 				><button type="button" onclick={() => (activeTab = 'activity')}
-					><strong>{profile.stats.post_count || 0}</strong><span>Posts</span></button
-				>{#if profile.mutual_friend_count}<span class="mutual"
+					><strong data-testid="public-profile-posts-summary"
+						>{profile.stats.post_count || 0}</strong
+					><span>Posts</span></button
+				>{#if profile.mutual_friend_count}<span
+						class="mutual"
+						data-testid="public-profile-mutual-friends"
 						>{profile.mutual_friend_count} mutual friends</span
 					>{/if}
 			</div>
@@ -320,25 +337,25 @@
 					</h2>
 					{#if publicIdentity?.is_public && publicIdentity.music_identity}<div class="snapshot">
 							<div>
-								<span>Top artist</span><strong
+								<span>Top artist</span><strong data-testid="public-profile-top-artist"
 									>{publicIdentity.music_identity.summary.top_artist?.name || '—'}</strong
 								>
 							</div>
 							<div>
-								<span>Top genre</span><strong
+								<span>Top genre</span><strong data-testid="public-profile-top-genre"
 									>{publicIdentity.music_identity.summary.top_genre?.name || '—'}</strong
 								>
 							</div>
 							<div>
-								<span>Top vibe</span><strong
+								<span>Top vibe</span><strong data-testid="public-profile-top-vibe"
 									>{publicIdentity.music_identity.summary.top_vibe?.name || '—'}</strong
 								>
 							</div>
 							<div>
-								<span>Listening</span><strong
-									>{Math.floor(
-										(publicIdentity.music_identity.summary.total_listening_seconds || 0) / 3600
-									)}h</strong
+								<span>Listening</span><strong data-testid="public-profile-total-listening"
+									>{duration(
+										publicIdentity.music_identity.summary.total_listening_seconds || 0
+									)}</strong
 								>
 							</div>
 						</div>
@@ -414,10 +431,25 @@
 					<p class="eyebrow">Community</p>
 					<h2>Activity</h2>
 					<div class="stats-grid">
-						<div><strong>{profile.stats.post_count}</strong><span>Posts</span></div>
-						<div><strong>{profile.stats.comment_count}</strong><span>Comments</span></div>
-						<div><strong>{profile.stats.received_upvotes}</strong><span>Positive votes</span></div>
-						<div><strong>{profile.stats.received_downvotes}</strong><span>Downvotes</span></div>
+						<div>
+							<strong data-testid="public-profile-posts-count">{profile.stats.post_count}</strong
+							><span>Posts</span>
+						</div>
+						<div>
+							<strong data-testid="public-profile-comments-count"
+								>{profile.stats.comment_count}</strong
+							><span>Comments received</span>
+						</div>
+						<div>
+							<strong data-testid="public-profile-upvotes-count"
+								>{profile.stats.received_upvotes}</strong
+							><span>Positive votes</span>
+						</div>
+						<div>
+							<strong data-testid="public-profile-downvotes-count"
+								>{profile.stats.received_downvotes}</strong
+							><span>Downvotes</span>
+						</div>
 					</div>
 					<a class="text-link" href={resolve('/community')}>Open Community →</a>
 				</section>

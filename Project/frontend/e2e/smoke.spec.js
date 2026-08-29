@@ -194,6 +194,10 @@ test('guest users are redirected away from protected routes', async ({ page }) =
 	await page.goto('/upload');
 	await expect(page).toHaveURL(/\/login$/);
 	await expect(page.getByRole('heading', { name: 'Sign in.' })).toBeVisible();
+
+	await page.goto('/profile');
+	await expect(page).toHaveURL(/\/login$/);
+	await expect(page.getByRole('heading', { name: 'Sign in.' })).toBeVisible();
 	expect(unexpectedRequests).toEqual([]);
 });
 

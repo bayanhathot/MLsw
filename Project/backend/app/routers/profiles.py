@@ -134,7 +134,7 @@ def public_profile(
         "bio": profile.bio if profile else None,
         "favorite_genres": profile.favorite_genres if profile else None,
         "member_since": user.created_at,
-        "stats": profile_service.engagement_stats(db, user.id),
+        "stats": profile_service.engagement_stats(db, user.id, viewer_id),
         "music_identity_public": visibility == "public",
         "music_identity_visibility": visibility,
         "friend_count": len(social_service.friend_ids(db, user.id)),
@@ -200,6 +200,13 @@ def public_user_mixes(
 
 
 @router.get("/{username}/stats", response_model=ProfileStatsRead)
-def profile_stats(username: str, db: Session = Depends(get_db)):
+def profile_stats(
+    username: str,
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
     user = _user_or_404(db, username)
-    return profile_service.engagement_stats(db, user.id)
+    viewer_id = current_user.id if current_user else None
+    if viewer_id is not None and social_service.has_block(db, user.id, viewer_id):
+        raise HTTPException(status_code=404, detail="Profile not found.")
+    return profile_service.engagement_stats(db, user.id, viewer_id)

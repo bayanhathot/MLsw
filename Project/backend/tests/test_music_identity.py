@@ -91,6 +91,19 @@ def test_new_user_music_identity_is_private_by_default(client, db_session):
     assert body["listening_dna"]["status"] == "not_generated"
 
 
+def test_music_identity_accepts_only_supported_analytics_periods(client):
+    register_and_login(client)
+
+    for period in ("7d", "30d", "6m", "all"):
+        response = client.get(f"/users/me/music-identity?period={period}")
+        assert response.status_code == 200
+        assert response.json()["period"] == period
+
+    for period in ("today", "year", "", "7D"):
+        response = client.get(f"/users/me/music-identity?period={period}")
+        assert response.status_code == 422
+
+
 def test_listening_event_is_server_resolved_idempotent_and_aggregated(
     client, db_session
 ):

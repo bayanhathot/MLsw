@@ -1,7 +1,7 @@
 <script>
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
 	import cuemixLogo from '../../assets/cuemix-logo.svg';
 	import {
@@ -43,6 +43,16 @@
 	});
 
 	onDestroy(disconnectUserEvents);
+
+	// The messages route marks a thread read through GET /messages/{username}.
+	// Refresh this layout-owned badge after that request completes; otherwise
+	// the inbox row clears while the global envelope badge stays stale until a
+	// full reload.
+	onMount(() => {
+		const handleConversationRead = () => void loadSocialIndicators();
+		window.addEventListener('cuemix:conversation-read', handleConversationRead);
+		return () => window.removeEventListener('cuemix:conversation-read', handleConversationRead);
+	});
 
 	/** @param {string} path */
 	function isCurrent(path) {

@@ -31,6 +31,7 @@
 			<button
 				type="button"
 				class:active={visibility === item[0]}
+				aria-pressed={visibility === item[0]}
 				disabled={busy}
 				onclick={() => onToggle(item[0])}>{item[1]}</button
 			>

@@ -307,7 +307,7 @@ jobs:
   # a nightly schedule (or a pre-deploy manual gate) rather than every push
   # is the natural next step -- flagged here, not decided unilaterally.
   realtime-e2e:
-    name: Real-time delivery E2E (real backend, 2 browsers)
+    name: Real backend browser E2E
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >-
@@ -467,11 +467,14 @@ jobs:
           npx playwright install-deps chromium
           npx playwright install chromium
 
-      - name: Run real-time delivery E2E tests
+      - name: Run real backend browser E2E tests
         working-directory: Project/frontend
         env:
           PLAYWRIGHT_BACKEND_URL: http://127.0.0.1:5000
-        run: npx playwright test e2e/realtime-integration.spec.js
+        run: >-
+          npx playwright test
+          e2e/realtime-integration.spec.js
+          e2e/profile-integration.spec.js
 
       - name: Show backend log on failure
         if: failure()

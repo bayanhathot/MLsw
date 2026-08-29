@@ -2,8 +2,6 @@
 	import AnalyticsCard from './AnalyticsCard.svelte';
 	import ArtistBreakdown from './ArtistBreakdown.svelte';
 	import GenreDistribution from './GenreDistribution.svelte';
-	import ListeningTrend from './ListeningTrend.svelte';
-	import ListeningDNA from './ListeningDNA.svelte';
 	import VibePatterns from './VibePatterns.svelte';
 	import PrivacyToggle from './PrivacyToggle.svelte';
 	import { formatUtcDate } from '$lib/utils/dates.js';
@@ -76,6 +74,7 @@
 		<div class="periods">
 			{#each periodOptions as option (option[0])}<button
 					class:active={(identity?.period || 'all') === option[0]}
+					aria-pressed={(identity?.period || 'all') === option[0]}
 					disabled={periodBusy}
 					type="button"
 					onclick={() => onPeriodChange(option[0])}>{option[1]}</button
@@ -86,12 +85,14 @@
 	<div class="metrics-grid">
 		<AnalyticsCard
 			label="Top artist"
+			testId="profile-top-artist"
 			value={identity?.summary?.top_artist?.name || 'Not enough data'}
 			detail={metricDetail(identity?.summary?.top_artist, 'Listen to reveal your leader.')}
 			icon="♫"
 		/>
 		<AnalyticsCard
 			label="Total listening"
+			testId="profile-total-listening"
 			value={hasData ? duration(totalSeconds) : '0m'}
 			detail={hasData
 				? 'Actual playback time recorded by Cuemix'
@@ -101,6 +102,7 @@
 		/>
 		<AnalyticsCard
 			label="Top genre"
+			testId="profile-top-genre"
 			value={identity?.summary?.top_genre?.name || 'Not enough data'}
 			detail={identity?.summary?.top_genre
 				? `${identity.summary.top_genre.percentage}% of tagged listening`
@@ -110,6 +112,7 @@
 		/>
 		<AnalyticsCard
 			label="Top vibe"
+			testId="profile-top-vibe"
 			value={identity?.summary?.top_vibe?.name || 'Still forming'}
 			detail={identity?.summary?.top_vibe
 				? `${identity.summary.top_vibe.percentage}% of classified listening`
@@ -128,6 +131,7 @@
 	<div class="metrics-grid segment-metrics">
 		<AnalyticsCard
 			label="Most-replayed segment"
+			testId="profile-most-replayed-segment"
 			value={mostReplayedSegment?.title || 'No replays yet'}
 			detail={mostReplayedSegment
 				? `${mostReplayedSegment.artist} · ${mostReplayedSegment.replay_count} replay${mostReplayedSegment.replay_count === 1 ? '' : 's'} across ${mostReplayedSegment.play_count} plays`
@@ -137,6 +141,7 @@
 		/>
 		<AnalyticsCard
 			label="Average segment length"
+			testId="profile-average-segment-length"
 			value={segmentAnalytics?.average_segment_length_seconds == null
 				? 'No segments yet'
 				: duration(segmentAnalytics.average_segment_length_seconds)}
@@ -149,6 +154,7 @@
 		/>
 		<AnalyticsCard
 			label="Time saved vs full songs"
+			testId="profile-time-saved"
 			value={duration(segmentAnalytics?.time_saved_seconds || 0)}
 			detail={segmentAnalytics?.time_saved_play_count
 				? `Estimated across ${segmentAnalytics.time_saved_play_count} plays with known track duration`
@@ -161,16 +167,23 @@
 
 	<div class="discovery-strip">
 		<div>
-			<strong>{identity?.summary?.artists_discovered || 0}</strong><span>artists heard</span>
-		</div>
-		<div><strong>{identity?.summary?.tracks_discovered || 0}</strong><span>tracks heard</span></div>
-		<div>
-			<strong>{identity?.summary?.listening_contexts || 0}</strong><span>listening sessions</span>
+			<strong data-testid="profile-artists-heard"
+				>{identity?.summary?.artists_discovered || 0}</strong
+			><span>artists heard</span>
 		</div>
 		<div>
-			<strong>{duration(identity?.summary?.average_context_seconds || 0)}</strong><span
-				>avg. session</span
-			>
+			<strong data-testid="profile-tracks-heard">{identity?.summary?.tracks_discovered || 0}</strong
+			><span>tracks heard</span>
+		</div>
+		<div>
+			<strong data-testid="profile-listening-sessions"
+				>{identity?.summary?.listening_contexts || 0}</strong
+			><span>listening sessions</span>
+		</div>
+		<div>
+			<strong data-testid="profile-average-session"
+				>{duration(identity?.summary?.average_context_seconds || 0)}</strong
+			><span>avg. session</span>
 		</div>
 	</div>
 
@@ -214,10 +227,7 @@
 		</section>
 	</div>
 
-	<ListeningTrend points={identity?.listening_trend || []} />
-	<div class="insight-grid">
-		<VibePatterns vibes={identity?.vibes || []} /><ListeningDNA dna={identity?.listening_dna} />
-	</div>
+	<VibePatterns vibes={identity?.vibes || []} />
 
 	<section class="panel">
 		<div class="section-heading">
@@ -225,7 +235,9 @@
 				<p>Recent context</p>
 				<h3>Listening sessions</h3>
 			</div>
-			<span>{identity?.recent_listening?.length || 0} recent</span>
+			<span data-testid="profile-recent-listening-count"
+				>{identity?.recent_listening?.length || 0} recent</span
+			>
 		</div>
 		{#if identity?.recent_listening?.length}<div class="recent-list">
 				{#each identity.recent_listening as item (item.key)}<article>
@@ -361,8 +373,7 @@
 		grid-template-columns: minmax(0, 1.18fr) minmax(330px, 0.82fr);
 		gap: 18px;
 	}
-	.secondary-grid,
-	.insight-grid {
+	.secondary-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 18px;
@@ -524,7 +535,6 @@
 		}
 		.analytics-grid,
 		.secondary-grid,
-		.insight-grid,
 		.identity-heading {
 			grid-template-columns: 1fr;
 		}

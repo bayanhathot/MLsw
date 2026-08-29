@@ -94,6 +94,11 @@ def test_friends_only_music_identity_visibility(client, second_client):
     assert changed.json()["visibility"] == "friends"
     assert changed.json()["is_public"] is False
 
+    profile = second_client.get("/users/alice/profile")
+    assert profile.status_code == 200
+    assert profile.json()["music_identity_visibility"] == "friends"
+    assert profile.json()["music_identity_public"] is False
+
     hidden = second_client.get("/users/alice/music-identity")
     assert hidden.status_code == 200
     assert hidden.json()["music_identity"] is None

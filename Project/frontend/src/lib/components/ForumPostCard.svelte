@@ -7,10 +7,12 @@
 		deleteComment,
 		deletePost,
 		getComments,
+		getPost,
 		normalizeComment,
 		voteComment,
 		votePost
 	} from '$lib/services/forumApi.js';
+	import { reconcileById } from '$lib/services/communityState.js';
 	import { subscribe } from '$lib/services/realtimeSocket.js';
 	import AttachmentUploader from '$lib/components/AttachmentUploader.svelte';
 	import AttachmentMedia from '$lib/components/AttachmentMedia.svelte';
@@ -90,17 +92,19 @@
 			`post:${post.id}`,
 			(type, data) => handlePostChannelEvent(type, data),
 			{
-				// No single-post refetch endpoint exists on the frontend yet,
-				// so a reconnect only resyncs the comment list, not the post's
-				// own score -- an acceptable gap for this rare edge case.
-				onResync: () => void refreshComments()
+				onResync: () => void refreshThread()
 			}
 		);
 	}
 
-	async function refreshComments() {
+	async function refreshThread() {
 		try {
-			comments = await getComments(post.id, { signal: commentsController.signal });
+			const [nextComments, nextPost] = await Promise.all([
+				getComments(post.id, { signal: commentsController.signal }),
+				getPost(post.id, { signal: commentsController.signal })
+			]);
+			comments = nextComments;
+			onUpdate(nextPost);
 			commentsLoaded = true;
 		} catch {
 			// Best-effort realtime resync; the comment list stays as-is.
@@ -110,6 +114,10 @@
 	/** @param {string} type @param {unknown} data */
 	function handlePostChannelEvent(type, data) {
 		const payload = /** @type {Record<string, any>} */ (data || {});
+		if (type === 'comments_changed') {
+			void refreshThread();
+			return;
+		}
 		if (type === 'comment_created') {
 			let comment;
 			try {
@@ -117,9 +125,9 @@
 			} catch {
 				return;
 			}
-			if (comments.some((item) => item.id === comment.id)) return;
-			comments = [...comments, comment];
-			onUpdate({ ...post, commentCount: post.commentCount + 1 });
+			const reconciled = reconcileById(comments, comment);
+			comments = reconciled.items;
+			if (reconciled.inserted) onUpdate({ ...post, commentCount: post.commentCount + 1 });
 		} else if (type === 'vote_changed') {
 			onUpdate({ ...post, score: Number(payload.score) });
 		} else if (type === 'comment_vote_changed') {
@@ -210,13 +218,14 @@
 				attachmentIds: commentAttachments.map((item) => Number(item.id)),
 				parentCommentId: replyingTo?.id ?? null
 			});
-			comments = [...comments, comment];
+			const reconciled = reconcileById(comments, comment);
+			comments = reconciled.items;
 			commentsLoaded = true;
 			commentBody = '';
 			commentAnonymous = false;
 			commentAttachments = [];
 			replyingTo = null;
-			onUpdate({ ...post, commentCount: post.commentCount + 1 });
+			if (reconciled.inserted) onUpdate({ ...post, commentCount: post.commentCount + 1 });
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Could not add the comment.';
 		} finally {
@@ -336,15 +345,18 @@
 		if (!window.confirm('Delete this comment?')) return;
 		commentDeleteBusy = { ...commentDeleteBusy, [comment.id]: true };
 		error = '';
+		const targetIds = new Set([
+			comment.id,
+			...comments.filter((item) => item.parentCommentId === comment.id).map((item) => item.id)
+		]);
 		try {
 			await deleteComment(post.id, comment.id);
-			const removedIds = new Set([
-				comment.id,
-				...comments.filter((item) => item.parentCommentId === comment.id).map((item) => item.id)
-			]);
-			comments = comments.filter((item) => !removedIds.has(item.id));
-			if (replyingTo && removedIds.has(replyingTo.id)) replyingTo = null;
-			onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - removedIds.size) });
+			const removedCount = comments.filter((item) => targetIds.has(item.id)).length;
+			comments = comments.filter((item) => !targetIds.has(item.id));
+			if (replyingTo && targetIds.has(replyingTo.id)) replyingTo = null;
+			if (removedCount) {
+				onUpdate({ ...post, commentCount: Math.max(0, post.commentCount - removedCount) });
+			}
 		} catch (requestError) {
 			error =
 				requestError instanceof Error ? requestError.message : 'Could not delete the comment.';
