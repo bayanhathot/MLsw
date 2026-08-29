@@ -220,7 +220,11 @@ python -m alembic check
 - Set `TRUST_PROXY_HEADERS=true` only when actually running behind a
   trusted reverse proxy (e.g. the production Caddy front end) — otherwise
   client IP / scheme headers can be spoofed.
-- `BACKEND_WORKERS` must stay `1`: notification fanout, the upload queue,
-  and rate limiting are all process-local, not shared across replicas.
+- `BACKEND_WORKERS` must stay `1` until the upload queue has a Redis-backed
+  atomic claim/lease dispatcher. Realtime fanout, rate limiting, and Ollama
+  admission are Redis-backed, but `UploadQueue` still keeps its active
+  priority queue, job registry, and batches inside one process and only
+  rehydrates Redis state at startup. Upload analysis remains parallel through
+  `UPLOAD_WORKERS=4` even with one backend process.
 - No token revocation, refresh-token flow, or admin role exists yet — a
   known limitation, not an oversight.

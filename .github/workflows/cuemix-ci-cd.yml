@@ -629,9 +629,12 @@ jobs:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
       PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
-      # D6b: raised from 1 -- see docker-compose.prod.yml's own default and
-      # deploy/.env.production.example's comment for why this is now safe.
-      PRODUCTION_BACKEND_WORKERS: ${{ vars.BACKEND_WORKERS || '2' }}
+      # Keep one web process until UploadQueue uses Redis as its authoritative
+      # dispatcher with atomic claims/leases. UPLOAD_WORKERS still provides
+      # parallel media processing inside that process. This is deliberately
+      # pinned rather than repository-variable-overridable so a stale value of
+      # 2 cannot silently reintroduce cross-process queue races.
+      PRODUCTION_BACKEND_WORKERS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -757,9 +760,9 @@ jobs:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
       PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
       PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
-      # D6b: raised from 1 -- see docker-compose.prod.yml's own default and
-      # deploy/.env.production.example's comment for why this is now safe.
-      PRODUCTION_BACKEND_WORKERS: ${{ vars.BACKEND_WORKERS || '2' }}
+      # Match normal production: one web process, with parallel upload work
+      # handled by UPLOAD_WORKERS inside that process.
+      PRODUCTION_BACKEND_WORKERS: "1"
     steps:
       - name: Check out the rollback ref
         uses: actions/checkout@v4

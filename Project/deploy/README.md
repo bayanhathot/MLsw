@@ -29,11 +29,12 @@ Kept here for reference, or for standing up a second environment:
    `AUDIUS_ANALYSIS_CACHE_ENABLED=true`, `DEBUG_DASHBOARD_ENABLED=true`,
    `ENABLE_PIPELINE_DEBUG=true` (debug mode is on everywhere right now --
    this VM isn't serving real production traffic yet), and
-   `BACKEND_WORKERS=2` (see the "Horizontal scaling" section below).
-   Define repository variables with those names (`AUDIUS_ANALYSIS_CACHE_ENABLED`,
-   `DEBUG_DASHBOARD_ENABLED`, `ENABLE_PIPELINE_DEBUG`, `BACKEND_WORKERS`) to
-   override the defaults, e.g. for an emergency feature shutdown or to scale
-   worker count up/down.
+   `BACKEND_WORKERS=1` (see the "Backend concurrency boundary" section below).
+   Define repository variables named `AUDIUS_ANALYSIS_CACHE_ENABLED`,
+   `DEBUG_DASHBOARD_ENABLED`, or `ENABLE_PIPELINE_DEBUG` to override those
+   feature defaults for an emergency shutdown. `BACKEND_WORKERS` is pinned to
+   `1` in CI until the upload-queue limitation below is removed, so a stale
+   repository variable cannot silently restore the unsafe two-process setup.
 5. Add secrets `SSH_PRIVATE_KEY` and `GHCR_READ_TOKEN`. The token needs only
    `read:packages`. The workflow trusts the VM's SSH host key on first
    connect each run (`StrictHostKeyChecking accept-new`) rather than pinning
@@ -73,26 +74,26 @@ deployment but does not take down the backend because the assistant is
 deliberately fail-open. Manual Studio editing, rendering, and publishing do not
 depend on it.
 
-### Horizontal scaling
+### Backend concurrency boundary
 
-`BACKEND_WORKERS=2`: two `uvicorn` worker processes inside the one backend
-container, sharing the container's filesystem mount (`uploads_data`) and
-talking to the same Postgres/Redis/Ollama services -- not two separate
-containers/hosts. This is safe today because every piece of state that used
-to matter across workers is now either database-backed (`known_broken_tracks`)
-or Redis-backed:
+Production intentionally uses `BACKEND_WORKERS=1`. Upload processing is still
+parallel: that one web process owns a bounded priority queue with
+`UPLOAD_WORKERS=4` worker threads, so up to four media jobs can be validated
+and analyzed concurrently without creating multiple independent job queues.
 
-- `channel_hub.py` (forum/messaging/social/mixes realtime) and
-  `upload_queue.py` (job durability) always were.
-- `app/core/rate_limit.py`, `app/services/pipeline_debug_service.py`, and
-  `app/services/prompt_parser.py`'s Ollama concurrency semaphore/call stats
-  were ported to Redis for this (D6b) -- each still falls back to its
-  original process-local behavior when `REDIS_URL` is unconfigured/
-  unreachable, so a single-instance/no-Redis setup is unaffected.
+Realtime fanout, rate limiting, pipeline-debug invalidation, and Ollama's
+concurrency semaphore/statistics are shared through Redis. UploadQueue is not
+yet fully distributed, however: Redis mirrors job state for restart durability,
+while the active `PriorityQueue`, `_jobs`, `_batches`, and materialization locks
+remain process-local and Redis recovery runs only at process startup. With two
+web processes, a status/cancel/retry request can reach a process that does not
+know the job, and both processes can recover the same active job. Raising
+`BACKEND_WORKERS` is therefore unsafe until Redis becomes the authoritative
+dispatcher with atomic claims/leases and Redis-backed reads for every job and
+batch operation.
 
-What raising this past same-container workers -- real separate hosts/pods,
-not just more `uvicorn` processes in one container -- would additionally
-need: shared object storage (S3/MinIO or a network filesystem) for
+Scaling to multiple processes or separate hosts/pods would additionally need
+shared object storage (S3/MinIO or a network filesystem) for
 `UPLOAD_DIR` in place of the local `uploads_data` volume, since rendered
 mixes/session audio and catalog uploads are currently only visible across
 workers because they share one container's mount, not because anything

@@ -228,7 +228,10 @@ services:
       - --port
       - "5000"
       - --workers
-      - ${BACKEND_WORKERS:-2}
+      # UploadQueue's active priority queue and job registry are process-local.
+      # Keep one web process until Redis owns dispatch/claim/status atomically;
+      # upload analysis still runs in parallel via UPLOAD_WORKERS (default 4).
+      - ${BACKEND_WORKERS:-1}
     expose:
       - "5000"
     volumes:

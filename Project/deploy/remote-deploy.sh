@@ -113,8 +113,8 @@ fi
 if [ -n "${MANAGED_ENABLE_PIPELINE_DEBUG:-}" ]; then
   verify_managed_env ENABLE_PIPELINE_DEBUG "${MANAGED_ENABLE_PIPELINE_DEBUG}"
 fi
-# D6b: BACKEND_WORKERS only ever reaches the container via the compose
-# file's `command: [..., --workers, ${BACKEND_WORKERS:-2}]` templating, not
+# BACKEND_WORKERS only ever reaches the container via the compose file's
+# `command: [..., --workers, ${BACKEND_WORKERS:-1}]` templating, not
 # as an environment variable inside the container -- printenv (what
 # verify_managed_env checks above) would see nothing. Inspect the actually-
 # running container's real launch args instead, the same "prove the live
