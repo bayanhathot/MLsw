@@ -112,11 +112,6 @@ def build_post(db: Session, post: ForumPost, viewer_id: int | None) -> PostRead:
                 "owner_username": owner.username if owner else "Deleted user",
                 "segment_count": len(mix.segments),
             }
-    comments = db.query(ForumComment).filter(ForumComment.post_id == post.id)
-    if viewer_id is not None:
-        blocked_ids = social_service.blocked_user_ids(db, viewer_id)
-        if blocked_ids:
-            comments = comments.filter(~ForumComment.author_id.in_(blocked_ids))
     return PostRead(
         id=post.id,
         author_id=None if post.is_anonymous else post.author_id,
@@ -129,7 +124,7 @@ def build_post(db: Session, post: ForumPost, viewer_id: int | None) -> PostRead:
         mix=shared_mix,
         can_delete=viewer_id == post.author_id,
         score=_score(db, ForumPostVote, "post_id", post.id),
-        comment_count=comments.count(),
+        comment_count=db.query(ForumComment).filter(ForumComment.post_id == post.id).count(),
         my_vote=my_vote,
         attachments=_attachments(db, "post", post.id),
         created_at=post.created_at,

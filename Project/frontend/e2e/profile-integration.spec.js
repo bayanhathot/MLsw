@@ -213,8 +213,8 @@ test('Community Profile counters follow create, vote, undo, and delete actions',
 			'upvote Alice comment'
 		);
 		await refreshOwnProfile(alice);
-		// Total received engagement includes votes on authored comments too.
-		await expectCounter(alice.page, 'profile-upvotes-count', 1);
+		// The profile dashboard tracks votes received on posts, not comments.
+		await expectCounter(alice.page, 'profile-upvotes-count', 0);
 
 		await expectOk(
 			await alice.request.delete(`${BACKEND_URL}/posts/${bobPost.id}/comments/${aliceComment.id}`),

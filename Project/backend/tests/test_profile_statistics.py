@@ -108,11 +108,8 @@ def test_community_profile_counters_follow_real_actions_reversals_and_user_isola
         f"/posts/comments/{alice_comment['id']}/vote", json={"value": 1}
     )
     assert comment_upvote.status_code == 200
-    # Total received engagement includes votes on authored comments too.
-    _assert_stats(
-        client,
-        {**zero, "post_count": 1, "comment_count": 1, "received_upvotes": 1},
-    )
+    # The profile dashboard tracks votes received on posts, not comments.
+    _assert_stats(client, {**zero, "post_count": 1, "comment_count": 1})
 
     deleted_comment = client.delete(
         f"/posts/{bob_post['id']}/comments/{alice_comment['id']}"

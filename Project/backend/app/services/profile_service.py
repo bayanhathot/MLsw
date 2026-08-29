@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from app.database.models.forum import (
     ForumComment,
-    ForumCommentVote,
     ForumPost,
     ForumPostVote,
 )
@@ -50,9 +49,7 @@ def engagement_stats(
     activity on posts they are allowed to view. This prevents public profile
     counters from revealing friends-only activity or linking anonymous posts
     back to their author. Comment totals count replies from other users on the
-    profile owner's posts. Received vote totals cover both authored posts and
-    authored comments, matching the forum dashboard's total-engagement
-    contract.
+    profile owner's posts. Received vote totals cover authored posts only.
     """
 
     owner_view = viewer_id == user_id
@@ -75,15 +72,6 @@ def engagement_stats(
         .join(ForumPost, ForumPost.id == ForumPostVote.post_id)
         .filter(ForumPost.author_id == user_id)
     )
-    comment_vote_query = (
-        db.query(
-            func.coalesce(func.sum(case((ForumCommentVote.value == 1, 1), else_=0)), 0),
-            func.coalesce(func.sum(case((ForumCommentVote.value == -1, 1), else_=0)), 0),
-        )
-        .join(ForumComment, ForumComment.id == ForumCommentVote.comment_id)
-        .join(ForumPost, ForumPost.id == ForumComment.post_id)
-        .filter(ForumComment.author_id == user_id)
-    )
     if not owner_view:
         posts = posts.filter(ForumPost.is_anonymous.is_(False), visible_post)
         comments_received = comments_received.filter(
@@ -92,15 +80,11 @@ def engagement_stats(
         post_vote_query = post_vote_query.filter(
             ForumPost.is_anonymous.is_(False), visible_post
         )
-        comment_vote_query = comment_vote_query.filter(
-            ForumComment.is_anonymous.is_(False), visible_post
-        )
 
     post_votes = post_vote_query.one()
-    comment_votes = comment_vote_query.one()
     return {
-        "received_upvotes": int(post_votes[0] or 0) + int(comment_votes[0] or 0),
-        "received_downvotes": int(post_votes[1] or 0) + int(comment_votes[1] or 0),
+        "received_upvotes": int(post_votes[0] or 0),
+        "received_downvotes": int(post_votes[1] or 0),
         "post_count": posts.count(),
         "comment_count": comments_received.count(),
     }

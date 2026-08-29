@@ -227,10 +227,6 @@ async def create_comment(
         parent = forum_service.comment_or_404(db, request.parent_comment_id)
         if parent.post_id != post.id:
             raise HTTPException(status_code=422, detail="Reply must target a comment on the same post.")
-        if social_service.is_blocked_between(db, current_user.id, parent.author_id):
-            # A blocked comment is absent from the REST thread. Do not leave a
-            # direct-ID reply path that can target it anyway.
-            raise HTTPException(status_code=404, detail="Comment not found.")
         if parent.parent_comment_id is not None:
             raise HTTPException(status_code=422, detail="Replies can only be one level deep.")
     comment = ForumComment(
