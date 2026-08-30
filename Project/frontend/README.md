@@ -50,6 +50,13 @@ ESLint, and Prettier cover components and routes. Playwright exercises public
 navigation, guest route protection, and authenticated library/profile/social
 routes against the production build with controlled API fixtures.
 
+CI additionally runs three Playwright integration files against a real
+FastAPI/PostgreSQL/Redis stack: realtime delivery, Profile statistics/privacy,
+and persistent DJ coaching memory. The memory scenario performs registration,
+session creation, coaching, logout/login, and a second session through the
+browser, then verifies the effective remembered intent. These real-backend
+tests are required before container images can be built or deployed.
+
 ## API conventions
 
 All services use `src/lib/services/api.js`. It provides cookie credentials, timeout/cancellation, structured HTTP errors, FastAPI validation-detail parsing, and deployment-safe backend media URLs. Session playback uses `/sessions` as the canonical live-session API. `/mixes` is reserved for persistent/social mix records.

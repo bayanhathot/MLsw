@@ -293,19 +293,13 @@ jobs:
   # bug: it proves the Svelte code applies an incoming frame correctly,
   # never that the backend actually published one over real Redis.
   #
-  # Deliberately NOT a dependency of container-builds/publish-images/
-  # deploy-production: it adds real wall-clock (a second Postgres+Redis
-  # bring-up, a second frontend build with a different PUBLIC_API_BASE_URL,
-  # two extra Playwright browser contexts per test) on top of an already
-  # substantial pipeline, and introduces its own new sources of
-  # environmental flakiness (a live multi-worker backend, real Redis pub/
-  # sub timing) that the deploy gate itself doesn't need to depend on --
-  # the actual deployed app's health is already verified for real by
-  # deploy-production's own db-health check. Runs on every push so it's
-  # real CI signal, not a local-only script nobody re-runs, but if its
-  # added time/flakiness becomes a real problem in practice, moving it to
-  # a nightly schedule (or a pre-deploy manual gate) rather than every push
-  # is the natural next step -- flagged here, not decided unilaterally.
+  # This is a deployment prerequisite through container-builds below. The
+  # course requirement says the complete test set must pass before an
+  # automatic deployment, and these scenarios exercise a real backend,
+  # Postgres, Redis, and browser boundary that mocked smoke tests cannot.
+  # The extra runtime is intentional: this job has caught production-only
+  # integration failures, and its backend configuration matches production's
+  # supported one-process setup rather than introducing an untested topology.
   realtime-e2e:
     name: Real backend browser E2E
     runs-on: ubuntu-latest
@@ -359,6 +353,10 @@ jobs:
       ROOT_PATH: ""
       CORS_ORIGINS: http://127.0.0.1:4173
       ENABLE_COLD_SEED: "false"
+      # Ephemeral CI-only observability: memory-integration.spec.js reads the
+      # actual stored pipeline intent after a browser-driven session start.
+      # Production has its own separate flag and is unaffected by this job.
+      ENABLE_PIPELINE_DEBUG: "true"
       VIBE_LLM_PROVIDER: "none"
     steps:
       - name: Check out repository
@@ -475,6 +473,7 @@ jobs:
           npx playwright test
           e2e/realtime-integration.spec.js
           e2e/profile-integration.spec.js
+          e2e/memory-integration.spec.js
 
       - name: Show backend log on failure
         if: failure()
@@ -497,7 +496,7 @@ jobs:
     # across the board, not just there) -- a full Docker build of both
     # images, even cold-cache, comfortably fits well inside this.
     timeout-minutes: 20
-    needs: [backend-tests, frontend-checks]
+    needs: [backend-tests, frontend-checks, realtime-e2e]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

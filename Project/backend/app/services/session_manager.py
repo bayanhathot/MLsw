@@ -16,6 +16,8 @@ import time
 from threading import Lock
 from uuid import uuid4
 
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.core.time import utc_now
@@ -199,10 +201,9 @@ def _normalize_feedback(feedback: str) -> str:
         return "less_vocals"
     if "smooth" in value:
         return "smoother"
-    if "good" in value or "like" in value:
-        # Praise reinforces whatever is actually playing, rather than
-        # teaching a generic preference that may contradict the session's
-        # own context.
+    if "good" in value or "like" in value or "keep" in value or "vibe" in value:
+        # Preserve the active session's energy/vocals direction rather than
+        # teaching a generic preference unrelated to the current vibe.
         return "reinforce"
     return "custom"
 
@@ -218,7 +219,6 @@ def _mutate_intent(intent: PromptIntent, normalized: str) -> tuple[PromptIntent,
     if normalized == "more_energy":
         data["energy"] = "high"
     elif normalized == "less_vocals":
-        data["energy"] = "low"
         data["vocals"] = "less"
     elif normalized == "smoother":
         return intent, True
@@ -236,7 +236,12 @@ def _apply_preference(intent: PromptIntent, feedback: str) -> PromptIntent | Non
         mutated, _ = _mutate_intent(intent, feedback)
         return mutated
     if feedback == "smoother":
-        return intent  # "smooth" is already the deterministic default bucket
+        # The button is no longer offered, but existing persisted rows and
+        # older clients must remain meaningful instead of becoming a no-op
+        # that can shadow a user's other preferences.
+        data = intent.model_dump()
+        data["mood"] = "smooth"
+        return PromptIntent.model_validate(data)
     if feedback.startswith("reinforce:"):
         parts = feedback.split(":", 2)
         if (
@@ -248,6 +253,42 @@ def _apply_preference(intent: PromptIntent, feedback: str) -> PromptIntent | Non
             data["energy"], data["vocals"] = parts[1], parts[2]
             return PromptIntent.model_validate(data)
     return None
+
+
+def _increment_user_preference(db: Session, user_id: int, feedback: str) -> None:
+    """Atomically records one long-term-memory signal.
+
+    Feedback endpoints are synchronous FastAPI routes, so several requests
+    can run in worker threads at the same time even with one Uvicorn process.
+    A read-modify-write ORM increment loses updates in that situation. Both
+    databases Cuemix supports use a single-statement upsert here: SQLite in
+    local/tests and PostgreSQL in production.
+    """
+
+    values = {
+        "user_id": user_id,
+        "feedback": feedback,
+        "score": 1,
+        "count": 1,
+        "updated_at": utc_now(),
+    }
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        statement = postgresql_insert(UserPreference).values(**values)
+    elif dialect == "sqlite":
+        statement = sqlite_insert(UserPreference).values(**values)
+    else:  # Cuemix does not deploy another dialect; fail visibly if that changes.
+        raise RuntimeError(f"Unsupported database dialect for preference upsert: {dialect}")
+
+    statement = statement.on_conflict_do_update(
+        index_elements=[UserPreference.user_id, UserPreference.feedback],
+        set_={
+            "score": UserPreference.score + 1,
+            "count": UserPreference.count + 1,
+            "updated_at": values["updated_at"],
+        },
+    )
+    db.execute(statement)
 
 
 def _role_for(track: Track) -> str:
@@ -1256,10 +1297,19 @@ def _initial_intent(
             .order_by(UserPreference.score.desc(), UserPreference.count.desc())
             .all()
         )
-        for preference in preferences:
-            biased = _apply_preference(intent, preference.feedback)
-            if biased is not None:
-                return biased, intent
+        # Apply weak preferences first and strong preferences last. This lets
+        # independent dimensions combine (for example high energy + fewer
+        # vocals), while the highest-scored preference wins if two memories
+        # target the same dimension.
+        biased = intent
+        applied = False
+        for preference in reversed(preferences):
+            next_bias = _apply_preference(biased, preference.feedback)
+            if next_bias is not None:
+                biased = next_bias
+                applied = True
+        if applied:
+            return biased, intent
     return intent, intent
 
 
@@ -1459,18 +1509,7 @@ def apply_feedback(
             )
 
     if session.user_id is not None and preference_key is not None:
-        preference = (
-            db.query(UserPreference)
-            .filter_by(user_id=session.user_id, feedback=preference_key)
-            .first()
-        )
-        if preference is None:
-            preference = UserPreference(
-                user_id=session.user_id, feedback=preference_key, count=0, score=0
-            )
-            db.add(preference)
-        preference.count += 1
-        preference.score += 1
+        _increment_user_preference(db, session.user_id, preference_key)
 
     db.commit()
     db.refresh(session)

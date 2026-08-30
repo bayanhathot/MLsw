@@ -154,6 +154,22 @@ npx playwright install chromium # first run on a developer machine
 npm run test:e2e
 ```
 
+The ordinary Playwright command runs the production frontend against
+controlled API fixtures. GitHub Actions also provisions a real PostgreSQL,
+Redis, FastAPI, and production frontend stack and runs
+`realtime-integration.spec.js`, `profile-integration.spec.js`, and
+`memory-integration.spec.js`. That real suite covers the complete coaching
+memory journey (register, start a DJ session, coach, sign out/in, and verify
+the remembered intent in a later session). Container builds, image publishing,
+and Azure deployment wait for both the ordinary checks and this real-backend
+suite to pass.
+
+To point those real integration files at an already-running stack manually,
+set `PLAYWRIGHT_BASE_URL` to its frontend origin and
+`PLAYWRIGHT_BACKEND_URL` to its backend API origin before invoking Playwright.
+The CI workflow supplies both automatically and uses an ephemeral test
+database, so CI runs do not modify production data.
+
 Do not commit `.env`, virtual environments, `node_modules`, model downloads,
 or unlicensed audio. Runtime demo playback uses an original, procedurally
 generated `cuemix-demo.wav` (see [backend/app/static/audio/GENERATED_AUDIO.md](backend/app/static/audio/GENERATED_AUDIO.md))

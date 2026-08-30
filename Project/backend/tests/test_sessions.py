@@ -1,9 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
+from threading import Barrier
 
 from conftest import register_and_login
 
-from app.database.models.session import DJSession, UserPreference
+from app.database.models.session import DJSession, SessionFeedback, UserPreference
 from app.schemas import PromptIntent, SelectedSegment, Track
 from app.services import session_candidate_pool, session_manager, upload_queue
 from app.services.pipeline import audio_renderer
@@ -179,12 +181,12 @@ def test_owned_session_is_private_and_preference_is_remembered(
     assert second_client.get(f"/sessions/{session['id']}").status_code == 403
     assert (
         second_client.post(
-            f"/sessions/{session['id']}/feedback", json={"feedback": "Less vocals"}
+            f"/sessions/{session['id']}/feedback", json={"feedback": "Fewer vocals"}
         ).status_code
         == 403
     )
     response = client.post(
-        f"/sessions/{session['id']}/feedback", json={"feedback": "Less vocals"}
+        f"/sessions/{session['id']}/feedback", json={"feedback": "Fewer vocals"}
     )
     assert response.status_code == 200
     preference = db_session.query(UserPreference).filter_by(user_id=user["id"]).one()
@@ -193,23 +195,22 @@ def test_owned_session_is_private_and_preference_is_remembered(
     assert client.get("/users/me/preferences").json() == [
         {"feedback": "less_vocals", "score": 1, "count": 1}
     ]
-    # "less_vocals" biases the next neutral prompt's intent toward low
-    # energy + fewer vocals, which lands on the same "focus" catalog bucket
-    # the old hardcoded PREFERENCE_TRACKS mapping pointed it at.
-    assert (
-        client.post("/sessions/start", json={"prompt": "a balanced mix"}).json()[
-            "vibeLabel"
-        ]
-        == "Deep work focus"
-    )
+    # Fewer vocals changes only vocals. It must not silently turn a neutral
+    # request into a low-energy request as the old implementation did.
+    remembered = client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+    remembered_row = db_session.get(DJSession, remembered["id"])
+    assert remembered_row.intent_json["energy"] == "medium"
+    assert remembered_row.intent_json["vocals"] == "less"
 
 
-def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
+def test_keep_this_vibe_reinforces_the_active_session_direction(client, db_session):
     user = register_and_login(client)
     session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
     assert session["vibeLabel"] == "Gym energy"
     response = client.post(
-        f"/sessions/{session['id']}/feedback", json={"feedback": "Good vibe"}
+        f"/sessions/{session['id']}/feedback", json={"feedback": "Keep this vibe"}
     )
     assert response.status_code == 200
 
@@ -217,6 +218,268 @@ def test_good_vibe_reinforces_the_track_that_was_playing(client, db_session):
     assert preference.feedback == "reinforce:high:neutral"
     neutral = client.post("/sessions/start", json={"prompt": "a balanced mix"})
     assert neutral.json()["vibeLabel"] == "Gym energy"
+
+
+def test_energy_and_vocals_memories_combine_in_a_new_session(client, db_session):
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+
+    assert (
+        client.post(
+            f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/sessions/{session['id']}/feedback", json={"feedback": "Fewer vocals"}
+        ).status_code
+        == 200
+    )
+
+    preferences = {
+        row.feedback: row
+        for row in db_session.query(UserPreference).filter_by(user_id=user["id"]).all()
+    }
+    assert set(preferences) == {"more_energy", "less_vocals"}
+
+    remembered = client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+    remembered_row = db_session.get(DJSession, remembered["id"])
+    assert remembered_row.intent_json["energy"] == "high"
+    assert remembered_row.intent_json["vocals"] == "less"
+
+
+def test_coaching_memory_survives_logout_and_login(client, db_session):
+    register_and_login(client, "memory_user", "memory@example.com")
+    session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+    assert (
+        client.post(
+            f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+        ).status_code
+        == 200
+    )
+
+    assert client.post("/auth/logout").status_code == 200
+    assert client.get("/users/me/preferences").status_code == 401
+    assert (
+        client.post(
+            "/auth/login",
+            json={"email": "memory@example.com", "password": "strongpass"},
+        ).status_code
+        == 200
+    )
+
+    remembered = client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+    remembered_row = db_session.get(DJSession, remembered["id"])
+    assert remembered_row.intent_json["energy"] == "high"
+
+
+def test_coaching_memory_is_isolated_between_users(client, second_client, db_session):
+    alice = register_and_login(client, "memory_alice", "memory_alice@example.com")
+    register_and_login(second_client, "memory_bob", "memory_bob@example.com")
+
+    alice_session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+    assert (
+        client.post(
+            f"/sessions/{alice_session['id']}/feedback",
+            json={"feedback": "More energy"},
+        ).status_code
+        == 200
+    )
+
+    bob_session = second_client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+    alice_remembered = client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+
+    assert db_session.get(DJSession, bob_session["id"]).intent_json["energy"] == "medium"
+    assert db_session.get(DJSession, alice_remembered["id"]).intent_json["energy"] == "high"
+    assert (
+        db_session.query(UserPreference)
+        .filter(UserPreference.user_id != alice["id"])
+        .count()
+        == 0
+    )
+
+
+def test_legacy_smoother_memory_combines_without_shadowing_energy(client, db_session):
+    user = register_and_login(client)
+    db_session.add_all(
+        [
+            UserPreference(
+                user_id=user["id"], feedback="smoother", score=5, count=5
+            ),
+            UserPreference(
+                user_id=user["id"], feedback="more_energy", score=2, count=2
+            ),
+        ]
+    )
+    db_session.commit()
+
+    remembered = client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+    remembered_row = db_session.get(DJSession, remembered["id"])
+    assert remembered_row.intent_json["mood"] == "smooth"
+    assert remembered_row.intent_json["energy"] == "high"
+
+
+def test_repeated_coaching_increments_one_persistent_memory_row(client, db_session):
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+
+    for _ in range(2):
+        response = client.post(
+            f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+        )
+        assert response.status_code == 200
+
+    preference = (
+        db_session.query(UserPreference)
+        .filter_by(user_id=user["id"], feedback="more_energy")
+        .one()
+    )
+    assert preference.count == 2
+    assert preference.score == 2
+    assert db_session.query(UserPreference).filter_by(user_id=user["id"]).count() == 1
+
+
+def test_concurrent_coaching_requests_are_all_persisted(client, db_session):
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "hard gym workout"}).json()
+    request_count = 8
+    start_together = Barrier(request_count)
+
+    def reinforce_current_vibe(_):
+        start_together.wait(timeout=10)
+        return client.post(
+            f"/sessions/{session['id']}/feedback",
+            json={"feedback": "Keep this vibe"},
+        )
+
+    with ThreadPoolExecutor(max_workers=request_count) as executor:
+        responses = list(executor.map(reinforce_current_vibe, range(request_count)))
+
+    assert [response.status_code for response in responses] == [200] * request_count
+    db_session.expire_all()
+    preference = (
+        db_session.query(UserPreference)
+        .filter_by(user_id=user["id"], feedback="reinforce:high:neutral")
+        .one()
+    )
+    assert preference.count == request_count
+    assert preference.score == request_count
+    assert (
+        db_session.query(SessionFeedback)
+        .filter_by(session_id=session["id"], normalized_feedback="reinforce")
+        .count()
+        == request_count
+    )
+
+
+def test_fewer_vocals_and_legacy_less_vocals_share_the_same_memory(
+    client, db_session
+):
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+
+    for label in ("Fewer vocals", "Less vocals"):
+        response = client.post(
+            f"/sessions/{session['id']}/feedback", json={"feedback": label}
+        )
+        assert response.status_code == 200
+
+    preference = db_session.query(UserPreference).filter_by(user_id=user["id"]).one()
+    assert preference.feedback == "less_vocals"
+    assert preference.count == 2
+    assert preference.score == 2
+
+
+def test_guest_coaching_changes_the_session_without_creating_long_term_memory(
+    client, db_session
+):
+    session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+    response = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "More energy"}
+    )
+
+    assert response.status_code == 200
+    row = db_session.get(DJSession, session["id"])
+    assert row.intent_json["energy"] == "high"
+    assert db_session.query(UserPreference).count() == 0
+    assert client.get("/users/me/preferences").status_code == 401
+
+
+def test_custom_coaching_is_audited_but_not_promoted_to_memory(client, db_session):
+    user = register_and_login(client)
+    session = client.post("/sessions/start", json={"prompt": "anything"}).json()
+    response = client.post(
+        f"/sessions/{session['id']}/feedback", json={"feedback": "Surprise me"}
+    )
+
+    assert response.status_code == 200
+    recorded = db_session.query(SessionFeedback).filter_by(session_id=session["id"]).one()
+    assert recorded.user_id == user["id"]
+    assert recorded.feedback == "Surprise me"
+    assert recorded.normalized_feedback == "custom"
+    assert db_session.query(UserPreference).filter_by(user_id=user["id"]).count() == 0
+
+
+def test_explicit_mode_overrides_combined_coaching_memory(client, db_session):
+    user = register_and_login(client)
+    db_session.add_all(
+        [
+            UserPreference(
+                user_id=user["id"], feedback="more_energy", score=4, count=4
+            ),
+            UserPreference(
+                user_id=user["id"], feedback="less_vocals", score=4, count=4
+            ),
+        ]
+    )
+    db_session.commit()
+
+    explicit = client.post(
+        "/sessions/start",
+        json={"prompt": "anything", "mode": "emotional_tarab"},
+    ).json()
+    row = db_session.get(DJSession, explicit["id"])
+    assert row.intent_json["energy"] == "medium"
+    assert row.intent_json["vocals"] == "more"
+    assert row.intent_json["genres"] == ["arabic"]
+
+
+def test_stronger_memory_wins_when_two_preferences_target_the_same_dimension(
+    client, db_session
+):
+    user = register_and_login(client)
+    db_session.add_all(
+        [
+            UserPreference(
+                user_id=user["id"], feedback="more_energy", score=1, count=1
+            ),
+            UserPreference(
+                user_id=user["id"],
+                feedback="reinforce:low:more",
+                score=5,
+                count=5,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    remembered = client.post(
+        "/sessions/start", json={"prompt": "a balanced mix"}
+    ).json()
+    row = db_session.get(DJSession, remembered["id"])
+    assert row.intent_json["energy"] == "low"
+    assert row.intent_json["vocals"] == "more"
 
 
 def test_preference_is_not_applied_when_the_new_prompt_names_an_artist(

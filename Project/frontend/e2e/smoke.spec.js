@@ -370,6 +370,10 @@ test('the AI DJ player survives navigating away from the home route', async ({ p
 
 	await expect(djPlayer).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Persistent Track' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Keep this vibe' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'More energy' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Fewer vocals' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Smoother' })).toHaveCount(0);
 	const audioSrcOnHome = await page.locator('audio.hidden-audio').getAttribute('src');
 	expect(audioSrcOnHome).toContain('e2e-fixture-track.mp3');
 

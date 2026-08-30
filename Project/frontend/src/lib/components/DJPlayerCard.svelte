@@ -5,7 +5,7 @@
 	import { recordListeningEvent } from '$lib/services/listeningApi.js';
 	import { playerStore } from '$lib/stores/playerStore.js';
 
-	const COACH_OPTIONS = ['Good vibe', 'More energy', 'Less vocals', 'Smoother'];
+	const COACH_OPTIONS = ['Keep this vibe', 'More energy', 'Fewer vocals'];
 
 	/**
 	 * @typedef {import('$lib/types.js').AppStatus} AppStatus
