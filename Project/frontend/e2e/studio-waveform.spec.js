@@ -142,6 +142,16 @@ async function mockStudio(page, { brokenAudio = false, assistantSuggestion = fal
 	});
 }
 
+test('Studio reveals blank-draft controls from the new-draft menu', async ({ page }) => {
+	await mockStudio(page);
+	await page.goto('/studio');
+
+	await expect(page.getByLabel('New mix title')).toHaveCount(0);
+	await page.getByRole('button', { name: '+ New draft', exact: true }).click();
+	await expect(page.getByLabel('New mix title')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Create blank draft', exact: true })).toBeVisible();
+});
+
 test('Studio waveform stays synchronized with exact numeric bounds and seeking', async ({
 	page
 }) => {
