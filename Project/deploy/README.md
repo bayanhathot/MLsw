@@ -34,9 +34,8 @@ Kept here for reference, or for standing up a second environment:
    hostname must match `DOMAIN` in the VM's `.env` file.
    The workflow also manages four non-secret settings. Their current
    course-test defaults match `Project/.env`:
-   `AUDIUS_ANALYSIS_CACHE_ENABLED=true`, `DEBUG_DASHBOARD_ENABLED=true`,
-   `ENABLE_PIPELINE_DEBUG=true` (debug mode is on everywhere right now --
-   this VM isn't serving real production traffic yet), and
+   `AUDIUS_ANALYSIS_CACHE_ENABLED=true`, `DEBUG_DASHBOARD_ENABLED=false`,
+   `ENABLE_PIPELINE_DEBUG=false` (debug surfaces are off by default), and
    `BACKEND_WORKERS=1` (see the "Backend concurrency boundary" section below).
    Define repository variables named `AUDIUS_ANALYSIS_CACHE_ENABLED`,
    `DEBUG_DASHBOARD_ENABLED`, or `ENABLE_PIPELINE_DEBUG` to override those

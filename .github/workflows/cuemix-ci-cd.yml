@@ -744,8 +744,8 @@ jobs:
       # the effective values into the VM's persistent .env and verifies the
       # recreated backend received them.
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
-      PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
-      PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
+      PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'false' }}
+      PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'false' }}
       # Keep one web process until UploadQueue uses Redis as its authoritative
       # dispatcher with atomic claims/leases. UPLOAD_WORKERS still provides
       # parallel media processing inside that process. This is deliberately
@@ -875,8 +875,8 @@ jobs:
     environment: production
     env:
       PRODUCTION_AUDIUS_ANALYSIS_CACHE_ENABLED: ${{ vars.AUDIUS_ANALYSIS_CACHE_ENABLED || 'true' }}
-      PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'true' }}
-      PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'true' }}
+      PRODUCTION_DEBUG_DASHBOARD_ENABLED: ${{ vars.DEBUG_DASHBOARD_ENABLED || 'false' }}
+      PRODUCTION_ENABLE_PIPELINE_DEBUG: ${{ vars.ENABLE_PIPELINE_DEBUG || 'false' }}
       # Match normal production: one web process, with parallel upload work
       # handled by UPLOAD_WORKERS inside that process.
       PRODUCTION_BACKEND_WORKERS: "1"

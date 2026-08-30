@@ -47,9 +47,8 @@ x-backend-environment: &backend-environment
   CATALOG_AUDIO_MAX_MB_LOSSLESS: ${CATALOG_AUDIO_MAX_MB_LOSSLESS:-100}
   CATALOG_BATCH_PRIORITY_DECAY_EVERY: ${CATALOG_BATCH_PRIORITY_DECAY_EVERY:-3}
   ARTIST_MATCH_THRESHOLD: ${ARTIST_MATCH_THRESHOLD:-0.3}
-  # Debug mode is on by default everywhere right now (local and prod) --
-  # see docker-compose.prod.yml's copy of this comment for why.
-  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-true}
+  # Internal diagnostics are disabled by default and must be explicitly enabled.
+  ENABLE_PIPELINE_DEBUG: ${ENABLE_PIPELINE_DEBUG:-false}
   # Cold-seeds a realistic ~50-user dataset on every deploy (see
   # app/coldseed/build.py) -- idempotent, so safe to leave on. Set to false
   # to opt out.
@@ -61,9 +60,8 @@ x-backend-environment: &backend-environment
   # docker-compose.prod.yml's own copy of this comment.
   AUDIUS_ANALYSIS_CACHE_ENABLED: ${AUDIUS_ANALYSIS_CACHE_ENABLED:-true}
   EXTERNAL_ANALYSIS_MAX_ATTEMPTS: ${EXTERNAL_ANALYSIS_MAX_ATTEMPTS:-3}
-  # Gates the admin debug dashboard -- see docker-compose.prod.yml's own
-  # copy of this comment.
-  DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-true}
+  # Gates the admin debug endpoints; disabled unless explicitly enabled.
+  DEBUG_DASHBOARD_ENABLED: ${DEBUG_DASHBOARD_ENABLED:-false}
   STUDIO_ENABLED: ${STUDIO_ENABLED:-true}
   STUDIO_AI_URL: ${STUDIO_AI_URL:-http://studio-ai-service:8001}
   STUDIO_AI_TIMEOUT_SECONDS: ${STUDIO_AI_TIMEOUT_SECONDS:-250}
