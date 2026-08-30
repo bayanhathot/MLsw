@@ -177,3 +177,61 @@ class LibrosaSegmentSelector(SegmentSelector):
             phrase_boundaries=None,
             integrated_loudness_lufs=None,
         )
+
+
+class FullTrackSegmentSelector(SegmentSelector):
+    """The "Full songs" mix-scope choice (see DJSession.mix_scope /
+    mix-scope-toggle-prompt.md): always selects the entire track, start to
+    end -- no librosa self-similarity search, no trimming of any kind, not
+    even the whole-clip fallback's own leading/trailing silence trim above
+    (an explicit "mix the whole song" request should get exactly the whole
+    song, silence included).
+
+    Still reads whatever real analysis exists for the track (a completed
+    CatalogTrack/ExternalTrack row) and carries its BPM/key/loudness
+    through unchanged, so TransitionPlanner keeps reasoning about tempo/key
+    compatibility exactly as it does for segment mixing -- only the
+    *bounds* differ here, never a blind/unaware plan just because the scope
+    toggle is on. method='whole_clip' is reused rather than adding a new
+    schema value: it already means "no real segment window, the full clip
+    is the selection," which is exactly this case too."""
+
+    def select(self, db: Session, track: Track) -> SelectedSegment:
+        row = None
+        if track.catalog_track_id is not None:
+            row = (
+                db.query(CatalogTrack).filter(CatalogTrack.id == track.catalog_track_id).first()
+            )
+            analysis_trusted = row is not None and row.analysis_status in (
+                "completed",
+                "not_applicable",
+            )
+        elif track.external_track_id is not None:
+            row = (
+                db.query(ExternalTrack)
+                .filter(ExternalTrack.id == track.external_track_id)
+                .first()
+            )
+            analysis_trusted = (
+                row is not None and row.analysis_status == "completed" and not row.is_stale
+            )
+        else:
+            analysis_trusted = False
+
+        end_second = (
+            track.duration_seconds if track.duration_seconds > 0 else FALLBACK_SEGMENT_SECONDS
+        )
+        return SelectedSegment(
+            track=track,
+            start_second=0,
+            end_second=end_second,
+            method="whole_clip",
+            bpm=row.bpm if analysis_trusted else None,
+            bpm_confidence=row.bpm_confidence if analysis_trusted else None,
+            musical_key=row.musical_key if analysis_trusted else None,
+            key_mode=row.key_mode if analysis_trusted else None,
+            camelot=row.camelot if analysis_trusted else None,
+            key_confidence=row.key_confidence if analysis_trusted else None,
+            phrase_boundaries=row.phrase_boundaries_json if analysis_trusted else None,
+            integrated_loudness_lufs=row.integrated_loudness_lufs if analysis_trusted else None,
+        )

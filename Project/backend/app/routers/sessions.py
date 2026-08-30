@@ -19,6 +19,7 @@ from app.services.admin_debug_events import record_event
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
     get_audius_candidate_retriever,
+    get_full_track_segment_selector,
     get_segment_selector,
     get_session_candidate_retriever,
     get_transition_planner,
@@ -52,6 +53,18 @@ def _existing(db: Session, session_id: str, current_user: User | None = None):
     return session
 
 
+def _selector_for(
+    mix_scope: str, selector: SegmentSelector, full_track_selector: SegmentSelector
+) -> SegmentSelector:
+    """The one place mix_scope picks a SegmentSelector -- 'full_songs' is
+    the only value that ever diverges from today's default. See
+    DJSession.mix_scope's own docstring for why this is decided per-call
+    from a persisted session field (or, at creation, the request itself)
+    rather than threaded through session_manager.py's own signatures."""
+
+    return full_track_selector if mix_scope == "full_songs" else selector
+
+
 @router.post("/start", response_model=SessionRead)
 def start_session(
     request: StartSessionRequest,
@@ -62,6 +75,7 @@ def start_session(
     retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
     fallback_retriever: CandidateRetriever = Depends(get_audius_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
+    full_track_selector: SegmentSelector = Depends(get_full_track_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
 ):
@@ -71,10 +85,11 @@ def start_session(
             request.prompt,
             current_user.id if current_user else None,
             mode=request.mode,
+            mix_scope=request.mix_scope,
             vibe=vibe,
             retriever=retriever,
             fallback_retriever=fallback_retriever,
-            selector=selector,
+            selector=_selector_for(request.mix_scope, selector, full_track_selector),
             planner=planner,
             renderer=renderer,
         )
@@ -114,6 +129,7 @@ def send_feedback(
     retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
     fallback_retriever: CandidateRetriever = Depends(get_audius_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
+    full_track_selector: SegmentSelector = Depends(get_full_track_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
 ):
@@ -128,7 +144,7 @@ def send_feedback(
         request.feedback,
         retriever=retriever,
         fallback_retriever=fallback_retriever,
-        selector=selector,
+        selector=_selector_for(session.mix_scope, selector, full_track_selector),
         planner=planner,
         renderer=renderer,
     )
@@ -143,6 +159,7 @@ def advance_session(
     retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
     fallback_retriever: CandidateRetriever = Depends(get_audius_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
+    full_track_selector: SegmentSelector = Depends(get_full_track_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
 ):
@@ -162,7 +179,7 @@ def advance_session(
         session,
         retriever=retriever,
         fallback_retriever=fallback_retriever,
-        selector=selector,
+        selector=_selector_for(session.mix_scope, selector, full_track_selector),
         planner=planner,
         renderer=renderer,
     )
@@ -177,6 +194,7 @@ def prepare_next(
     retriever: CandidateRetriever = Depends(get_session_candidate_retriever),
     fallback_retriever: CandidateRetriever = Depends(get_audius_candidate_retriever),
     selector: SegmentSelector = Depends(get_segment_selector),
+    full_track_selector: SegmentSelector = Depends(get_full_track_segment_selector),
     planner: TransitionPlanner = Depends(get_transition_planner),
     renderer: AudioRenderer = Depends(get_audio_renderer),
 ):
@@ -191,7 +209,7 @@ def prepare_next(
         session,
         retriever=retriever,
         fallback_retriever=fallback_retriever,
-        selector=selector,
+        selector=_selector_for(session.mix_scope, selector, full_track_selector),
         planner=planner,
         renderer=renderer,
     )

@@ -1249,6 +1249,7 @@ def serialize_session(session: DJSession) -> SessionRead:
         id=session.id,
         prompt=session.prompt,
         mode=session.mode,
+        mixScope=session.mix_scope,
         status=session.status,
         vibeLabel=session.vibe_label,
         audioUrl=now_playing["audio_url"],
@@ -1325,6 +1326,7 @@ def create_session(
     planner: TransitionPlanner,
     renderer: AudioRenderer,
     mode: AutoMixMode | None = None,
+    mix_scope: str = "segments",
 ) -> SessionRead:
     started = time.perf_counter()
     intent, raw_intent = _initial_intent(prompt, db, user_id, vibe, mode)
@@ -1361,6 +1363,7 @@ def create_session(
         user_id=user_id,
         prompt=prompt,
         mode=mode.value if mode else None,
+        mix_scope=mix_scope,
         status="playing",
         vibe_label=now_playing["segment"]["track"]["vibe_label"] or "Balanced opener",
         retriever_name=served_by.name,

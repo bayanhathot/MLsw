@@ -48,6 +48,84 @@ def test_session_rejects_an_unknown_auto_mix_mode(client):
     assert response.status_code == 422
 
 
+def test_session_defaults_to_segment_mixing_when_mix_scope_is_omitted(client, db_session):
+    """Simulates an old client that has never heard of mix_scope -- must be
+    byte-identical to today's only behavior: the bundled demo catalog's own
+    persisted 45s loop (catalog_retriever._SEED_TRACKS: duration_seconds=60,
+    segment_start_second=0, segment_end_second=45), not the full 60s track."""
+
+    response = client.post("/sessions/start", json={"prompt": "quiet ambient background"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mixScope"] == "segments"
+    row = db_session.get(DJSession, body["id"])
+    assert row.mix_scope == "segments"
+    segment = row.now_playing_json["segment"]
+    assert segment["start_second"] == 0
+    assert segment["end_second"] == 45
+
+
+def test_session_with_explicit_segments_scope_matches_the_default(client, db_session):
+    response = client.post(
+        "/sessions/start",
+        json={"prompt": "quiet ambient background", "mix_scope": "segments"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mixScope"] == "segments"
+    row = db_session.get(DJSession, body["id"])
+    segment = row.now_playing_json["segment"]
+    assert segment["start_second"] == 0
+    assert segment["end_second"] == 45
+
+
+def test_session_with_full_songs_scope_mixes_the_entire_track(client, db_session):
+    response = client.post(
+        "/sessions/start",
+        json={"prompt": "quiet ambient background", "mix_scope": "full_songs"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mixScope"] == "full_songs"
+    assert body["audioUrl"]
+    row = db_session.get(DJSession, body["id"])
+    assert row.mix_scope == "full_songs"
+    segment = row.now_playing_json["segment"]
+    # The full 60s track, not the seeded 45s loop -- no segment trimming.
+    assert segment["start_second"] == 0
+    assert segment["end_second"] == 60
+    assert segment["method"] == "whole_clip"
+
+
+def test_full_songs_scope_persists_across_advance_without_resending_it(client, db_session):
+    """mix_scope is per-session state, not per-request -- advance() never
+    receives it again, only the session id; the router must still pick
+    FullTrackSegmentSelector by reading it off the persisted session row."""
+
+    started = client.post(
+        "/sessions/start",
+        json={"prompt": "quiet ambient background", "mix_scope": "full_songs"},
+    )
+    assert started.status_code == 200
+    session_id = started.json()["id"]
+
+    advanced = client.post(f"/sessions/{session_id}/advance")
+    assert advanced.status_code == 200, advanced.text
+    assert advanced.json()["mixScope"] == "full_songs"
+    row = db_session.get(DJSession, session_id)
+    segment = row.now_playing_json["segment"]
+    assert segment["start_second"] == 0
+    assert segment["end_second"] == 60
+
+
+def test_session_rejects_an_unknown_mix_scope(client):
+    response = client.post(
+        "/sessions/start",
+        json={"prompt": "anything", "mix_scope": "whole_album"},
+    )
+    assert response.status_code == 422
+
+
 def _wassouf_tracks():
     """Three distinct real-shaped Audius candidates for one named artist --
     enough to prove a session rotates through more than one when advancing,

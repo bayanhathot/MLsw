@@ -3,6 +3,7 @@
 import { apiRequest, backendMediaUrl } from './api.js';
 import { normalizeSegment } from './segment.js';
 import { isAutoMixMode } from '../constants/autoMixModes.js';
+import { DEFAULT_MIX_SCOPE, isMixScope } from '../constants/mixScope.js';
 
 /**
  * @param {unknown} value
@@ -45,6 +46,9 @@ export function normalizeSession(value, fallbackPrompt) {
 		id: text(raw.id ?? raw.session_id, String(raw.mix_id ?? raw.id ?? '')),
 		prompt: text(raw.prompt, fallbackPrompt),
 		mode: isAutoMixMode(raw.mode) ? raw.mode : null,
+		mixScope: isMixScope(raw.mixScope ?? raw.mix_scope)
+			? (raw.mixScope ?? raw.mix_scope)
+			: DEFAULT_MIX_SCOPE,
 		vibeLabel,
 		nowPlaying,
 		audioUrl: backendMediaUrl(text(raw.audioUrl ?? raw.audio_url, firstSegment?.audioUrl || '')),
@@ -68,12 +72,12 @@ export function normalizeSession(value, fallbackPrompt) {
 }
 
 /**
- * @param {{ prompt: string, mode?: import('../types.js').AutoMixMode | null, signal?: AbortSignal }} params
+ * @param {{ prompt: string, mode?: import('../types.js').AutoMixMode | null, mixScope?: import('../types.js').MixScope, signal?: AbortSignal }} params
  */
-export async function startSession({ prompt, mode = null, signal }) {
+export async function startSession({ prompt, mode = null, mixScope = DEFAULT_MIX_SCOPE, signal }) {
 	const response = await apiRequest('/sessions/start', {
 		method: 'POST',
-		body: JSON.stringify({ prompt, mode }),
+		body: JSON.stringify({ prompt, mode, mix_scope: mixScope }),
 		// Runs the full pipeline (VibeUnderstander -> CandidateRetriever ->
 		// SegmentSelector -> TransitionPlanner -> AudioRenderer); the Ollama
 		// stage alone can take up to OLLAMA_TIMEOUT_SECONDS before falling

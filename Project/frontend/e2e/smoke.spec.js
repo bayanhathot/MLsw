@@ -263,6 +263,19 @@ test('auto-mix modes influence but never replace the user prompt', async ({ page
 		'true'
 	);
 
+	// The mixing-scope toggle is an independent control next to the mode
+	// selector -- picking it must not reset the prompt or the chosen mode.
+	await expect(page.getByRole('button', { name: 'Segment mixing' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await page.getByRole('button', { name: 'Full songs' }).click();
+	await expect(prompt).toHaveValue('slow jazz for reading without vocals');
+	await expect(page.getByRole('button', { name: 'Relaxation' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+
 	const startRequestPromise = page.waitForRequest(
 		(request) =>
 			new URL(request.url()).pathname === '/api/sessions/start' && request.method() === 'POST'
@@ -271,7 +284,8 @@ test('auto-mix modes influence but never replace the user prompt', async ({ page
 	const startRequest = await startRequestPromise;
 	expect(startRequest.postDataJSON()).toEqual({
 		prompt: 'slow jazz for reading without vocals',
-		mode: 'relaxation'
+		mode: 'relaxation',
+		mix_scope: 'full_songs'
 	});
 	expect(unexpectedRequests).toEqual([]);
 });

@@ -23,6 +23,7 @@
 
 	import { PRESETS } from '$lib/constants/presets.js';
 	import AutoMixModeSelector from '$lib/components/AutoMixModeSelector.svelte';
+	import MixScopeToggle from '$lib/components/MixScopeToggle.svelte';
 	import { authStore } from '$lib/stores/authStore.js';
 	import { getPromptShortcuts } from '$lib/services/promptShortcutsApi.js';
 	import { mergeShortcuts } from '$lib/utils/shortcuts.js';
@@ -63,12 +64,14 @@
 	 * @type {{
 	 *   prompt?: string,
 	 *   mode?: import('$lib/types.js').AutoMixMode | null,
+	 *   mixScope?: import('$lib/types.js').MixScope,
 	 *   isStarting?: boolean,
 	 *   isOverlay?: boolean,
 	 *   showCancel?: boolean,
 	 *   startLabel?: string,
 	 *   onPromptChange?: (prompt: string) => void,
 	 *   onModeChange?: (mode: import('$lib/types.js').AutoMixMode | null) => void,
+	 *   onMixScopeChange?: (scope: import('$lib/types.js').MixScope) => void,
 	 *   onStart?: () => void,
 	 *   onCancel?: () => void
 	 * }}
@@ -76,12 +79,14 @@
 	let {
 		prompt = '',
 		mode = null,
+		mixScope = 'segments',
 		isStarting = false,
 		isOverlay = false,
 		showCancel = false,
 		startLabel = '▶ Start AI DJ',
 		onPromptChange = () => {},
 		onModeChange = () => {},
+		onMixScopeChange = () => {},
 		onStart = () => {},
 		onCancel = () => {}
 	} = $props();
@@ -147,6 +152,7 @@
 
 		<div class="mode-row">
 			<AutoMixModeSelector value={mode} compact={isOverlay} onChange={onModeChange} />
+			<MixScopeToggle value={mixScope} compact={isOverlay} onChange={onMixScopeChange} />
 		</div>
 	</div>
 </form>
@@ -245,6 +251,8 @@
 
 	.mode-row {
 		grid-column: 2;
+		display: grid;
+		gap: 14px;
 		min-width: 0;
 	}
 

@@ -15,6 +15,10 @@
 
 /** @typedef {'workout' | 'relaxation' | 'emotional_tarab' | 'party'} AutoMixMode */
 
+/** Independent of AutoMixMode -- whether each track is mixed as one
+ * selected segment (default) or start to end. See constants/mixScope.js. */
+/** @typedef {'segments' | 'full_songs'} MixScope */
+
 /**
  * @typedef {Object} StudioTrack
  * @property {'catalog'|'audius'} sourceType
@@ -158,6 +162,7 @@
  * @property {string} id
  * @property {string} prompt
  * @property {AutoMixMode | null} mode
+ * @property {MixScope} mixScope
  * @property {string} vibeLabel
  * @property {NowPlaying} nowPlaying
  * @property {string} audioUrl
@@ -435,6 +440,7 @@
  * @property {AppStatus} status
  * @property {string} prompt
  * @property {AutoMixMode | null} mode
+ * @property {MixScope} mixScope
  * @property {number} progress
  * @property {string} currentStep
  * @property {Session | null} session

@@ -3,6 +3,7 @@
 import { writable } from 'svelte/store';
 
 import { APP_STATES } from '../constants/appStates.js';
+import { DEFAULT_MIX_SCOPE } from '../constants/mixScope.js';
 import {
 	advanceSession as apiAdvanceSession,
 	prepareNext as apiPrepareNext,
@@ -17,6 +18,7 @@ function initialState() {
 		status: APP_STATES.IDLE,
 		prompt: '',
 		mode: null,
+		mixScope: DEFAULT_MIX_SCOPE,
 		currentStep: '',
 		progress: 0,
 		session: null,
@@ -194,9 +196,15 @@ function createSessionStore() {
 			update((state) => ({ ...state, mode }));
 		},
 
+		/** @param {import('../types.js').MixScope} mixScope */
+		setMixScope(mixScope) {
+			update((state) => ({ ...state, mixScope }));
+		},
+
 		async start() {
 			const prompt = latestState.prompt.trim();
 			const mode = latestState.mode;
+			const mixScope = latestState.mixScope;
 			if (!prompt || latestState.status === APP_STATES.STARTING) {
 				return false;
 			}
@@ -240,7 +248,12 @@ function createSessionStore() {
 			}));
 
 			try {
-				const session = await apiStartSession({ prompt, mode, signal: startController.signal });
+				const session = await apiStartSession({
+					prompt,
+					mode,
+					mixScope,
+					signal: startController.signal
+				});
 				if (requestVersion !== lifecycleVersion) {
 					return false;
 				}
@@ -252,6 +265,7 @@ function createSessionStore() {
 				update((state) => ({
 					...state,
 					mode: session.mode,
+					mixScope: session.mixScope,
 					status: APP_STATES.PLAYING,
 					currentStep: 'Ready to play',
 					progress: 100,

@@ -51,7 +51,10 @@ from app.services.pipeline.interfaces import (
     TransitionPlanner,
     VibeUnderstander,
 )
-from app.services.pipeline.segment_selector import LibrosaSegmentSelector
+from app.services.pipeline.segment_selector import (
+    FullTrackSegmentSelector,
+    LibrosaSegmentSelector,
+)
 from app.services.pipeline.transition_planner import DeterministicTransitionPlanner
 from app.services.pipeline.vibe import DeterministicOnlyVibeUnderstander, OllamaVibeUnderstander
 
@@ -115,6 +118,7 @@ _vibe_understander = _build_vibe_understander()
 _catalog_retriever = CatalogTrackRetriever()
 _audius_retriever = _build_audius_retriever()
 _segment_selector = LibrosaSegmentSelector()
+_full_track_segment_selector = FullTrackSegmentSelector()
 _transition_planner = DeterministicTransitionPlanner()
 _audio_renderer = PydubAudioRenderer()
 
@@ -146,6 +150,15 @@ def get_audius_candidate_retriever() -> CandidateRetriever:
 
 def get_segment_selector() -> SegmentSelector:
     return _segment_selector
+
+
+def get_full_track_segment_selector() -> SegmentSelector:
+    """The 'full_songs' mix-scope alternative to get_segment_selector() --
+    see FullTrackSegmentSelector's own docstring. Session routes inject
+    both and pick whichever the session's own (or, at creation, the
+    request's own) mix_scope calls for."""
+
+    return _full_track_segment_selector
 
 
 def get_transition_planner() -> TransitionPlanner:

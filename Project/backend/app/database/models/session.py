@@ -22,6 +22,9 @@ class DJSession(Base):
             "mode IS NULL OR mode IN ('workout', 'relaxation', 'emotional_tarab', 'party')",
             name="ck_dj_session_mode",
         ),
+        CheckConstraint(
+            "mix_scope IN ('segments', 'full_songs')", name="ck_dj_session_mix_scope"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(48), primary_key=True)
@@ -34,6 +37,16 @@ class DJSession(Base):
     # mode produced it for API/UI/debugging rather than trying to infer the
     # mode later from mutable intent fields.
     mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Which SegmentSelector this session's whole lifetime (create/advance/
+    # feedback/prepare-next) uses -- 'segments' (default) keeps today's
+    # librosa-based best-window-per-track behavior via LibrosaSegmentSelector;
+    # 'full_songs' mixes each track start-to-end via FullTrackSegmentSelector.
+    # Persisted (not re-derived from the request each call) so a session
+    # started as full-songs stays full-songs for every later advance/
+    # prepare-next -- those endpoints never see the original request, only
+    # this row. Not nullable, unlike `mode`: every session has exactly one
+    # scope, there is no "unset" state the way a mode can be absent/custom.
+    mix_scope: Mapped[str] = mapped_column(String(20), nullable=False, default="segments")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="playing")
     vibe_label: Mapped[str] = mapped_column(String(100), nullable=False)
     # Name of whichever CandidateRetriever actually served the current

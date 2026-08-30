@@ -74,6 +74,12 @@ class AutoMixMode(StrEnum):
 class StartSessionRequest(NonBlankModel):
     prompt: str = Field(min_length=1, max_length=300)
     mode: AutoMixMode | None = None
+    # Independent of `mode` (the vibe/genre selector) -- whether each track
+    # is mixed as one selected segment (today's only behavior) or start to
+    # end. Defaults to "segments" so any existing/older client that never
+    # sends this field gets byte-identical behavior to before this field
+    # existed.
+    mix_scope: Literal["segments", "full_songs"] = "segments"
 
 
 class SessionFeedbackRequest(NonBlankModel):
@@ -99,6 +105,10 @@ class SessionRead(BaseModel):
     id: str
     prompt: str
     mode: AutoMixMode | None = None
+    # camelCase, matching every other field on this response model
+    # (vibeLabel/audioUrl/nowPlaying/selectedFeedback) -- unlike most of
+    # this module, which serializes snake_case directly.
+    mixScope: Literal["segments", "full_songs"] = "segments"
     status: Literal["playing", "stopped"]
     vibeLabel: str
     audioUrl: str

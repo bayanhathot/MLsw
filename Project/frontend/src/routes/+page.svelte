@@ -31,7 +31,6 @@
 
 	import HeroSection from '$lib/components/HeroSection.svelte';
 	import PromptComposer from '$lib/components/PromptComposer.svelte';
-	import PipelineDebugPanel from '$lib/components/PipelineDebugPanel.svelte';
 
 	/* Local UI-only state:
      Tracks whether the compact prompt panel is currently open while a session is active.
@@ -85,12 +84,14 @@
 			<PromptComposer
 				prompt={$sessionStore.prompt}
 				mode={$sessionStore.mode}
+				mixScope={$sessionStore.mixScope}
 				isStarting={$sessionStore.status === APP_STATES.STARTING || $sessionStore.isChangingVibe}
 				isOverlay={isSessionActive}
 				showCancel={isSessionActive}
 				startLabel={isSessionActive ? 'Update vibe' : '▶ Start AI DJ'}
 				onPromptChange={sessionStore.setPrompt}
 				onModeChange={sessionStore.setMode}
+				onMixScopeChange={sessionStore.setMixScope}
 				onStart={startVibe}
 				onCancel={closePromptPanel}
 			/>
@@ -151,7 +152,6 @@
 	{/if}
 </div>
 
-<PipelineDebugPanel />
 
 <style>
 	.home-stage {
