@@ -1,6 +1,6 @@
 /** API functions and response normalization for persistent community mixes. */
 
-import { apiRequest } from './api.js';
+import { apiRequest, backendMediaUrl } from './api.js';
 import { normalizeSegment } from './segment.js';
 import { isAutoMixMode } from '../constants/autoMixModes.js';
 
@@ -34,6 +34,11 @@ export function normalizeMix(value) {
 		renderStatus: String(raw.render_status || 'not_rendered'),
 		renderedAudioUrl: raw.rendered_audio_url ? String(raw.rendered_audio_url) : null,
 		publishedAudioUrl: raw.published_audio_url ? String(raw.published_audio_url) : null,
+		publicationMode: ['rendered_asset', 'provider_manifest'].includes(
+			raw.publicationMode ?? raw.publication_mode
+		)
+			? (raw.publicationMode ?? raw.publication_mode)
+			: null,
 		visibility: raw.visibility === 'public' ? 'public' : 'private',
 		segments,
 		owner:
@@ -71,6 +76,57 @@ export async function getLibrary({ signal } = {}) {
 /** @param {number} mixId */
 export async function getMix(mixId) {
 	return normalizeMix(await apiRequest(`/mixes/${mixId}`));
+}
+
+/**
+ * @param {unknown} value
+ * @returns {import('../types.js').PlaybackManifestSegment}
+ */
+function normalizeManifestSegment(value) {
+	const raw = /** @type {Record<string, any>} */ (value || {});
+	return {
+		position: Number(raw.position || 0),
+		title: String(raw.title || ''),
+		artist: String(raw.artist || ''),
+		coverUrl: raw.cover_url ? String(raw.cover_url) : null,
+		source: String(raw.source || ''),
+		sourceTrackId: String(raw.source_track_id || ''),
+		audioUrl: raw.audio_url ? backendMediaUrl(String(raw.audio_url)) : null,
+		startMs: Number(raw.start_ms || 0),
+		endMs: Number(raw.end_ms || 0),
+		transitionType: String(raw.transition_type || 'cut'),
+		transitionDurationMs: Number(raw.transition_duration_ms || 0),
+		gainDb: raw.gain_db == null ? null : Number(raw.gain_db),
+		providerUrl: raw.provider_url ? String(raw.provider_url) : null,
+		attribution: raw.attribution ? String(raw.attribution) : null,
+		license: raw.license ? String(raw.license) : null,
+		rightsStatus: String(raw.rights_status || 'creator_owned'),
+		availability: raw.availability === 'unavailable' ? 'unavailable' : 'available',
+		unavailableReason: raw.unavailable_reason ? String(raw.unavailable_reason) : null
+	};
+}
+
+/**
+ * @param {unknown} value
+ * @returns {import('../types.js').PlaybackManifest}
+ */
+export function normalizePlaybackManifest(value) {
+	const raw = /** @type {Record<string, any>} */ (value || {});
+	const segments = Array.isArray(raw.segments) ? raw.segments.map(normalizeManifestSegment) : [];
+	return {
+		schemaVersion: Number(raw.schema_version || 1),
+		mixId: Number(raw.mix_id),
+		revision: Number(raw.revision || 1),
+		mode: raw.mode === 'provider_manifest' ? 'provider_manifest' : 'rendered_asset',
+		title: String(raw.title || ''),
+		audioUrl: raw.audio_url ? backendMediaUrl(String(raw.audio_url)) : null,
+		segments: segments.sort((a, b) => a.position - b.position)
+	};
+}
+
+/** @param {number} mixId */
+export async function getPlaybackManifest(mixId) {
+	return normalizePlaybackManifest(await apiRequest(`/mixes/${mixId}/playback-manifest`));
 }
 
 /** @param {string} prompt @param {import('../types.js').AutoMixMode | null} [mode] */

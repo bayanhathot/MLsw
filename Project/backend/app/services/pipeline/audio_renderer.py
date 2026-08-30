@@ -21,6 +21,7 @@ import concurrent.futures
 import hashlib
 import logging
 import os
+import shutil
 import time
 from io import BytesIO
 from pathlib import Path
@@ -79,6 +80,48 @@ def _render_dir() -> Path:
     directory = upload_queue.UPLOAD_DIR / RENDER_SUBDIR
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+# A published 'rendered_asset' mix's composite audio must survive
+# _sweep_stale_renders (that mtime-based sweep only scans files it finds
+# directly inside _render_dir(), so a subdirectory of it is naturally never
+# touched -- see _sweep_stale_renders's own iterdir() call -- but the
+# published file must actually live here, not merely happen to be new
+# enough not to have been swept yet, since a mix can stay published far
+# longer than RENDERED_AUDIO_TTL_SECONDS). Draft/preview renders are
+# untouched by this and keep expiring exactly as before.
+PUBLISHED_RENDER_SUBDIR = f"{RENDER_SUBDIR}/published"
+
+
+def _published_render_dir() -> Path:
+    directory = upload_queue.UPLOAD_DIR / PUBLISHED_RENDER_SUBDIR
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def promote_render_to_published(audio_url: str) -> str | None:
+    """Copies an existing temporary composite render (a /media/renders/<f>
+    URL, as produced by _export()) into the durable published subdirectory
+    and returns its new, permanent public URL -- or None if the source file
+    is already gone (e.g. swept before publish completed), so callers can
+    degrade gracefully instead of publishing a link to nothing.
+
+    A copy, not a move: the draft this was rendered for may still be read
+    from its original location (e.g. re-opened in Studio) until the next
+    render/edit invalidates it -- publishing must not pull that file out
+    from under an in-progress draft view."""
+
+    source = _local_render_path(audio_url)
+    if source is None or not source.is_file():
+        return None
+    destination = _published_render_dir() / source.name
+    if not destination.is_file():
+        try:
+            shutil.copyfile(source, destination)
+        except OSError:
+            logger.warning("Could not promote %s to durable published storage.", audio_url)
+            return None
+    return public_api_url(f"/media/{PUBLISHED_RENDER_SUBDIR}/{destination.name}")
 
 
 def _bounded(func, *, timeout_seconds: float):

@@ -220,7 +220,15 @@ def test_transition_preview_render_publish_and_immutable_duplicate(
 
     published = client.post(f"/studio/mixes/{mix['id']}/publish")
     assert published.status_code == 200, published.text
-    assert published.json()["status"] == "published"
+    published_body = published.json()
+    assert published_body["status"] == "published"
+    # Creator-owned hosted (catalog) audio uses the rendered_asset mode,
+    # and its composite file is promoted out of the temporary-render
+    # directory the TTL sweep scans -- see
+    # audio_renderer.promote_render_to_published.
+    assert published_body["publication_mode"] == "rendered_asset"
+    assert published_body["published_audio_url"]
+    assert "/media/renders/published/" in published_body["published_audio_url"]
     assert client.patch(
         f"/mixes/{mix['id']}",
         json={"title": "legacy bypass", "description": None, "cover_url": None},
@@ -272,9 +280,15 @@ def test_passive_signals_are_bounded_and_auto_mix_stays_editable(client, db_sess
     ).status_code == 200
 
 
-def test_audius_segments_are_editable_but_provider_audio_cannot_be_published(
+def test_studio_mix_with_audius_segments_publishes_as_provider_manifest(
     client, db_session, monkeypatch
 ):
+    """Publishing a Studio mix containing Audius segments succeeds -- it
+    must never permanently republish the rendered composite WAV as public
+    audio (see SECURITY.md); it publishes an immutable provider_manifest
+    instead, and the same segment stays streamable straight from Audius via
+    the public playback-manifest endpoint."""
+
     register_and_login(client)
     external = ExternalTrack(
         source="audius",
@@ -307,7 +321,7 @@ def test_audius_segments_are_editable_but_provider_audio_cannot_be_published(
     )
     assert saved.status_code == 201, saved.text
     assert saved.json()["start_ms"] == 15_250
-    mix = client.post("/studio/mixes", json={"title": "Private provider draft"}).json()
+    mix = client.post("/studio/mixes", json={"title": "Provider draft"}).json()
     mix = client.post(
         f"/studio/mixes/{mix['id']}/items",
         json={
@@ -318,12 +332,29 @@ def test_audius_segments_are_editable_but_provider_audio_cannot_be_published(
     row = db_session.get(Mix, mix["id"])
     row.render_status = "ready"
     row.rendered_revision = row.revision
-    row.rendered_audio_url = "/static/audio/private.wav"
+    row.rendered_audio_url = "/media/renders/temporary-composite.wav"
     db_session.commit()
 
-    blocked = client.post(f"/studio/mixes/{mix['id']}/publish")
-    assert blocked.status_code == 422
-    assert "Provider-sourced" in blocked.json()["detail"]
+    published = client.post(f"/studio/mixes/{mix['id']}/publish")
+    assert published.status_code == 200, published.text
+    body = published.json()
+    assert body["status"] == "published"
+    assert body["publication_mode"] == "provider_manifest"
+    # The temporary composite render must never become the permanent
+    # public audio for a provider-sourced publish.
+    assert body["published_audio_url"] is None
+
+    manifest = client.get(f"/mixes/{mix['id']}/playback-manifest")
+    assert manifest.status_code == 200, manifest.text
+    manifest_body = manifest.json()
+    assert manifest_body["mode"] == "provider_manifest"
+    assert len(manifest_body["segments"]) == 1
+    segment = manifest_body["segments"][0]
+    assert segment["availability"] == "available"
+    assert segment["source"] == "audius"
+    assert segment["audio_url"] and segment["audio_url"].startswith("https://discoveryprovider")
+    assert segment["attribution"]
+    assert segment["rights_status"] == "provider_streaming"
 
 
 def test_studio_assistant_fails_open_and_validates_grounded_bounds(

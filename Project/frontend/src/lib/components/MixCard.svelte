@@ -12,7 +12,11 @@
 	 * }} */
 	let { mix, busyAction = '', onPlay = () => {}, onLike = () => {}, onSave = () => {} } = $props();
 
-	let hasAudio = $derived(mix.segments.some((segment) => Boolean(segment.audioUrl)));
+	let hasAudio = $derived(
+		mix.publicationMode === 'provider_manifest' ||
+			mix.segments.some((segment) => Boolean(segment.audioUrl))
+	);
+	let isProviderBacked = $derived(mix.publicationMode === 'provider_manifest');
 	let shareOpen = $state(false);
 	let shareCaption = $state('');
 	/** @type {'public'|'friends'} */
@@ -60,7 +64,19 @@
 		{#if mix.owner}
 			<p class="owner">by @{mix.owner.username}</p>
 		{/if}
-		<h2>{mix.title}</h2>
+		<div class="title-row">
+			<h2>{mix.title}</h2>
+			{#if isProviderBacked}
+				<span class="provider-badge"
+					><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"
+						><path
+							fill="currentColor"
+							d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm-1 3.5 5 3.5-5 3.5v-7Z"
+						/></svg
+					>Provider-backed — via Audius</span
+				>
+			{/if}
+		</div>
 		<p class="prompt">{mix.prompt}</p>
 		{#if mix.description}
 			<p class="description">{mix.description}</p>
@@ -154,6 +170,37 @@
 	h2 {
 		margin: 7px 0;
 		font-size: 20px;
+	}
+
+	.title-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.title-row h2 {
+		margin: 7px 0;
+	}
+
+	.provider-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		border: 1px solid rgba(125, 183, 255, 0.4);
+		border-radius: 999px;
+		padding: 3px 10px;
+		background: rgba(59, 130, 246, 0.14);
+		color: #cfe0ff;
+		font-size: 11px;
+		font-weight: 800;
+		letter-spacing: 0.02em;
+		white-space: nowrap;
+	}
+
+	.provider-badge svg {
+		width: 12px;
+		height: 12px;
 	}
 
 	.prompt,

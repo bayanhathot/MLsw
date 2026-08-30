@@ -35,6 +35,10 @@ class Mix(Base):
         CheckConstraint(
             "visibility IN ('private', 'public')", name="ck_mix_visibility"
         ),
+        CheckConstraint(
+            "publication_mode IS NULL OR publication_mode IN ('rendered_asset', 'provider_manifest')",
+            name="ck_mix_publication_mode",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -59,6 +63,24 @@ class Mix(Base):
     rendered_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_segments_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 'rendered_asset' (a durable, CueMix-hosted composite the client plays
+    # directly) or 'provider_manifest' (an immutable playback recipe the
+    # client reconstructs from live provider streams -- see
+    # publish_service.py's own module docstring for the full rationale).
+    # Nullable so a pre-existing published row from before this column
+    # existed still validates; publish_service backfills/derives it lazily
+    # wherever it matters instead of requiring every legacy row rewritten.
+    publication_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # The immutable public snapshot for a 'provider_manifest' publish (schema
+    # per publish_service.MANIFEST_SCHEMA_VERSION) -- ordered segments with
+    # provider identity, attribution, exact bounds/transitions, and the
+    # rights/availability status recorded at publish time. None for a
+    # 'rendered_asset' publish (published_audio_url is the whole story
+    # there) and for any legacy row published before this existed; the
+    # public playback-manifest endpoint reconstructs an equivalent manifest
+    # on demand from published_segments_json for that legacy case rather
+    # than ever depending on it being present.
+    published_manifest_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     visibility: Mapped[str] = mapped_column(
         String(20), nullable=False, default="private"
     )

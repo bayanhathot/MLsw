@@ -111,6 +111,7 @@ def build_post(db: Session, post: ForumPost, viewer_id: int | None) -> PostRead:
                 "cover_url": mix.cover_url,
                 "owner_username": owner.username if owner else "Deleted user",
                 "segment_count": len(mix.segments),
+                "publication_mode": mix.publication_mode,
             }
     return PostRead(
         id=post.id,

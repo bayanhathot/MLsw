@@ -140,6 +140,15 @@ def _remember_audius_results(db: Session, raw_tracks: list[dict]) -> list[Extern
     ]
     external_track_cache.enrich_and_dispatch(db, tracks)
     ids = [track.source_track_id for track in tracks]
+    # Attribution-only field (see audius_service.audius_track_page_url) --
+    # carried alongside `tracks` rather than added to the generic pipeline
+    # `Track` schema, which every other retriever also constructs and has
+    # no notion of a provider web page.
+    permalinks_by_id = {
+        str(item["source_track_id"]): item.get("permalink")
+        for item in raw_tracks
+        if item.get("source_track_id")
+    }
     existing = {
         row.external_id: row
         for row in db.query(ExternalTrack)
@@ -148,7 +157,12 @@ def _remember_audius_results(db: Session, raw_tracks: list[dict]) -> list[Extern
     }
     for track in tracks:
         row = existing.get(track.source_track_id)
-        metadata = {"tags": track.tags, "vibe": track.vibe, "cover_url": track.cover_url}
+        metadata = {
+            "tags": track.tags,
+            "vibe": track.vibe,
+            "cover_url": track.cover_url,
+            "permalink": permalinks_by_id.get(track.source_track_id),
+        }
         if row is None:
             row = ExternalTrack(
                 source="audius",

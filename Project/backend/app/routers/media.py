@@ -25,3 +25,24 @@ def serve_rendered_audio(filename: str):
         content_disposition_type="inline",
         headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
     )
+
+
+# Durable counterpart to serve_rendered_audio above -- serves a published
+# 'rendered_asset' mix's composite audio out of the subdirectory
+# audio_renderer.promote_render_to_published() copies it into, which the
+# temporary-render TTL sweep never scans (see that function's own
+# docstring). A distinct route, not a query flag on the one above: the two
+# directories have different lifetime/durability guarantees and must never
+# be reachable through the same path-traversal-checked root.
+@router.get("/renders/published/{filename}")
+def serve_published_rendered_audio(filename: str):
+    root = (uq.UPLOAD_DIR / "renders" / "published").resolve()
+    path = (root / filename).resolve()
+    if path.parent != root or not path.is_file():
+        raise HTTPException(status_code=404, detail="Rendered audio not found.")
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        content_disposition_type="inline",
+        headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )

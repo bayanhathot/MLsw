@@ -24,7 +24,7 @@ from app.schemas import (
     Track,
     TransitionPlan,
 )
-from app.services import audius_service, upload_queue
+from app.services import audius_service, publish_service, upload_queue
 from app.services.pipeline import audio_renderer
 from app.services.pipeline.catalog_retriever import CATALOG_AUDIO_SUBDIR
 from app.services.pipeline.interfaces import (
@@ -781,50 +781,17 @@ def preview_transition(
 
 
 def publish_mix(db: Session, mix: Mix) -> Mix:
+    """Studio's own draft/render-ready/concurrency gate, then the same
+    rights-check + mode-selection + manifest-building policy a regular
+    generated mix's publish uses -- see publish_service.py's own module
+    docstring. A provider-sourced Studio draft is no longer rejected here:
+    it publishes as an immutable `provider_manifest` instead of a
+    `rendered_asset`, exactly like a provider-backed regular mix does."""
+
     _require_draft(mix)
     if mix.render_status != "ready" or mix.rendered_revision != mix.revision:
         raise HTTPException(status_code=409, detail="Render the current draft revision before publishing.")
-    # Audius permits streaming through its provider endpoint, not republishing
-    # downloaded bytes as a new public asset. Keep such Studio drafts private.
-    if any(item.source != "catalog" for item in mix.segments):
-        raise HTTPException(
-            status_code=422,
-            detail="Provider-sourced segments can be edited privately but cannot be republished.",
-        )
-    catalog_ids = {int(item.source_track_id) for item in mix.segments}
-    catalog_rows = {
-        row.id: row
-        for row in db.query(CatalogTrack).filter(CatalogTrack.id.in_(catalog_ids)).all()
-    }
-    if len(catalog_rows) != len(catalog_ids) or any(
-        catalog_rows[track_id].owner_id not in {None, mix.owner_id}
-        for track_id in catalog_ids
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Only your own uploads and bundled demo tracks can be published.",
-        )
-    mix.status = "published"
-    mix.visibility = "public"
-    mix.published_at = utc_now()
-    mix.published_revision = mix.revision
-    mix.published_audio_url = mix.rendered_audio_url
-    mix.published_segments_json = [
-        {
-            "id": item.id,
-            "position": item.position,
-            "title": item.title,
-            "artist": item.artist,
-            "source": item.source,
-            "source_track_id": item.source_track_id,
-            "source_start_ms": item.source_start_ms,
-            "source_end_ms": item.source_end_ms,
-            "transition_type": item.transition_type,
-            "transition_duration_ms": item.transition_duration_ms,
-        }
-        for item in sorted(mix.segments, key=lambda item: item.position)
-    ]
-    db.commit()
+    publish_service.publish_mix(db, mix)
     return _owned_studio_mix(db, mix.owner_id, mix.id)
 
 
