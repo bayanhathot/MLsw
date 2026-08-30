@@ -490,13 +490,13 @@ jobs:
           retention-days: 7
 
   container-builds:
-    name: Container builds
+    name: Production containers and system tests
     runs-on: ubuntu-latest
     # Every job in this workflow gets an explicit timeout now (see
     # frontend-checks' own comment for the real hang that exposed this gap
     # across the board, not just there) -- a full Docker build of both
     # images, even cold-cache, comfortably fits well inside this.
-    timeout-minutes: 20
+    timeout-minutes: 35
     needs: [backend-tests, frontend-checks, realtime-e2e]
     steps:
       - name: Check out repository
@@ -524,6 +524,8 @@ jobs:
         with:
           context: Project/backend
           push: false
+          load: true
+          tags: cuemix-backend:system-test
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
@@ -532,6 +534,8 @@ jobs:
         with:
           context: Project/frontend
           push: false
+          load: true
+          tags: cuemix-frontend:system-test
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
@@ -541,8 +545,118 @@ jobs:
           context: Project
           file: Project/studio-ai-service/Dockerfile
           push: false
+          load: true
+          tags: cuemix-studio-ai:system-test
           cache-from: type=gha,scope=studio-ai
           cache-to: type=gha,mode=max,scope=studio-ai
+
+      - name: Start the complete production container stack
+        env:
+          COMPOSE_PROJECT_NAME: cuemix-system-test
+        run: >-
+          docker compose
+          --env-file Project/deploy/system-test.env
+          --file Project/docker-compose.prod.yml
+          up --detach --wait --wait-timeout 180
+          postgres redis uploads-init migrate backend studio-ai-service frontend caddy
+
+      - name: Verify production containers and reverse-proxy health
+        env:
+          COMPOSE_PROJECT_NAME: cuemix-system-test
+        run: bash Project/deploy/container-system-test.sh
+
+      - name: Set up Node.js for production-system browser tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: Project/frontend/package-lock.json
+
+      - name: Install production-system browser dependencies
+        working-directory: Project/frontend
+        run: npm ci
+
+      - name: Compute today's date for the browser dependency cache
+        id: system-browser-cache-date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache Chromium system dependencies
+        id: system-browser-apt-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives/*.deb
+            /var/lib/apt/lists
+            !/var/lib/apt/lists/lock
+            !/var/lib/apt/lists/partial
+          key: apt-playwright-chromium-${{ runner.os }}-${{ steps.system-browser-cache-date.outputs.date }}
+
+      - name: Install Chromium for the containerized journey
+        working-directory: Project/frontend
+        run: |
+          if [ "${{ steps.system-browser-apt-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo apt-get update
+          fi
+          npx playwright install-deps chromium
+          npx playwright install chromium
+
+      - name: Run the full browser journey through production Caddy
+        working-directory: Project/frontend
+        env:
+          CI: "true"
+          PLAYWRIGHT_BASE_URL: https://localhost
+          PLAYWRIGHT_BACKEND_URL: https://localhost/api
+          PLAYWRIGHT_IGNORE_HTTPS_ERRORS: "true"
+          PLAYWRIGHT_REUSE_EXISTING_SERVER: "true"
+        run: npx playwright test e2e/full-journey-integration.spec.js
+
+      - name: Clear deliberate browser-test rate-limit state
+        env:
+          COMPOSE_PROJECT_NAME: cuemix-system-test
+        run: >-
+          docker compose
+          --env-file Project/deploy/system-test.env
+          --file Project/docker-compose.prod.yml
+          exec -T redis sh -c
+          'redis-cli --scan --pattern "cuemix:ratelimit:*" | xargs -r redis-cli del'
+
+      - name: Run the bounded 20-user production stress test
+        working-directory: Project/frontend
+        run: >-
+          node scripts/system-stress.mjs
+          --base-url https://localhost
+          --users 20
+          --expected-upload-workers 4
+          --insecure
+
+      - name: Show production container logs on failure
+        if: failure()
+        env:
+          COMPOSE_PROJECT_NAME: cuemix-system-test
+        run: >-
+          docker compose
+          --env-file Project/deploy/system-test.env
+          --file Project/docker-compose.prod.yml
+          logs --no-color
+
+      - name: Upload containerized browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-container-browser-failures
+          path: Project/frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop the disposable production stack
+        if: always()
+        env:
+          COMPOSE_PROJECT_NAME: cuemix-system-test
+        run: >-
+          docker compose
+          --env-file Project/deploy/system-test.env
+          --file Project/docker-compose.prod.yml
+          down --volumes --remove-orphans
 
   publish-images:
     name: Publish immutable images
@@ -694,7 +808,7 @@ jobs:
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
           scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
-          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/verify-local-llm.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       - name: Log the VM in to GHCR
         env:
@@ -827,7 +941,7 @@ jobs:
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
           scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
-          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/verify-local-llm.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       - name: Log the VM in to GHCR
         env:
@@ -922,7 +1036,7 @@ jobs:
         run: |
           ssh -i "${HOME}/.ssh/cuemix_deploy" "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/cuemix-deploy/deploy"
           scp -i "${HOME}/.ssh/cuemix_deploy" Project/docker-compose.prod.yml "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/"
-          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
+          scp -i "${HOME}/.ssh/cuemix_deploy" Project/deploy/Caddyfile Project/deploy/remote-deploy.sh Project/deploy/verify-local-llm.sh Project/deploy/backup.sh Project/deploy/restore.sh Project/deploy/backup-restore-drill.sh "${SSH_USER}@${SSH_HOST}:~/cuemix-deploy/deploy/"
 
       # Captures stdout+stderr to a file instead of letting a failure
       # short-circuit the step immediately, so the *next* step can still

@@ -157,37 +157,23 @@ if [ "${ollama_ready}" -eq 1 ]; then
     # the first real classification request pay for a cold load from disk --
     # Ollama unloads an idle model after its keep-alive window (see
     # OLLAMA_KEEP_ALIVE) but nothing loads it back in until something asks.
-    # Same never-fail-the-deploy principle as the pull step above.
+    # The deployment gate below requires it to be loaded and usable.
     echo "Warming up Ollama model ${ollama_model}..."
-    if ! "${compose[@]}" exec -T ollama ollama run "${ollama_model}" "ok"; then
-      echo "warning: failed to warm up ${ollama_model}; the first real" >&2
-      echo "request will pay the cold-load cost instead. Warm it up" >&2
-      echo "manually: docker compose exec ollama ollama run ${ollama_model} ok" >&2
-    fi
+    "${compose[@]}" exec -T ollama ollama run "${ollama_model}" "ok" >/dev/null
   else
-    echo "warning: failed to pull ${ollama_model}; the app keeps working via" >&2
-    echo "the deterministic prompt-parse fallback until this is retried" >&2
-    echo "manually: docker compose exec ollama ollama pull ${ollama_model}" >&2
+    echo "Failed to pull required Ollama model ${ollama_model}." >&2
+    exit 1
   fi
 else
-  # Never fail the deploy over this: the LLM refinement step is optional at
-  # every call site (prompt_parser.parse_prompt fails open), same principle
-  # backend's own healthcheck already applies to ollama.
-  echo "warning: ollama did not become ready in time; skipping model pull." >&2
-  echo "The app will run on the deterministic parser until this is retried" >&2
-  echo "manually: docker compose exec ollama ollama pull ${ollama_model}" >&2
+  echo "Ollama did not become ready in time; failing deployment." >&2
+  exit 1
 fi
 
-# Studio AI is optional at runtime, but expose its actual readiness in every
-# deploy log after the model pull/warm-up. Do not fail the deployment: the
-# backend intentionally returns an unavailable recommendation and keeps all
-# manual Studio features usable when this service or Ollama is down.
-if "${compose[@]}" exec -T studio-ai-service python -c \
-  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/ready', timeout=3)"; then
-  echo "Verified Studio AI readiness with model ${ollama_model}."
-else
-  echo "warning: Studio AI is not ready; manual Studio remains available." >&2
-fi
+# Runtime remains fail-open so manual Studio editing is available during a
+# later model outage. Deployment acceptance is intentionally stricter: prove
+# the selected model is installed, loaded, reported ready, and able to produce
+# one real schema-validated edit plan within the backend's production timeout.
+DEPLOY_ROOT="${DEPLOY_ROOT}" bash "${DEPLOY_ROOT}/deploy/verify-local-llm.sh"
 
 # Install (or refresh) a daily backup cron job -- idempotent, so this is
 # safe to run on every deploy, not just the first. Runs as whichever user

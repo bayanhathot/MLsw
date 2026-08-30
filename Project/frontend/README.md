@@ -57,7 +57,17 @@ journey uploads and analyzes original generated WAV files through the real job
 queue, edits and previews their segments in Studio, renders and publishes the
 mix, plays it from Library, and verifies that Profile analytics changed. These
 real-backend tests are required before container images can be built or
-deployed.
+deployed. The container gate then starts the complete production Compose stack
+and repeats that journey through Caddy's HTTPS edge. Finally, this command:
+
+```sh
+npm run test:system-stress -- --base-url https://localhost --users 20 --expected-upload-workers 4 --insecure
+```
+
+performs real concurrent registration, login, Community, upload, friendship,
+messaging, and DJ-session actions. It also verifies the upload worker/capacity
+boundary, one intentional 429, rate-limit recovery, and zero unexpected 5xx
+responses or request timeouts.
 
 ## API conventions
 

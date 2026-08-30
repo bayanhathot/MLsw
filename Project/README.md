@@ -163,7 +163,17 @@ suite covers both the complete coaching-memory journey and a full product
 journey: register, upload and analyze multiple real WAV files, edit/preview/
 render/publish a Studio mix, play it from Library, and verify the resulting
 Profile analytics. Container builds, image publishing, and Azure deployment
-wait for both the ordinary checks and this real-backend suite to pass.
+wait for both the ordinary checks and this real-backend suite to pass. After
+building the three production images, CI also starts the real production
+Compose topology (Caddy, frontend, backend, Studio AI, PostgreSQL, and Redis),
+repeats the full journey through Caddy over HTTPS, and runs a bounded 20-user
+stress gate. That workload covers registration/login, Community posts,
+parallel audio uploads, friendships/messages, DJ sessions, the configured
+four-worker upload limit, deliberate 429 throttling, and recovery after the
+rate-limit window; any unexpected 5xx response or timeout fails deployment.
+On the Azure VM, the final deployment gate also requires Ollama to be ready,
+the configured local model to be installed and loaded, and one real Studio edit
+plan to complete successfully within the production timeout.
 
 To point those real integration files at an already-running stack manually,
 set `PLAYWRIGHT_BASE_URL` to its frontend origin and

@@ -34,7 +34,15 @@ def test_debug_dashboard_enabled_parses_common_truthy_values(monkeypatch):
         assert debug_dashboard_enabled() is False
 
 
-@pytest.mark.parametrize("path", ["/admin/debug/sessions", "/admin/debug/external-tracks", "/admin/debug/events"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/debug/sessions",
+        "/admin/debug/external-tracks",
+        "/admin/debug/events",
+        "/admin/debug/upload-queue",
+    ],
+)
 def test_admin_debug_is_404_when_flag_disabled(client, path, monkeypatch):
     monkeypatch.delenv("DEBUG_DASHBOARD_ENABLED", raising=False)
     register_and_login(client)
@@ -43,10 +51,19 @@ def test_admin_debug_is_404_when_flag_disabled(client, path, monkeypatch):
     assert response.json() == {"detail": "Not found."}
 
 
-def test_admin_debug_is_404_when_not_logged_in(client, monkeypatch):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/debug/sessions",
+        "/admin/debug/external-tracks",
+        "/admin/debug/events",
+        "/admin/debug/upload-queue",
+    ],
+)
+def test_admin_debug_is_404_when_not_logged_in(client, monkeypatch, path):
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
     # Deliberately no register_and_login call.
-    response = client.get("/admin/debug/sessions")
+    response = client.get(path)
     assert response.status_code == 404
 
 
@@ -71,6 +88,7 @@ def test_admin_debug_kill_switch_still_404s_a_logged_in_user(client, monkeypatch
     assert client.get("/admin/debug/sessions").status_code == 404
     assert client.get("/admin/debug/external-tracks").status_code == 404
     assert client.get("/admin/debug/events").status_code == 404
+    assert client.get("/admin/debug/upload-queue").status_code == 404
 
 
 def test_admin_debug_shows_real_session_data(client, monkeypatch):
@@ -133,6 +151,29 @@ def test_admin_debug_events_endpoint_returns_recorded_events(client, monkeypatch
     assert payload["events"][0]["stage"] == "create_session"
 
 
+def test_admin_debug_upload_queue_exposes_only_aggregate_runtime_metrics(
+    client, monkeypatch
+):
+    register_and_login(client)
+    monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
+
+    response = client.get("/admin/debug/upload-queue")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured_workers"] >= 1
+    assert payload["capacity"] >= 1
+    assert payload["queued_items"] >= 0
+    assert payload["tracked_jobs"] >= 0
+    assert isinstance(payload["statuses"], dict)
+    assert not {
+        "job_id",
+        "owner_id",
+        "filename",
+        "pending_path",
+        "storage_name",
+    } & payload.keys()
+
+
 def test_admin_debug_response_never_contains_the_backend_secret_key(client, monkeypatch):
     """Grepping the actual rendered response for a known secret value,
     not eyeballing the schema -- SECRET_KEY signs every JWT; if it ever
@@ -142,7 +183,12 @@ def test_admin_debug_response_never_contains_the_backend_secret_key(client, monk
     monkeypatch.setenv("DEBUG_DASHBOARD_ENABLED", "true")
     client.post("/sessions/start", json={"prompt": "smooth focus music"})
 
-    for path in ("/admin/debug/sessions", "/admin/debug/external-tracks", "/admin/debug/events"):
+    for path in (
+        "/admin/debug/sessions",
+        "/admin/debug/external-tracks",
+        "/admin/debug/events",
+        "/admin/debug/upload-queue",
+    ):
         response = client.get(path)
         assert SECRET_KEY not in response.text
         assert os.getenv("DATABASE_URL", "") == "" or os.getenv("DATABASE_URL") not in response.text

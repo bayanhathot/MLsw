@@ -1113,6 +1113,16 @@ class AdminDebugEventsRead(BaseModel):
     events: list[AdminDebugEventRead]
 
 
+class AdminDebugUploadQueueRead(BaseModel):
+    """Non-sensitive runtime shape for the upload concurrency stress gate."""
+
+    configured_workers: int = Field(ge=0, le=8)
+    capacity: int = Field(ge=1, le=256)
+    queued_items: int = Field(ge=0)
+    tracked_jobs: int = Field(ge=0)
+    statuses: dict[str, int]
+
+
 class CatalogTrackRead(BaseModel):
     id: int
     title: str

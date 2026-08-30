@@ -41,9 +41,11 @@ from app.schemas import (
     AdminDebugEventsRead,
     AdminDebugExternalTracksRead,
     AdminDebugSessionsRead,
+    AdminDebugUploadQueueRead,
     ExternalTrackDebugRead,
     SessionPipelineDebugRead,
 )
+from app.services import upload_queue as upload_queue_service
 from app.services.admin_debug_events import recent_events
 
 logger = logging.getLogger(__name__)
@@ -144,3 +146,15 @@ def read_events(_user: User = Depends(_require_enabled_and_authenticated)):
     than these structured summaries carry."""
 
     return AdminDebugEventsRead(events=recent_events())
+
+
+@router.get("/upload-queue", response_model=AdminDebugUploadQueueRead)
+def read_upload_queue(_user: User = Depends(_require_enabled_and_authenticated)):
+    """Expose only aggregate queue topology/state for operational checks.
+
+    In particular, the CI stress gate can prove that its upload burst used
+    the production worker limit. Per-job ids, owners, names, and paths never
+    leave UploadQueue.metrics().
+    """
+
+    return AdminDebugUploadQueueRead(**upload_queue_service.upload_queue.metrics())

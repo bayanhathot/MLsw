@@ -12,6 +12,14 @@ passes CI publishes commit-SHA-tagged images and redeploys the VM
 automatically, verified live by curling `$PUBLIC_BASE_URL/api/db-health`
 from the runner as the last step of the `deploy-production` job.
 
+Before images can be published, the container gate builds all three Cuemix
+images and starts the complete `docker-compose.prod.yml` topology with the
+disposable, non-secret `deploy/system-test.env`. It checks Caddy's public HTTPS
+routes, backend/database/Redis health, Studio AI health, and media delivery;
+then it runs the complete browser journey and a bounded 20-user workload
+through the same public edge. A failure prevents image publishing and Azure
+deployment, and the disposable containers and volumes are always removed.
+
 ## One-time VM setup (already done for the current deployment)
 
 Kept here for reference, or for standing up a second environment:
@@ -69,10 +77,13 @@ Redis services. Its `/ready` result requires the configured model to be present
 and loaded in memory. Studio requests always enable reasoning and send
 `STUDIO_AI_KEEP_ALIVE=-1`; the production keepalive sidecar also reloads the
 model after a VM/container restart and is explicitly started by every deploy.
-Failed readiness is reported during
-deployment but does not take down the backend because the assistant is
-deliberately fail-open. Manual Studio editing, rendering, and publishing do not
-depend on it.
+The deployment then runs `deploy/verify-local-llm.sh` on the VM. This is a hard
+gate: it verifies Ollama responds, the configured model is installed and loaded,
+Studio `/ready` names that model, and one real schema-validated edit plan finishes
+within `STUDIO_AI_TIMEOUT_SECONDS`. Any failure stops the deployment instead of
+leaving a green run with a broken local model. Runtime behavior remains fail-open:
+if the model later becomes unavailable, manual Studio editing, rendering, and
+publishing still work.
 
 ### Backend concurrency boundary
 

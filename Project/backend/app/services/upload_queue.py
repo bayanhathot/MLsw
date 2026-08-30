@@ -322,6 +322,12 @@ class UploadQueue:
         self._lock = Lock()
         self._submission_lock = Lock()
         self._sequence = count()
+        # Read-only operational values exposed by the authenticated debug
+        # dashboard. Keeping the configured values next to the actual queue
+        # and worker construction makes the stress gate verify the runtime
+        # topology, not merely repeat environment-variable expectations.
+        self._worker_count = workers
+        self._capacity = capacity
         self._max_history = max_history
         self._unclaimed_ttl = max(60, int(os.getenv("UPLOAD_JOB_TTL_SECONDS", "3600")))
         self._cleanup_wakeup = Event()
@@ -705,6 +711,28 @@ class UploadQueue:
         with self._lock:
             job = self._jobs.get(job_id)
             return dict(job) if job else None
+
+    def metrics(self) -> dict:
+        """Return bounded, non-user-identifying queue diagnostics.
+
+        The production stress gate uses this to prove that a concurrent
+        upload burst ran through the configured worker/capacity limits. No
+        filenames, owners, job ids, or stored media paths leave the queue.
+        """
+
+        with self._lock:
+            statuses: dict[str, int] = {}
+            for job in self._jobs.values():
+                status = str(job.get("status") or "unknown")
+                statuses[status] = statuses.get(status, 0) + 1
+            tracked_jobs = len(self._jobs)
+        return {
+            "configured_workers": self._worker_count,
+            "capacity": self._capacity,
+            "queued_items": self._queue.qsize(),
+            "tracked_jobs": tracked_jobs,
+            "statuses": statuses,
+        }
 
     def jobs_for_batch(self, batch_id: str) -> list[dict]:
         """Every still-tracked job submitted under this batch_id, in
