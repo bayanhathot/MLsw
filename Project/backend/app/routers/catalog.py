@@ -288,10 +288,15 @@ def _to_read(row: CatalogTrack) -> CatalogTrackRead:
     )
 
 
-def _job_to_read(job: dict) -> CatalogUploadJobRead:
+def _job_to_read(job: dict, db: Session | None = None) -> CatalogUploadJobRead:
     track = None
     if job.get("catalog_track_id") is not None:
-        with db_module.SessionLocal() as db:
+        if db is None:
+            with db_module.SessionLocal() as lookup_db:
+                row = lookup_db.query(CatalogTrack).filter_by(id=job["catalog_track_id"]).first()
+                if row is not None:
+                    track = _to_read(row)
+        else:
             row = db.query(CatalogTrack).filter_by(id=job["catalog_track_id"]).first()
             if row is not None:
                 track = _to_read(row)
@@ -555,6 +560,7 @@ async def enqueue_catalog_track(
     cover: UploadFile | None = File(default=None),
     _: None = Depends(write_rate_limit),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Bulk-upload entry point: one file per request, tagged with a
     caller-generated batch_id shared across the whole "Upload All" batch.
@@ -600,7 +606,7 @@ async def enqueue_catalog_track(
     except Full:
         raise HTTPException(status_code=503, detail="Upload queue is full. Try again later.") from None
 
-    return _job_to_read(job)
+    return _job_to_read(job, db)
 
 
 def _owned_job_or_404(job_id: str, current_user: User) -> dict:
@@ -611,37 +617,53 @@ def _owned_job_or_404(job_id: str, current_user: User) -> dict:
 
 
 @router.get("/tracks/batch-jobs/{job_id}", response_model=CatalogUploadJobRead)
-def catalog_job_status(job_id: str, current_user: User = Depends(get_current_user)):
+def catalog_job_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job = _owned_job_or_404(job_id, current_user)
-    return _job_to_read(job)
+    return _job_to_read(job, db)
 
 
 @router.post("/tracks/batch-jobs/{job_id}/retry", response_model=CatalogUploadJobRead)
-def retry_catalog_job(job_id: str, current_user: User = Depends(get_current_user)):
+def retry_catalog_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job = uq.upload_queue.retry_job(job_id, current_user.id)
     if job is None:
         raise HTTPException(
             status_code=409, detail="Only a failed job with its data still available can be retried."
         )
-    return _job_to_read(job)
+    return _job_to_read(job, db)
 
 
 @router.post("/tracks/batch-jobs/{job_id}/cancel", response_model=CatalogUploadJobRead)
-def cancel_catalog_job(job_id: str, current_user: User = Depends(get_current_user)):
+def cancel_catalog_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job = _owned_job_or_404(job_id, current_user)
     if not uq.upload_queue.cancel_job(job_id, current_user.id):
         raise HTTPException(status_code=409, detail="Only a still-queued job can be cancelled.")
-    return _job_to_read(uq.upload_queue.public(job_id))
+    return _job_to_read(uq.upload_queue.public(job_id), db)
 
 
 @router.get("/tracks/batches/{batch_id}", response_model=CatalogBatchStatusRead)
-def catalog_batch_status(batch_id: str, current_user: User = Depends(get_current_user)):
+def catalog_batch_status(
+    batch_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     owned_jobs = [
         job for job in uq.upload_queue.jobs_for_batch(batch_id) if job["owner_id"] == current_user.id
     ]
     if not owned_jobs:
         raise HTTPException(status_code=404, detail="Batch not found.")
-    results = [_job_to_read(job) for job in owned_jobs]
+    results = [_job_to_read(job, db) for job in owned_jobs]
     counts = {"queued": 0, "validating": 0, "storing": 0, "analyzing": 0, "completed": 0, "failed": 0, "cancelled": 0}
     for item in results:
         counts[item.status] += 1

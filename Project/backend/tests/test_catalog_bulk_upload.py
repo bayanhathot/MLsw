@@ -137,6 +137,30 @@ def test_batch_and_job_status_are_scoped_to_the_owner(client, second_client):
     assert client.get(f"/catalog/tracks/batches/{batch_id}").status_code == 200
 
 
+def test_completed_job_status_reuses_the_request_database_session(client, monkeypatch):
+    """Regression for the 20-user production stress gate.
+
+    Authentication already checks out one connection for the request. Opening
+    another SessionLocal while serializing every completed upload can exhaust
+    SQLAlchemy's 5 + 10 connection pool when 20 users poll concurrently.
+    """
+
+    register_and_login(client)
+    batch_id = _batch_id()
+    job = _enqueue(client, batch_id).json()
+    settled = _poll_batch_until_settled(client, batch_id)
+    assert settled["completed"] == 1
+
+    def unexpected_second_session():
+        raise AssertionError("job status opened a second database session")
+
+    monkeypatch.setattr("app.database.database.SessionLocal", unexpected_second_session)
+
+    response = client.get(f"/catalog/tracks/batch-jobs/{job['job_id']}")
+    assert response.status_code == 200, response.text
+    assert response.json()["track"]["title"] == "Test Track"
+
+
 def test_unknown_batch_and_job_id_are_404(client):
     register_and_login(client)
     assert client.get("/catalog/tracks/batches/does-not-exist").status_code == 404

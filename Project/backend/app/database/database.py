@@ -14,6 +14,7 @@ import os
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 # Load variables from .env when running locally.
@@ -37,10 +38,21 @@ if not DATABASE_URL:
 #
 # pool_pre_ping=True checks connections before using them.
 # This helps avoid errors from stale/broken connections.
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-)
+_engine_options = {"pool_pre_ping": True}
+if make_url(DATABASE_URL).get_backend_name() == "postgresql":
+    # The production stress gate polls 20 uploads while four background
+    # workers may also be analyzing tracks. SQLAlchemy's default 5 + 10
+    # connections is smaller than that legitimate workload and caused
+    # authenticated status requests to time out before they reached the
+    # endpoint. Keep the pool explicit and configurable for the one-process
+    # production topology; SQLite tests retain their dialect-specific pool.
+    _engine_options.update(
+        pool_size=max(1, int(os.getenv("DB_POOL_SIZE", "20"))),
+        max_overflow=max(0, int(os.getenv("DB_MAX_OVERFLOW", "10"))),
+        pool_timeout=max(1, int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30"))),
+    )
+
+engine = create_engine(DATABASE_URL, **_engine_options)
 
 # SessionLocal is a factory for creating database sessions.
 #
