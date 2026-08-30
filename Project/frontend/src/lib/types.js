@@ -192,12 +192,52 @@
  * @property {string} renderStatus
  * @property {string | null} renderedAudioUrl
  * @property {string | null} publishedAudioUrl
+ * @property {'rendered_asset'|'provider_manifest'|null} publicationMode
  * @property {'private'|'public'} visibility
  * @property {SessionSegment[]} segments
  * @property {MixOwner | null} owner
  * @property {number} likeCount
  * @property {boolean} isLiked
  * @property {boolean} isSaved
+ */
+
+/**
+ * The public, live-resolved playback recipe for a published mix -- see
+ * GET /mixes/{id}/playback-manifest. `mode` selects which of GlobalPlayer's
+ * two playback strategies to use; a 'rendered_asset' mix's segments all
+ * share the one durable `audioUrl` (played continuously, like today), a
+ * 'provider_manifest' mix's segments each carry their own resolved
+ * `audioUrl` (or none, if `availability` is 'unavailable') to be played in
+ * sequence.
+ *
+ * @typedef {Object} PlaybackManifestSegment
+ * @property {number} position
+ * @property {string} title
+ * @property {string} artist
+ * @property {string|null} coverUrl
+ * @property {string} source
+ * @property {string} sourceTrackId
+ * @property {string|null} audioUrl
+ * @property {number} startMs
+ * @property {number} endMs
+ * @property {string} transitionType
+ * @property {number} transitionDurationMs
+ * @property {number|null} gainDb
+ * @property {string|null} providerUrl
+ * @property {string|null} attribution
+ * @property {string|null} license
+ * @property {string} rightsStatus
+ * @property {'available'|'unavailable'} availability
+ * @property {string|null} unavailableReason
+ *
+ * @typedef {Object} PlaybackManifest
+ * @property {number} schemaVersion
+ * @property {number} mixId
+ * @property {number} revision
+ * @property {'rendered_asset'|'provider_manifest'} mode
+ * @property {string} title
+ * @property {string|null} audioUrl
+ * @property {PlaybackManifestSegment[]} segments
  */
 
 /**
@@ -218,7 +258,7 @@
  * @property {boolean} isAnonymous
  * @property {'discussion'|'status'|'mix_share'} kind
  * @property {'public'|'friends'} visibility
- * @property {{id:number,title:string,prompt:string,coverUrl:string,ownerUsername:string,segmentCount:number}|null} mix
+ * @property {{id:number,title:string,prompt:string,coverUrl:string,ownerUsername:string,segmentCount:number,publicationMode:'rendered_asset'|'provider_manifest'|null}|null} mix
  * @property {boolean} canDelete
  * @property {number} score
  * @property {number} commentCount

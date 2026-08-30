@@ -187,6 +187,11 @@ class MixRead(BaseModel):
     render_status: str = "not_rendered"
     rendered_audio_url: str | None = None
     published_audio_url: str | None = None
+    # 'rendered_asset' | 'provider_manifest' | None (never published, or
+    # published before this column existed -- see Mix.publication_mode's
+    # own docstring). The client's single player entry point (GlobalPlayer)
+    # branches on this to pick a playback strategy.
+    publication_mode: str | None = None
     visibility: str = "private"
     segments: list[MixSegmentRead]
 
@@ -207,6 +212,43 @@ class MixUpdate(NonBlankModel):
     title: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     cover_url: str | None = Field(default=None, max_length=1000)
+
+
+class PlaybackManifestSegmentRead(BaseModel):
+    """One resolved segment from GET /mixes/{id}/playback-manifest -- see
+    publish_service.ResolvedManifestSegment, which this mirrors field for
+    field. `audio_url` is always resolved server-side from
+    (source, source_track_id); it is never the client's own input, and it
+    is None when `availability != "available"`."""
+
+    position: int
+    title: str
+    artist: str
+    cover_url: str | None = None
+    source: str
+    source_track_id: str
+    audio_url: str | None = None
+    start_ms: int
+    end_ms: int
+    transition_type: str
+    transition_duration_ms: int
+    gain_db: float | None = None
+    provider_url: str | None = None
+    attribution: str | None = None
+    license: str | None = None
+    rights_status: str
+    availability: Literal["available", "unavailable"]
+    unavailable_reason: str | None = None
+
+
+class PlaybackManifestRead(BaseModel):
+    schema_version: int
+    mix_id: int
+    revision: int
+    mode: Literal["rendered_asset", "provider_manifest"]
+    title: str
+    audio_url: str | None = None
+    segments: list[PlaybackManifestSegmentRead]
 
 
 class StudioTrackRead(BaseModel):
@@ -483,6 +525,7 @@ class SharedMixRead(BaseModel):
     cover_url: str | None = None
     owner_username: str
     segment_count: int
+    publication_mode: str | None = None
 
 
 class PostRead(BaseModel):

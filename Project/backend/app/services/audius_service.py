@@ -123,6 +123,22 @@ def audius_stream_url(track_id: str) -> str:
     return f"{AUDIUS_API_BASE}/tracks/{quote(str(track_id), safe='')}/stream?app_name={APP_NAME}"
 
 
+AUDIUS_WEB_BASE = "https://audius.co"
+
+
+def audius_track_page_url(permalink: str | None) -> str:
+    """Human-facing attribution link for "via Audius" / "original track"
+    UI -- never used to fetch audio (see audius_stream_url for that).
+    Falls back to the plain Audius homepage when no permalink was ever
+    captured for this track (an older cached row, or an API response that
+    omitted it) -- an attribution link that goes somewhere real beats
+    guessing at a track URL shape that might not resolve."""
+
+    if permalink and permalink.startswith("/"):
+        return f"{AUDIUS_WEB_BASE}{permalink}"
+    return AUDIUS_WEB_BASE
+
+
 def get_artwork_url(artwork: dict | None) -> str | None:
     """
     Extract the best available artwork URL from Audius.
@@ -254,6 +270,15 @@ def _search_tracks_uncached(prompt: str, limit: int = 5) -> list[dict]:
                 "tags": _optional_text(track.get("tags")),
                 "cover_url": artwork_url,
                 "audio_url": audius_stream_url(track_id),
+                # Audius's own human-facing track page path (e.g.
+                # "/artistname/track-title-abc123"), when the API returns
+                # one -- captured purely for attribution (a "link back to
+                # the original track" for a published provider-manifest
+                # mix), never used to fetch audio. None is a normal,
+                # expected value for an older/incomplete API response;
+                # attribution then falls back to the plain audius.co
+                # homepage rather than a broken deep link.
+                "permalink": _optional_text(track.get("permalink")),
             }
         )
 

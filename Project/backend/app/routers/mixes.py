@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.rate_limit import write_rate_limit
-from app.core.time import utc_now
 from app.database.database import get_db
 from app.database.models.mix import Mix
 from app.database.models.mix_social import MixLike, SavedMix
@@ -16,9 +15,10 @@ from app.schemas import (
     MixRead,
     MixUpdate,
     NotificationRead,
+    PlaybackManifestRead,
     StartMixRequest,
 )
-from app.services import forum_service, mix_service, social_service
+from app.services import forum_service, mix_service, publish_service, social_service
 from app.services.channel_hub import channel_hub
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
@@ -157,12 +157,11 @@ def get_saved(
     return _saved_mixes(db, current_user.id)
 
 
-@router.get("/{mix_id}", response_model=MixRead)
-def read_mix(
-    mix_id: int,
-    current_user: User | None = Depends(get_optional_current_user),
-    db: Session = Depends(get_db),
-):
+def _publicly_visible_or_404(db: Session, mix_id: int, current_user: User | None) -> Mix:
+    """Shared privacy gate for every public-mix read path (the mix itself
+    and its playback-manifest): published, and not owned by someone the
+    viewer has blocked or been blocked by."""
+
     mix = _get_or_404(db, mix_id)
     if mix.status != "published":
         raise HTTPException(status_code=404, detail="Published mix not found.")
@@ -173,6 +172,15 @@ def read_mix(
     ):
         raise HTTPException(status_code=404, detail="Published mix not found.")
     return mix
+
+
+@router.get("/{mix_id}", response_model=MixRead)
+def read_mix(
+    mix_id: int,
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    return _publicly_visible_or_404(db, mix_id, current_user)
 
 
 @router.patch("/{mix_id}", response_model=MixRead)
@@ -215,10 +223,7 @@ def publish_mix(
             detail="Render and publish this mix through the Studio API.",
         )
     if mix.status != "published":
-        mix.status = "published"
-        mix.published_at = utc_now()
-        db.commit()
-        db.refresh(mix)
+        publish_service.publish_mix(db, mix)
     return mix
 
 
@@ -227,6 +232,22 @@ def _published(db: Session, mix_id: int) -> Mix:
     if mix.status != "published":
         raise HTTPException(status_code=404, detail="Published mix not found.")
     return mix
+
+
+@router.get("/{mix_id}/playback-manifest", response_model=PlaybackManifestRead)
+def get_playback_manifest(
+    mix_id: int,
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    """Public playback resolution for a published mix -- applies the exact
+    same visibility/blocking rules as GET /{mix_id}, then resolves audio
+    safely server-side (see publish_service's own module docstring for why
+    this never trusts a stored or client-supplied URL for a provider
+    segment)."""
+
+    mix = _publicly_visible_or_404(db, mix_id, current_user)
+    return publish_service.get_playback_manifest(db, mix)
 
 
 def _like(mix_id: int, enabled: bool, current_user: User, db: Session):

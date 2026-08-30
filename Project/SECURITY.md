@@ -70,9 +70,80 @@ intend — verified against the code on 2026-08-20:
   `ExternalTrack` (`database/models/external_track.py`) stores only
   provider identity, display metadata, a one-way SHA-256 integrity
   fingerprint (not audio-reconstructable), and DSP-derived analysis
-  fields. **Gap:** no `license` field is captured from Audius's API
-  response anywhere, and no attribution UI ("via Audius" / link back) is
-  rendered in the player. Basic artist-name attribution is stored and
-  shown; a per-track license/attribution surface, if required by Audius's
-  terms, is not yet built. Flagged here rather than silently deployed
-  past, per the risk-acceptance owner's own instruction.
+  fields.
+
+### Resolved — public mix sharing for provider-sourced (Audius) mixes (2026-08-30)
+
+Every user-created mix — generated or Studio, catalog-only or containing
+Audius/API/provider tracks — can now be published, appear in Discover, on
+the creator's public profile, and be shared as a Community `mix_share`
+post. This closes the attribution gap the previous entry flagged, and
+resolves an inconsistency where Studio outright rejected publishing any
+provider-sourced draft while a regular generated mix could publish one
+anyway (via a temporary rendered file the render-cleanup sweep would later
+delete out from under it).
+
+**Design: two publication modes, chosen automatically per mix**
+(`backend/app/services/publish_service.py`, the single implementation both
+`routers/mixes.py` and `studio_service.py` defer to):
+
+- `rendered_asset` — every segment is creator-owned or otherwise
+  CueMix-hosted (local catalog uploads, the bundled demo tracks). CueMix
+  already has the right to host this audio, so publishing promotes the
+  existing rendered composite file into a durable subdirectory
+  (`pipeline/audio_renderer.py`'s `promote_render_to_published`) that the
+  temporary-render TTL sweep never scans, and the client plays it as a
+  normal file, unchanged from before.
+
+- `provider_manifest` — at least one segment is provider-sourced. **CueMix
+  never permanently republishes a rendered derivative containing
+  provider-sourced audio.** Publishing this kind of mix stores an immutable
+  JSON *playback recipe* instead (ordered segments, exact millisecond
+  bounds, transitions, and provider identity/attribution/rights-status
+  fields) and never sets a permanent public audio URL for it. The temporary
+  composite WAV a Studio render produces for in-app preview is discarded at
+  publish time, never promoted, and remains subject to the existing TTL
+  cleanup like any other draft render.
+
+**Playback resolution and SSRF controls.** The public
+`GET /mixes/{id}/playback-manifest` endpoint (and every internal manifest
+resolver) never trusts a stored or client-supplied URL for provider audio.
+Each provider segment's stream URL is rebuilt server-side, on every
+request, from nothing but its own `(source, source_track_id)` identity,
+through `audius_service.audius_stream_url` — the same deterministic-
+URL-from-ID pattern `studio_service.resolve_track` already used for saving
+a segment in the first place. `source` must be a member of an explicit
+allowlist (`publish_service.ALLOWED_PROVIDERS = {"audius"}`); an unknown or
+unallowlisted value is reported as an unavailable segment, never fetched.
+No endpoint anywhere in this feature accepts or proxies an arbitrary URL.
+
+**Attribution.** Each provider segment's manifest entry carries
+`attribution` (a plain "Title by Artist — via Audius" string),
+`provider_url` (a link back to the original track's Audius page, built
+from a `permalink` now captured at search time — falls back to the Audius
+homepage if a permalink was never captured for an older cached track), and
+`rights_status` (`"provider_streaming"` for a provider segment,
+`"creator_owned"` for a hosted one). The Studio UI, Discover/Community/
+profile mix cards, and the mix player all surface this via a
+"Provider-backed — via Audius" badge, attribution text, and an "Open
+original track" link — **this is the attribution UI the previous entry's
+gap flagged as missing.**
+
+**Remaining licensing assumption, carried over unchanged from the entry
+above:** no per-track `license` field exists in Audius's public API
+response, so `license` is always `None`/absent in a manifest rather than a
+guessed value — the client renders no license claim at all for a provider
+segment (attribution and a link to the original are shown regardless).
+This is the same "no license field available" reality already accepted
+above; it applies identically to provider-manifest publishing.
+
+**Backward compatibility.** A migration
+(`alembic/versions/646dfa7ecf85_add_mix_publication_mode.py`) backfills
+`publication_mode` for every already-published mix from its own segments'
+`source` column (not from any hardcoded assumption), so an old
+provider-sourced generated mix that predates this feature is correctly
+classified `provider_manifest` retroactively. Such a row has no stored
+`published_manifest_json` (that column did not exist yet); the playback
+endpoint reconstructs an equivalent manifest on demand from the older
+`published_segments_json` snapshot instead of ever depending on the
+long-since-expired temporary render it used to point at.

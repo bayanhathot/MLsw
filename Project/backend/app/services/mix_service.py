@@ -138,6 +138,14 @@ def create_mix(
                 continue
             position += 1
             track = segment.track
+            is_last = index >= len(kept_segments) - 1
+            # `transitions` was planned over the full `segments` list before
+            # any pass-through truncation to kept_segments -- still safely
+            # index-aligned with kept_segments here because pass-through
+            # truncates to exactly one segment (see kept_segments/offsets
+            # above), the only case where this zip would otherwise run more
+            # than once with fewer transitions than segments.
+            plan = None if is_last else transitions[index]
             db.add(
                 MixSegment(
                     mix_id=mix.id,
@@ -154,8 +162,27 @@ def create_mix(
                         and index < len(kept_segments) - 1
                         else "end"
                     ),
+                    transition_type=(plan.style if plan is not None else "cut"),
+                    transition_duration_ms=(plan.crossfade_ms if plan is not None else 0),
                     source=track.source[:50],
                     source_track_id=str(track.source_track_id)[:255],
+                    # Original-track-relative bounds/URL, distinct from the
+                    # rendered composite's own start_second/end_second/
+                    # audio_url above -- see MixSegment's own field
+                    # docstring. Required for a provider_manifest publish to
+                    # seek the *live provider stream* correctly (the
+                    # rendered composite is never republished for that
+                    # mode); harmless, always-consistent metadata for a
+                    # rendered_asset one.
+                    source_audio_url=track.audio_url or None,
+                    source_start_ms=(
+                        segment.start_ms
+                        if segment.start_ms is not None
+                        else segment.start_second * 1000
+                    ),
+                    source_end_ms=(
+                        segment.end_ms if segment.end_ms is not None else segment.end_second * 1000
+                    ),
                     track_duration_seconds=max(0, int(track.duration_seconds)),
                     genre=(track.genre or None),
                     vibe=(track.vibe_label or track.vibe or intent.mood or None),

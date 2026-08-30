@@ -47,7 +47,12 @@ export function normalizePost(value) {
 						prompt: String(raw.mix.prompt || ''),
 						coverUrl: String(raw.mix.cover_url || ''),
 						ownerUsername: String(raw.mix.owner_username || ''),
-						segmentCount: Number(raw.mix.segment_count || 0)
+						segmentCount: Number(raw.mix.segment_count || 0),
+						publicationMode: ['rendered_asset', 'provider_manifest'].includes(
+							raw.mix.publication_mode
+						)
+							? raw.mix.publication_mode
+							: null
 					}
 				: null,
 		canDelete: Boolean(raw.can_delete ?? raw.canDelete),

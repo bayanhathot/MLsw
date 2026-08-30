@@ -417,6 +417,9 @@
 				</div>{/if}
 			<div>
 				<span>Shared Cuemix mix</span><strong>{post.mix.title}</strong>
+				{#if post.mix.publicationMode === 'provider_manifest'}
+					<span class="provider-badge">Provider-backed — via Audius</span>
+				{/if}
 				<p>{post.mix.prompt}</p>
 				<small>by @{post.mix.ownerUsername} · {post.mix.segmentCount} segments</small>
 			</div>
@@ -742,6 +745,19 @@
 	}
 	.shared-mix strong {
 		color: #edf5ff;
+	}
+	.shared-mix .provider-badge {
+		display: inline-flex;
+		align-items: center;
+		margin-left: 8px;
+		border: 1px solid rgba(125, 183, 255, 0.4);
+		border-radius: 999px;
+		padding: 2px 9px;
+		background: rgba(59, 130, 246, 0.14);
+		color: #cfe0ff;
+		font-size: 10px;
+		font-weight: 800;
+		white-space: nowrap;
 	}
 	.shared-mix p {
 		margin: 0;
