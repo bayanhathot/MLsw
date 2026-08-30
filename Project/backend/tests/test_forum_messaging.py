@@ -2,6 +2,8 @@ import time
 
 from conftest import register_and_login
 
+from app.database.models.messaging import DirectMessage
+
 
 def _upload_audio(uploading_client, filename="clip.mp3"):
     job = uploading_client.post(
@@ -108,6 +110,37 @@ def test_direct_messages_are_private_and_notify(client, second_client, monkeypat
     assert notices[0]["kind"] == "direct_message"
     assert second_client.post(f"/notifications/{notices[0]['id']}/read").json()["is_read"] is True
     assert client.get("/messages/nobody").status_code == 404
+
+
+def test_direct_message_spam_is_rate_limited_after_sixty_writes(
+    client, second_client, db_session, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("app.routers.messaging.channel_hub.publish", AsyncMock())
+    alice = register_and_login(client, "alice", "alice@example.com")
+    register_and_login(second_client, "bob", "bob@example.com")
+    _make_friends(client, second_client)
+
+    for index in range(60):
+        response = client.post(
+            "/messages",
+            json={"recipient_username": "bob", "body": f"message {index + 1}"},
+        )
+        assert response.status_code == 201, response.text
+
+    blocked = client.post(
+        "/messages",
+        json={"recipient_username": "bob", "body": "message 61"},
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers["retry-after"] == "60"
+    assert (
+        db_session.query(DirectMessage)
+        .filter(DirectMessage.sender_id == alice["id"])
+        .count()
+        == 60
+    )
 
 
 def test_anonymous_comment_notification_does_not_reveal_author(client, second_client, monkeypatch):

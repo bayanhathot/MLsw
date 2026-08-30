@@ -15,8 +15,9 @@ from starlette.requests import Request
 from app.core.rate_limit import RateLimiter
 from app.core.config import cors_origins, public_api_url
 from app import cleanup_uploads
+from app.database.models.attachment import Attachment
 from app.routers.uploads import _decode_filename, _read_limited_body
-from app.services.upload_queue import UploadQueue, validate_upload
+from app.services.upload_queue import UploadQueue, upload_queue, validate_upload
 
 
 def test_upload_magic_validation_and_private_serving(client, second_client):
@@ -82,6 +83,32 @@ def test_upload_declared_size_and_queue_backpressure(client):
         pass
     else:
         raise AssertionError("Bounded queue accepted work beyond its capacity")
+
+
+def test_oversized_video_is_rejected_without_creating_a_job_or_attachment(
+    client, db_session
+):
+    register_and_login(client)
+    maximum_video_size = 10 * 1024 * 1024
+    mp4_header = b"\x00\x00\x00\x18ftypmp42"
+    oversized_video = mp4_header + b"\x00" * (
+        maximum_video_size + 1 - len(mp4_header)
+    )
+    with upload_queue._lock:
+        job_ids_before = set(upload_queue._jobs)
+    attachments_before = db_session.query(Attachment).count()
+
+    response = client.post(
+        "/uploads/jobs",
+        content=oversized_video,
+        headers={"Content-Type": "video/mp4", "X-Filename": "too-large.mp4"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "File is too large."
+    with upload_queue._lock:
+        assert set(upload_queue._jobs) == job_ids_before
+    assert db_session.query(Attachment).count() == attachments_before
 
 
 def test_wav_attachment_around_30mb_is_accepted():
