@@ -4,13 +4,10 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import public_api_url
 from app.core.rate_limit import write_rate_limit
 from app.database.database import get_db
-from app.database.models.catalog import CatalogTrack
 from app.database.models.external_track import ExternalTrack
 from app.database.models.user import User
 from app.routers.auth import get_current_user
@@ -32,10 +29,8 @@ from app.schemas import (
     StudioMixUpdate,
     StudioTrackRead,
     StudioTransitionUpdate,
-    Track,
 )
 from app.services import audius_service, studio_ai_client, studio_service
-from app.services.pipeline import external_track_cache
 from app.services.pipeline.dependencies import (
     get_audio_renderer,
     get_transition_planner,
@@ -50,141 +45,9 @@ from app.services.pipeline.interfaces import (
 router = APIRouter(prefix="/studio", tags=["studio"])
 
 
-def _phrase_boundaries_ms(values: list | None, duration_ms: int) -> list[int]:
-    """Expose persisted analysis markers in Studio's canonical millisecond unit."""
-    return sorted(
-        {
-            max(0, min(duration_ms, round(float(value) * 1000)))
-            for value in (values or [])
-            if isinstance(value, (int, float))
-        }
-    )
-
-
 def _studio_enabled() -> None:
     if os.getenv("STUDIO_ENABLED", "true").strip().lower() not in {"1", "true", "yes"}:
         raise HTTPException(status_code=404, detail="Studio not found.")
-
-
-def _catalog_read(row: CatalogTrack) -> StudioTrackRead:
-    duration_ms = row.duration_seconds * 1000
-    return StudioTrackRead(
-        source_type="catalog",
-        source_track_id=str(row.id),
-        title=row.title,
-        artist=row.artist,
-        album=row.album,
-        genre=row.genre,
-        vibe=row.vibe_label,
-        duration_ms=duration_ms,
-        audio_url=public_api_url(f"/catalog/tracks/{row.id}/audio"),
-        cover_url=(
-            public_api_url(f"/catalog/tracks/{row.id}/cover")
-            if row.cover_storage_name
-            else None
-        ),
-        analysis_status=row.analysis_status,
-        suggested_start_ms=(row.segment_start_second or 0) * 1000,
-        suggested_end_ms=(row.segment_end_second or row.duration_seconds) * 1000,
-        phrase_boundaries_ms=_phrase_boundaries_ms(row.phrase_boundaries_json, duration_ms),
-        min_segment_ms=studio_service.MIN_SEGMENT_MS,
-        max_segment_ms=studio_service.MAX_SEGMENT_MS,
-        bpm=row.bpm,
-        musical_key=row.musical_key,
-        camelot=row.camelot,
-    )
-
-
-def _external_read(row: ExternalTrack) -> StudioTrackRead:
-    metadata = row.provider_metadata_json or {}
-    duration_ms = row.duration_sec * 1000
-    return StudioTrackRead(
-        source_type="audius",
-        source_track_id=row.external_id,
-        title=row.title,
-        artist=row.artist,
-        album=row.album,
-        genre=row.genre,
-        vibe=metadata.get("vibe"),
-        duration_ms=duration_ms,
-        audio_url=public_api_url(f"/studio/tracks/audius/{row.external_id}/audio"),
-        cover_url=metadata.get("cover_url"),
-        analysis_status=row.analysis_status,
-        suggested_start_ms=(row.segment_start_second or 0) * 1000,
-        suggested_end_ms=(row.segment_end_second or min(30, row.duration_sec)) * 1000,
-        phrase_boundaries_ms=_phrase_boundaries_ms(row.phrase_boundaries_json, duration_ms),
-        min_segment_ms=studio_service.MIN_SEGMENT_MS,
-        max_segment_ms=studio_service.MAX_SEGMENT_MS,
-        bpm=row.bpm,
-        musical_key=row.musical_key,
-        camelot=row.camelot,
-    )
-
-
-def _remember_audius_results(db: Session, raw_tracks: list[dict]) -> list[ExternalTrack]:
-    tracks = [
-        Track(
-            source="audius",
-            source_track_id=str(item["source_track_id"]),
-            title=str(item.get("title") or "Unknown title"),
-            artist=str(item.get("artist") or "Unknown artist"),
-            audio_url=str(item["audio_url"]),
-            cover_url=item.get("cover_url"),
-            duration_seconds=max(0, int(item.get("duration") or 0)),
-            genre=item.get("genre"),
-            vibe=item.get("mood"),
-            tags=item.get("tags"),
-        )
-        for item in raw_tracks
-        if item.get("source_track_id") and item.get("audio_url") and int(item.get("duration") or 0) > 0
-    ]
-    external_track_cache.enrich_and_dispatch(db, tracks)
-    ids = [track.source_track_id for track in tracks]
-    # Attribution-only field (see audius_service.audius_track_page_url) --
-    # carried alongside `tracks` rather than added to the generic pipeline
-    # `Track` schema, which every other retriever also constructs and has
-    # no notion of a provider web page.
-    permalinks_by_id = {
-        str(item["source_track_id"]): item.get("permalink")
-        for item in raw_tracks
-        if item.get("source_track_id")
-    }
-    existing = {
-        row.external_id: row
-        for row in db.query(ExternalTrack)
-        .filter(ExternalTrack.source == "audius", ExternalTrack.external_id.in_(ids))
-        .all()
-    }
-    for track in tracks:
-        row = existing.get(track.source_track_id)
-        metadata = {
-            "tags": track.tags,
-            "vibe": track.vibe,
-            "cover_url": track.cover_url,
-            "permalink": permalinks_by_id.get(track.source_track_id),
-        }
-        if row is None:
-            row = ExternalTrack(
-                source="audius",
-                external_id=track.source_track_id,
-                title=track.title,
-                artist=track.artist,
-                album=track.album,
-                genre=track.genre,
-                duration_sec=track.duration_seconds,
-                provider_metadata_json=metadata,
-                analysis_status="pending",
-            )
-            db.add(row)
-            existing[track.source_track_id] = row
-        else:
-            row.title = track.title
-            row.artist = track.artist
-            row.genre = track.genre
-            row.duration_sec = track.duration_seconds
-            row.provider_metadata_json = metadata
-    db.commit()
-    return [existing[track.source_track_id] for track in tracks]
 
 
 @router.get("/tracks/search", response_model=list[StudioTrackRead])
@@ -196,23 +59,7 @@ def search_tracks(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    results: list[StudioTrackRead] = []
-    if source in {"all", "catalog"}:
-        catalog = db.query(CatalogTrack).filter(
-            or_(CatalogTrack.visibility == "public", CatalogTrack.owner_id == current_user.id),
-            CatalogTrack.duration_seconds > 0,
-            CatalogTrack.analysis_status != "failed",
-        )
-        if q.strip():
-            pattern = f"%{q.strip()}%"
-            catalog = catalog.filter(
-                or_(CatalogTrack.title.ilike(pattern), CatalogTrack.artist.ilike(pattern))
-            )
-        results.extend(_catalog_read(row) for row in catalog.order_by(CatalogTrack.id.desc()).limit(limit))
-    if source in {"all", "audius"} and q.strip() and len(results) < limit:
-        raw = audius_service.search_tracks(q.strip(), limit=limit - len(results))
-        results.extend(_external_read(row) for row in _remember_audius_results(db, raw))
-    return results[:limit]
+    return studio_service.search_tracks(db, current_user.id, q, source, limit)
 
 
 @router.get("/tracks/audius/{track_id}/audio")

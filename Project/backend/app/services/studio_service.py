@@ -20,12 +20,14 @@ from app.database.models.studio import SavedSegment, StudioBehaviorEvent
 from app.schemas import (
     AutoMixMode,
     PromptIntent,
+    SavedSegmentCreate,
     SelectedSegment,
+    StudioTrackRead,
     Track,
     TransitionPlan,
 )
 from app.services import audius_service, publish_service, upload_queue
-from app.services.pipeline import audio_renderer
+from app.services.pipeline import audio_renderer, external_track_cache
 from app.services.pipeline.catalog_retriever import CATALOG_AUDIO_SUBDIR
 from app.services.pipeline.interfaces import (
     AudioRenderer,
@@ -103,6 +105,167 @@ def _analysis_values(row) -> dict:
         "integrated_loudness_lufs": row.integrated_loudness_lufs,
         "phrase_boundaries_json": row.phrase_boundaries_json,
     }
+
+
+def _phrase_boundaries_ms(values: list | None, duration_ms: int) -> list[int]:
+    """Expose persisted analysis markers in Studio's canonical millisecond unit."""
+    return sorted(
+        {
+            max(0, min(duration_ms, round(float(value) * 1000)))
+            for value in (values or [])
+            if isinstance(value, (int, float))
+        }
+    )
+
+
+def _catalog_track_read(row: CatalogTrack) -> StudioTrackRead:
+    duration_ms = row.duration_seconds * 1000
+    return StudioTrackRead(
+        source_type="catalog",
+        source_track_id=str(row.id),
+        title=row.title,
+        artist=row.artist,
+        album=row.album,
+        genre=row.genre,
+        vibe=row.vibe_label,
+        duration_ms=duration_ms,
+        audio_url=_catalog_audio_url(row.id),
+        cover_url=(
+            public_api_url(f"/catalog/tracks/{row.id}/cover")
+            if row.cover_storage_name
+            else None
+        ),
+        analysis_status=row.analysis_status,
+        suggested_start_ms=(row.segment_start_second or 0) * 1000,
+        suggested_end_ms=(row.segment_end_second or row.duration_seconds) * 1000,
+        phrase_boundaries_ms=_phrase_boundaries_ms(row.phrase_boundaries_json, duration_ms),
+        min_segment_ms=MIN_SEGMENT_MS,
+        max_segment_ms=MAX_SEGMENT_MS,
+        bpm=row.bpm,
+        musical_key=row.musical_key,
+        camelot=row.camelot,
+    )
+
+
+def _external_track_read(row: ExternalTrack) -> StudioTrackRead:
+    metadata = row.provider_metadata_json or {}
+    duration_ms = row.duration_sec * 1000
+    return StudioTrackRead(
+        source_type="audius",
+        source_track_id=row.external_id,
+        title=row.title,
+        artist=row.artist,
+        album=row.album,
+        genre=row.genre,
+        vibe=metadata.get("vibe"),
+        duration_ms=duration_ms,
+        audio_url=_audius_audio_url(row.external_id),
+        cover_url=metadata.get("cover_url"),
+        analysis_status=row.analysis_status,
+        suggested_start_ms=(row.segment_start_second or 0) * 1000,
+        suggested_end_ms=(row.segment_end_second or min(30, row.duration_sec)) * 1000,
+        phrase_boundaries_ms=_phrase_boundaries_ms(row.phrase_boundaries_json, duration_ms),
+        min_segment_ms=MIN_SEGMENT_MS,
+        max_segment_ms=MAX_SEGMENT_MS,
+        bpm=row.bpm,
+        musical_key=row.musical_key,
+        camelot=row.camelot,
+    )
+
+
+def _remember_audius_results(db: Session, raw_tracks: list[dict]) -> list[ExternalTrack]:
+    tracks = [
+        Track(
+            source="audius",
+            source_track_id=str(item["source_track_id"]),
+            title=str(item.get("title") or "Unknown title"),
+            artist=str(item.get("artist") or "Unknown artist"),
+            audio_url=str(item["audio_url"]),
+            cover_url=item.get("cover_url"),
+            duration_seconds=max(0, int(item.get("duration") or 0)),
+            genre=item.get("genre"),
+            vibe=item.get("mood"),
+            tags=item.get("tags"),
+        )
+        for item in raw_tracks
+        if item.get("source_track_id") and item.get("audio_url") and int(item.get("duration") or 0) > 0
+    ]
+    external_track_cache.enrich_and_dispatch(db, tracks)
+    ids = [track.source_track_id for track in tracks]
+    # Attribution-only field (see audius_service.audius_track_page_url) --
+    # carried alongside `tracks` rather than added to the generic pipeline
+    # `Track` schema, which every other retriever also constructs and has
+    # no notion of a provider web page.
+    permalinks_by_id = {
+        str(item["source_track_id"]): item.get("permalink")
+        for item in raw_tracks
+        if item.get("source_track_id")
+    }
+    existing = {
+        row.external_id: row
+        for row in db.query(ExternalTrack)
+        .filter(ExternalTrack.source == "audius", ExternalTrack.external_id.in_(ids))
+        .all()
+    }
+    for track in tracks:
+        row = existing.get(track.source_track_id)
+        metadata = {
+            "tags": track.tags,
+            "vibe": track.vibe,
+            "cover_url": track.cover_url,
+            "permalink": permalinks_by_id.get(track.source_track_id),
+        }
+        if row is None:
+            row = ExternalTrack(
+                source="audius",
+                external_id=track.source_track_id,
+                title=track.title,
+                artist=track.artist,
+                album=track.album,
+                genre=track.genre,
+                duration_sec=track.duration_seconds,
+                provider_metadata_json=metadata,
+                analysis_status="pending",
+            )
+            db.add(row)
+            existing[track.source_track_id] = row
+        else:
+            row.title = track.title
+            row.artist = track.artist
+            row.genre = track.genre
+            row.duration_sec = track.duration_seconds
+            row.provider_metadata_json = metadata
+    db.commit()
+    return [existing[track.source_track_id] for track in tracks]
+
+
+def search_tracks(
+    db: Session, user_id: int, q: str, source: str = "all", limit: int = 20
+) -> list[StudioTrackRead]:
+    """Shared search core for GET /studio/tracks/search (routers/studio.py)
+    and the AI assistant's discovery turn (studio_ai_client.py::_context) --
+    one implementation, so a discovery result and a manually searched-for
+    track are always the exact same resolvable, addable candidates."""
+
+    results: list[StudioTrackRead] = []
+    if source in {"all", "catalog"}:
+        catalog = db.query(CatalogTrack).filter(
+            or_(CatalogTrack.visibility == "public", CatalogTrack.owner_id == user_id),
+            CatalogTrack.duration_seconds > 0,
+            CatalogTrack.analysis_status != "failed",
+        )
+        if q.strip():
+            pattern = f"%{q.strip()}%"
+            catalog = catalog.filter(
+                or_(CatalogTrack.title.ilike(pattern), CatalogTrack.artist.ilike(pattern))
+            )
+        results.extend(
+            _catalog_track_read(row) for row in catalog.order_by(CatalogTrack.id.desc()).limit(limit)
+        )
+    if source in {"all", "audius"} and q.strip() and len(results) < limit:
+        raw = audius_service.search_tracks(q.strip(), limit=limit - len(results))
+        results.extend(_external_track_read(row) for row in _remember_audius_results(db, raw))
+    return results[:limit]
 
 
 def resolve_track(db: Session, user_id: int, source_type: str, source_track_id: str):
@@ -479,21 +642,51 @@ def recompute_transitions(
         item.compatibility_factors_json = {k: v for k, v in factors.items() if k != "score"}
 
 
+def _insert_segment_item(
+    db: Session, mix: Mix, saved: SavedSegment, insert_after_item_id: int | None = None
+) -> MixSegment:
+    """Core insertion only -- no draft/revision/commit side effects, so both
+    the public `add_saved_segment` (its own commit) and `apply_assistant_plan`
+    (one commit for the whole plan) can share it. `insert_after_item_id`
+    places the new item immediately after that existing item; None appends
+    to the end (the only behavior before this existed, so every manual-UI
+    caller is unaffected)."""
+
+    if len(mix.segments) >= MAX_STUDIO_MIX_SEGMENTS:
+        raise HTTPException(status_code=422, detail="Studio mix is full.")
+    if insert_after_item_id is None:
+        item = _snapshot(mix, saved, len(mix.segments) + 1)
+        db.add(item)
+        db.flush()
+    else:
+        anchor = next((row for row in mix.segments if row.id == insert_after_item_id), None)
+        if anchor is None:
+            raise HTTPException(
+                status_code=422, detail="insert_after_item_id was not found in this mix."
+            )
+        for row in mix.segments:
+            if row.position > anchor.position:
+                row.position += 1
+        db.flush()
+        item = _snapshot(mix, saved, anchor.position + 1)
+        db.add(item)
+        db.flush()
+    db.refresh(mix)
+    return item
+
+
 def add_saved_segment(
     db: Session,
     mix: Mix,
     saved: SavedSegment,
     expected_revision: int,
     planner: TransitionPlanner,
+    *,
+    insert_after_item_id: int | None = None,
 ) -> Mix:
     _require_draft(mix)
     _require_revision(mix, expected_revision)
-    if len(mix.segments) >= MAX_STUDIO_MIX_SEGMENTS:
-        raise HTTPException(status_code=422, detail="Studio mix is full.")
-    item = _snapshot(mix, saved, len(mix.segments) + 1)
-    db.add(item)
-    db.flush()
-    db.refresh(mix)
+    _insert_segment_item(db, mix, saved, insert_after_item_id)
     recompute_transitions(db, mix, planner)
     _touch(mix)
     db.commit()
@@ -528,21 +721,33 @@ def _apply_mix_order(db: Session, mix: Mix, segment_ids: list[int]) -> None:
     db.refresh(mix)
 
 
+def _remove_segment_items(db: Session, mix: Mix, item_ids: set[int]) -> None:
+    """Core removal only -- no draft/revision/commit side effects, shared
+    the same way _insert_segment_item is; see that function's docstring."""
+
+    existing_ids = {row.id for row in mix.segments}
+    missing = item_ids - existing_ids
+    if missing:
+        raise HTTPException(status_code=404, detail="Mix item not found.")
+    for item in list(mix.segments):
+        if item.id in item_ids:
+            db.delete(item)
+    db.flush()
+    remaining = sorted(
+        (row for row in mix.segments if row.id not in item_ids), key=lambda row: row.position
+    )
+    for position, row in enumerate(remaining, start=1):
+        row.position = position
+    db.flush()
+    db.refresh(mix)
+
+
 def remove_mix_item(
     db: Session, mix: Mix, item_id: int, expected_revision: int, planner
 ) -> Mix:
     _require_draft(mix)
     _require_revision(mix, expected_revision)
-    item = next((row for row in mix.segments if row.id == item_id), None)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Mix item not found.")
-    db.delete(item)
-    db.flush()
-    remaining = sorted((row for row in mix.segments if row.id != item_id), key=lambda row: row.position)
-    for position, row in enumerate(remaining, start=1):
-        row.position = position
-    db.flush()
-    db.refresh(mix)
+    _remove_segment_items(db, mix, {item_id})
     recompute_transitions(db, mix, planner)
     _touch(mix)
     db.commit()
@@ -563,19 +768,115 @@ def update_transition(db: Session, mix: Mix, item_id: int, request, planner) -> 
     return _owned_studio_mix(db, mix.owner_id, mix.id)
 
 
+def _item_duration_ms(item: MixSegment) -> int:
+    return max(0, (item.source_end_ms or 0) - (item.source_start_ms or 0))
+
+
+def _mix_duration_ms(mix: Mix) -> int:
+    """Same duration formula studio_ai_client._plan_calculations uses (sum of
+    selected segment durations minus effective non-cut overlap) -- kept as
+    its own small copy rather than a shared import to avoid a
+    studio_service <-> studio_ai_client import cycle (studio_ai_client
+    already imports this module). Computed here off the mix's *actual*,
+    already-mutated segments, post-plan, for active_constraints enforcement
+    (see apply_assistant_plan's own docstring)."""
+
+    items = sorted(mix.segments, key=lambda row: row.position)
+    overlap_ms = 0
+    for index, item in enumerate(items[:-1]):
+        following = items[index + 1]
+        if item.transition_type != "cut":
+            overlap_ms += max(
+                0,
+                min(
+                    item.transition_duration_ms,
+                    max(0, _item_duration_ms(item) - 1),
+                    max(0, _item_duration_ms(following) - 1),
+                ),
+            )
+    return max(0, sum(_item_duration_ms(item) for item in items) - overlap_ms)
+
+
+def _enforce_active_constraints(mix: Mix, request) -> None:
+    """Mechanically enforces only the constraints the *frontend* is tracking
+    client-side and passes explicitly as structured data (request.
+    active_constraints) -- never anything parsed from remembered_constraints
+    free text server-side. See cuemix-studio-ai-v2-spec.md §9.3."""
+
+    remaining_ids = {item.id for item in mix.segments}
+    for constraint in request.active_constraints:
+        if constraint.type == "keep_item":
+            if constraint.item_id not in remaining_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"This plan removes item {constraint.item_id}, which is pinned to stay in the mix.",
+                )
+        elif constraint.type == "max_duration_ms":
+            if _mix_duration_ms(mix) > constraint.value_ms:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"This plan would exceed the pinned {constraint.value_ms}ms mix duration limit.",
+                )
+
+
 def apply_assistant_plan(db: Session, user_id: int, request, planner):
-    """Validate and atomically apply a user-confirmed bounded assistant plan."""
+    """Validate and atomically apply a user-confirmed bounded assistant plan.
+
+    Order of operations, all within one transaction (a single commit at the
+    end): remove pinned items first, then add a new one, then validate/apply
+    reorder and transition changes against the mix as it now stands -- this
+    matches how a human editing the draft in one sitting would experience
+    several changes made together, and keeps every downstream validation
+    (proposed_order's "every current item exactly once", a transition's
+    target existing) reasoning about one consistent, already-updated set of
+    items rather than the pre-plan one."""
 
     mix = None
     saved = None
     has_actual_change = False
-    has_mix_changes = request.proposed_order is not None or bool(
-        request.transition_changes
+    has_mix_changes = (
+        request.proposed_order is not None
+        or bool(request.transition_changes)
+        or bool(request.removed_item_ids)
+        or request.add_item is not None
     )
     if has_mix_changes:
         mix = owned_studio_mix(db, user_id, request.mix_id)
         _require_draft(mix)
         _require_revision(mix, request.expected_revision)
+
+        if request.removed_item_ids:
+            _remove_segment_items(db, mix, set(request.removed_item_ids))
+            has_actual_change = True
+
+        if request.add_item is not None:
+            add = request.add_item
+            if add.source_type == "saved_segment":
+                segment_for_add = owned_segment(db, user_id, add.saved_segment_id)
+            else:
+                # A partial-commit tradeoff, accepted deliberately:
+                # create_saved_segment commits its own SavedSegment row
+                # immediately (see that function), before the rest of this
+                # plan is applied/committed. If a later step in this same
+                # plan fails, the new saved segment stays committed but
+                # simply unattached to any mix -- identical in effect to a
+                # user manually creating one via POST /studio/segments and
+                # then deciding not to add it, never a corrupted mix state.
+                segment_for_add = create_saved_segment(
+                    db,
+                    user_id,
+                    SavedSegmentCreate(
+                        source_type=add.source_type,
+                        source_track_id=add.source_track_id,
+                        start_ms=add.start_ms,
+                        end_ms=add.end_ms,
+                        label=f"AI pick for {mix.title}"[:120],
+                        created_from="ai",
+                    ),
+                )
+            _insert_segment_item(db, mix, segment_for_add, add.insert_after_item_id)
+            has_actual_change = True
+
         current_ids = {item.id for item in mix.segments}
         if request.proposed_order is not None and (
             len(request.proposed_order) != len(set(request.proposed_order))
@@ -608,7 +909,7 @@ def apply_assistant_plan(db: Session, user_id: int, request, planner):
                     status_code=422, detail="A cut transition must have zero duration."
                 )
         by_id = {item.id: item for item in mix.segments}
-        has_actual_change = effective_order != current_order or any(
+        has_actual_change = has_actual_change or effective_order != current_order or any(
             change.transition_type != by_id[change.item_id].transition_type
             or change.duration_ms != by_id[change.item_id].transition_duration_ms
             for change in request.transition_changes
@@ -634,8 +935,14 @@ def apply_assistant_plan(db: Session, user_id: int, request, planner):
         )
 
     if mix is not None:
+        structural_change = (
+            request.proposed_order is not None
+            or bool(request.removed_item_ids)
+            or request.add_item is not None
+        )
         if request.proposed_order is not None:
             _apply_mix_order(db, mix, request.proposed_order)
+        if structural_change:
             recompute_transitions(db, mix, planner)
         by_id = {item.id: item for item in mix.segments}
         for change in request.transition_changes:
@@ -646,6 +953,8 @@ def apply_assistant_plan(db: Session, user_id: int, request, planner):
             )
         if request.transition_changes:
             recompute_transitions(db, mix, planner, preserve_types=True)
+        if request.active_constraints:
+            _enforce_active_constraints(mix, request)
         _touch(mix)
 
     db.commit()

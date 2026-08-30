@@ -77,13 +77,44 @@
  * @property {number|null} average_bpm_jump
  * @property {number} known_bpm_pairs
  *
+ * @typedef {Object} StudioDiscoveryTrack
+ * @property {'catalog'|'audius'} source_type
+ * @property {string} source_track_id
+ * @property {string} title
+ * @property {string} artist
+ * @property {number} duration_ms
+ * @property {number|null} bpm
+ * @property {string|null} musical_key
+ * @property {string|null} camelot
+ * @property {string|null} vibe
+ * @property {string|null} genre
+ * @property {string|null} reason
+ *
+ * @typedef {Object} StudioAssistantAddItem
+ * @property {'catalog'|'audius'|'saved_segment'} source_type
+ * @property {string|null} source_track_id
+ * @property {number|null} saved_segment_id
+ * @property {number|null} start_ms
+ * @property {number|null} end_ms
+ * @property {number|null} insert_after_item_id
+ *
+ * @typedef {Object} StudioConstraint
+ * @property {'keep_item'|'max_duration_ms'} type
+ * @property {number|null} [item_id]
+ * @property {number|null} [value_ms]
+ *
  * @typedef {Object} StudioAssistantRecommendation
- * @property {'explanation'|'clarification'|'plan'|'unavailable'} recommendation_type
+ * @property {'explanation'|'clarification'|'plan'|'refusal'|'unavailable'} recommendation_type
  * @property {number|null} base_revision
  * @property {string[]} remembered_constraints
  * @property {number[]|null} proposed_order
  * @property {StudioTransitionChange[]} transition_changes
  * @property {StudioSegmentBoundChange|null} segment_bound_change
+ * @property {number[]} removed_item_ids
+ * @property {StudioAssistantAddItem|null} add_item
+ * @property {StudioDiscoveryTrack[]} discovery_results
+ * @property {'preview_transition'|'preview_segment'|'render_mix'|null} suggested_action
+ * @property {number|null} action_target_item_id
  * @property {StudioPlanCalculations|null} calculations
  * @property {string[]} warnings
  * @property {string[]} reason_tags

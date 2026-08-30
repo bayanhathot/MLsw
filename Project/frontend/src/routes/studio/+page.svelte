@@ -76,17 +76,29 @@
 	let assistantInput = $state('');
 	/** @type {{role:'user'|'assistant',content:string}[]} */
 	let assistantMessages = $state([]);
-	/** @type {import('$lib/types.js').StudioAssistantRecommendation|null} */
-	let recommendation = $state(null);
+	let recommendation = $state(
+		/** @type {import('$lib/types.js').StudioAssistantRecommendation|null} */ (null)
+	);
 	let compareNextAi = $state(true);
 	/** @type {number|null} */
 	let activeSavedSegmentId = $state(null);
 	/** @type {number|null} */
 	let skipReportedSegmentId = $state(null);
+	// Toggled alongside "Ask assistant" -- when on, this turn's message also
+	// runs a real catalog/Audius search folded into context.discovery_results
+	// so the assistant can recommend real, addable tracks instead of prose.
+	let discoveryModeOn = $state(false);
 
 	let activeMix = $derived(mixes.find((mix) => mix.id === activeMixId) || null);
 	let activeMixHasProviderAudio = $derived(
 		Boolean(activeMix?.segments.some((segment) => segment.source !== 'catalog'))
+	);
+	// A pending, unapplied plan with warnings shouldn't be silently rendered
+	// over -- surface why rather than let the render button run ahead of it.
+	let renderBlockedReason = $derived(
+		recommendation?.recommendation_type === 'plan' && recommendation.warnings?.length
+			? `Resolve or apply the assistant's pending suggestion first: ${recommendation.warnings[0]}`
+			: ''
 	);
 	let filteredSegments = $derived(
 		savedSegments.filter((segment) => {
@@ -657,7 +669,8 @@
 			const result = await chatWithStudioAssistant(
 				assistantMessages,
 				activeMix?.id,
-				activeSavedSegmentId
+				activeSavedSegmentId,
+				discoveryModeOn ? content : null
 			);
 			recommendation = result.recommendation;
 			compareNextAi = true;
@@ -693,6 +706,78 @@
 			error = requestError instanceof Error ? requestError.message : 'Assistant plan was rejected.';
 		} finally {
 			busy = '';
+		}
+	}
+
+	/** @param {import('$lib/types.js').StudioDiscoveryTrack} track */
+	async function addDiscoveredTrack(track) {
+		if (!activeMix) {
+			notice = 'Create or open a draft mix first, then add a discovered track.';
+			return;
+		}
+		busy = 'assistant-apply';
+		error = '';
+		try {
+			const applied = await applyStudioAssistantPlan(
+				{
+					recommendation_type: 'plan',
+					base_revision: activeMix.revision,
+					remembered_constraints: [],
+					proposed_order: null,
+					transition_changes: [],
+					segment_bound_change: null,
+					removed_item_ids: [],
+					add_item: {
+						source_type: track.source_type,
+						source_track_id: track.source_track_id,
+						saved_segment_id: null,
+						start_ms: 0,
+						end_ms: Math.max(1000, Math.min(30_000, track.duration_ms)),
+						insert_after_item_id: null
+					},
+					discovery_results: [],
+					suggested_action: null,
+					action_target_item_id: null,
+					calculations: null,
+					warnings: [],
+					reason_tags: [],
+					explanation: '',
+					confidence: 1,
+					requires_user_confirmation: false
+				},
+				activeMix.id
+			);
+			if (applied.mix) replaceMix(applied.mix);
+			notice = `Added "${track.title}" to the mix.`;
+		} catch (requestError) {
+			error = requestError instanceof Error ? requestError.message : 'Could not add this track.';
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function runSuggestedAction() {
+		if (!recommendation?.suggested_action) return;
+		const action = recommendation.suggested_action;
+		if (action === 'render_mix') {
+			await renderMix();
+			return;
+		}
+		const item = activeMix?.segments.find(
+			(segment) => segment.id === recommendation?.action_target_item_id
+		);
+		if (!item) {
+			notice = 'That mix item is no longer available.';
+			return;
+		}
+		if (action === 'preview_transition') {
+			await previewTransition(item);
+		} else if (action === 'preview_segment') {
+			if (item.sourceStartMs == null || item.sourceEndMs == null) {
+				notice = 'Nothing to preview for this item.';
+				return;
+			}
+			await cueAudio(item.sourceAudioUrl || item.audioUrl, item.sourceStartMs, item.sourceEndMs);
 		}
 	}
 
@@ -988,8 +1073,47 @@
 					{#if recommendation}
 						<div class="bubble-row">
 							<span class="bubble-tag">Assistant</span>
-							<article class="recommendation">
+							<article
+								class="recommendation"
+								class:refusal={recommendation.recommendation_type === 'refusal'}
+							>
+								{#if recommendation.recommendation_type === 'refusal'}
+									<p class="recommendation-headline refusal-label" role="status">
+										<span aria-hidden="true">✋</span> Outside what I can help with
+									</p>
+								{/if}
 								<p class="recommendation-headline">{summaryHeadline(recommendation)}</p>
+								{#if recommendation.discovery_results?.length}
+									<section class="assistant-detail discovery-results">
+										<b>Found tracks</b>
+										<ul>
+											{#each recommendation.discovery_results as track (`${track.source_type}:${track.source_track_id}`)}
+												<li>
+													<div>
+														<strong>{track.title}</strong> — {track.artist}
+														{#if track.reason}<small>{track.reason}</small>{/if}
+													</div>
+													<button
+														type="button"
+														disabled={busy === 'assistant-apply'}
+														onclick={() => addDiscoveredTrack(track)}>Add to mix</button
+													>
+												</li>
+											{/each}
+										</ul>
+									</section>
+								{/if}
+								{#if recommendation.suggested_action}
+									<div class="row-actions">
+										<button type="button" onclick={runSuggestedAction}
+											>{recommendation.suggested_action === 'render_mix'
+												? 'Render mix'
+												: recommendation.suggested_action === 'preview_transition'
+													? 'Preview that transition'
+													: 'Preview that segment'}</button
+										>
+									</div>
+								{/if}
 								<div class="row-actions">
 									{#if recommendation.segment_bound_change}
 										<button onclick={playAiRecommendation}>Play AI</button><button
@@ -1116,6 +1240,10 @@
 						>
 					{/each}
 				</div>
+				<label class="discovery-toggle">
+					<input type="checkbox" bind:checked={discoveryModeOn} />
+					Also search for real tracks matching this message
+				</label>
 				<form
 					class="assistant-form"
 					onsubmit={(event) => {
@@ -1333,14 +1461,16 @@
 									? `Tempo ${item.compatibilityFactors.tempo} · Key ${item.compatibilityFactors.key} · Energy ${item.compatibilityFactors.energy} · Phrase ${item.compatibilityFactors.phrase}`
 									: 'Metadata unavailable'}</small
 							>
-							<div>
+							<div class="transition-controls">
 								<select
+									aria-label={`Transition after ${item.title}`}
 									value={item.transitionType}
 									disabled={activeMix.status === 'published'}
 									onchange={(event) => changeTransition(item, event.currentTarget.value)}
 									><option value="cut">Cut</option><option value="crossfade">Crossfade</option
 									><option value="fade_in_out">Fade in/out</option></select
 								><input
+									aria-label="Transition duration in milliseconds"
 									type="number"
 									min="0"
 									max="8000"
@@ -1362,10 +1492,15 @@
 						>Duplicate into editable draft</button
 					>{:else}<button
 						class="primary"
-						disabled={!activeMix.segments.length || busy === 'render'}
+						disabled={!activeMix.segments.length ||
+							busy === 'render' ||
+							Boolean(renderBlockedReason)}
 						onclick={renderMix}
 						>{busy === 'render' ? 'Rendering…' : 'Render current revision'}</button
 					>
+					{#if renderBlockedReason}
+						<p class="publish-note" role="status">{renderBlockedReason}</p>
+					{/if}
 					{#if activeMixHasProviderAudio}
 						<p class="publish-note" role="status">
 							This mix includes Audius audio. Publishing never republishes that audio as a CueMix
@@ -1952,6 +2087,44 @@
 		font-weight: 600;
 		line-height: 1.4;
 	}
+	.recommendation.refusal {
+		border-color: rgba(148, 163, 184, 0.4);
+		background: rgba(148, 163, 184, 0.08);
+	}
+	.refusal-label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--text-dim);
+		font-size: 12px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+	.discovery-toggle {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		margin: 4px 0 0;
+		color: var(--text-dim);
+		font-size: 12px;
+	}
+	.discovery-results ul {
+		list-style: none;
+		padding-left: 0 !important;
+	}
+	.discovery-results li {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		padding: 6px 0;
+	}
+	.discovery-results li small {
+		display: block;
+		color: var(--text-dim);
+		font-size: 10px;
+	}
 	.assistant-more {
 		border-top: 1px solid rgba(255, 149, 72, 0.25);
 		padding-top: 8px;
@@ -2225,22 +2398,35 @@
 	.timeline {
 		display: flex;
 		align-items: stretch;
-		gap: 10px;
-		overflow: auto;
-		padding-bottom: 8px;
+		gap: 12px;
+		max-width: 100%;
+		overflow-x: auto;
+		overflow-y: hidden;
+		padding: 12px;
+		border: 1px solid var(--seam);
+		border-radius: 10px;
+		background: var(--well);
+		scrollbar-color: var(--text-faint) transparent;
+		scrollbar-width: thin;
+		overscroll-behavior-inline: contain;
 	}
 	.timeline-item {
 		display: grid;
-		min-width: 220px;
+		grid-template-rows: auto auto 1fr;
+		flex: 0 0 260px;
+		min-width: 0;
 		gap: 10px;
 		padding: 13px;
 		border: 1px solid var(--seam);
 		border-radius: 10px;
 		background: var(--panel-raised);
+		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+		overflow: hidden;
 	}
 	.timeline-item header {
 		display: flex;
 		gap: 9px;
+		min-width: 0;
 	}
 	.timeline-item header > span {
 		display: grid;
@@ -2252,35 +2438,68 @@
 		color: var(--cyan);
 		font-family: var(--font-mono);
 		font-weight: 700;
+		flex: none;
 	}
 	.timeline-item header div {
 		display: grid;
+		min-width: 0;
+		gap: 3px;
+	}
+	.timeline-item header strong {
+		display: -webkit-box;
+		overflow: hidden;
+		line-height: 1.3;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
 	}
 	.timeline-item small {
+		display: block;
+		overflow: hidden;
 		color: var(--text-faint);
 		font-family: var(--font-mono);
 		font-variant-numeric: tabular-nums;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.chips {
 		display: flex;
+		align-items: center;
 		gap: 6px;
+		min-height: 21px;
+		flex-wrap: wrap;
+	}
+	.chips span {
+		padding: 3px 7px;
+		border: 1px solid var(--seam);
+		border-radius: 999px;
+		background: var(--well);
+		color: var(--text-dim);
+		font-family: var(--font-mono);
+		font-size: 9px;
 	}
 	.item-actions {
 		display: flex;
 		gap: 5px;
+		align-self: end;
+		flex-wrap: wrap;
 	}
 	.item-actions button {
 		padding: 6px 8px;
 	}
 	.transition-card {
 		display: grid;
-		min-width: 235px;
-		place-content: center;
+		grid-template-rows: auto 1fr auto;
+		flex: 0 0 250px;
+		min-width: 0;
+		align-content: center;
 		gap: 8px;
 		padding: 13px;
 		border: 1px dashed var(--seam);
 		border-radius: 10px;
+		background: rgba(29, 35, 44, 0.45);
 		color: var(--text-dim);
+		overflow: hidden;
 	}
 	.transition-card strong {
 		font-family: var(--font-mono);
@@ -2290,6 +2509,7 @@
 	.meter-row {
 		display: grid;
 		gap: 5px;
+		min-width: 0;
 	}
 	.meter {
 		--fill: 0%;
@@ -2305,12 +2525,19 @@
 		height: 100%;
 		background: linear-gradient(90deg, var(--amber), var(--cyan));
 	}
-	.transition-card > div {
-		display: flex;
+	.transition-card > small {
+		line-height: 1.45;
+	}
+	.transition-controls {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 76px auto;
 		gap: 5px;
 	}
+	.transition-controls > * {
+		min-width: 0;
+	}
 	.transition-card input {
-		width: 70px;
+		width: 100%;
 		font-family: var(--font-mono);
 	}
 	.wide {
@@ -2373,7 +2600,7 @@
 		.timeline-item,
 		.transition-card {
 			scroll-snap-align: start;
-			min-width: 84vw;
+			flex-basis: min(84vw, 320px);
 		}
 		.drafts-drawer {
 			width: 100vw;
