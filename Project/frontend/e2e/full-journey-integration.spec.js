@@ -116,7 +116,15 @@ test('a user uploads songs, builds and publishes a Studio mix, plays it, and see
 	await expect(page.getByRole('button', { name: new RegExp(secondTitle) })).toBeVisible();
 
 	async function saveTrackSegment(title, label) {
+		const sourceAudioResponse = page.waitForResponse((response) => {
+			const request = response.request();
+			return (
+				request.method() === 'GET' &&
+				/\/api\/catalog\/tracks\/\d+\/audio$/.test(new URL(response.url()).pathname)
+			);
+		});
 		await page.getByRole('button', { name: new RegExp(title) }).click();
+		await expectOk(await sourceAudioResponse, `load ${title} source audio`);
 		await expect(page.locator('.editor-panel').getByRole('heading', { name: title })).toBeVisible();
 		await page.getByTestId('segment-start-input').fill('0');
 		await page.getByTestId('segment-end-input').fill('3');
