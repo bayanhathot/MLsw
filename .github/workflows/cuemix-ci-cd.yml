@@ -474,6 +474,7 @@ jobs:
           e2e/realtime-integration.spec.js
           e2e/profile-integration.spec.js
           e2e/memory-integration.spec.js
+          e2e/full-journey-integration.spec.js
 
       - name: Show backend log on failure
         if: failure()

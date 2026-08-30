@@ -830,6 +830,7 @@
 			<audio
 				bind:this={audioElement}
 				src={previewUrl}
+				crossorigin="use-credentials"
 				controls
 				ontimeupdate={handleTimeUpdate}
 				onseeked={handleTimeUpdate}

@@ -119,6 +119,7 @@
 				container: host,
 				media: player,
 				url,
+				fetchParams: { credentials: 'include' },
 				height: 112,
 				waveColor: '#333c48',
 				progressColor: '#3fe6bb',

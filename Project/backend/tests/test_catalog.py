@@ -1,3 +1,4 @@
+import hashlib
 import io
 import time
 from pathlib import Path
@@ -108,9 +109,10 @@ def test_upload_stores_track_runs_analysis_and_is_playable(client, db_session):
     assert row.segment_end_second > row.segment_start_second
     # Lets future targeted reprocessing (e.g. "everything below version N",
     # "everything analyzed before date X") query these independently --
-    # see CatalogTrack.analysis_version's own docstring. "v3": v2's real
-    # Krumhansl-Schmuckler key-finding plus the absolute segment-level floor.
-    assert row.analysis_version == "v3"
+    # see CatalogTrack.analysis_version's own docstring. "v4": v3 plus a
+    # low-sample-rate chroma fallback; v3 already included the absolute
+    # segment-level floor and real Krumhansl-Schmuckler key-finding.
+    assert row.analysis_version == "v4"
     assert row.analyzed_at is not None
     # Genuine confidence signals read off the same librosa computations
     # bpm/musical_key are chosen from (see audio_analysis._bpm_confidence/
@@ -189,6 +191,35 @@ def test_duplicate_upload_reuses_storage_and_analysis_without_recomputing(client
     assert second_row.bpm_confidence == first_row.bpm_confidence
     assert second_row.key_confidence == first_row.key_confidence
     assert second_row.integrated_loudness_lufs == first_row.integrated_loudness_lufs
+
+
+def test_duplicate_of_failed_analysis_is_reanalyzed_instead_of_copying_failure(client, db_session):
+    """Regression: a failed checksum match used to be treated as reusable,
+    so every later upload of those valid bytes immediately inherited
+    ``failed`` and could never benefit from an analyzer fix."""
+
+    register_and_login(client)
+    failed_row = CatalogTrack(
+        title="Old failed analysis",
+        artist="Test Artist",
+        album="Test Album",
+        storage_name="old-failed.wav",
+        content_type="audio/wav",
+        duration_seconds=60,
+        analysis_status="failed",
+        checksum_sha256=hashlib.sha256(_DEMO_WAV_BYTES).hexdigest(),
+    )
+    db_session.add(failed_row)
+    db_session.commit()
+
+    response = _upload(client, title="Retry after analyzer fix")
+    assert response.status_code == 201, response.text
+    assert response.json()["analysis_status"] == "pending"
+
+    retried = _wait_for_analysis(db_session, response.json()["id"])
+    assert retried.analysis_status == "completed"
+    assert retried.storage_name != failed_row.storage_name
+    assert retried.analysis_version == "v4"
 
 
 def test_duplicate_upload_with_different_metadata_still_creates_its_own_row(client, db_session):

@@ -495,6 +495,30 @@ def test_analyze_audio_rejects_uniform_near_silence_even_relative_to_its_own_pea
         audio_analysis.analyze_audio(str(path), label="uniform -60 dBFS provider track")
 
 
+def test_analyze_audio_accepts_valid_low_sample_rate_wav(tmp_path):
+    """Regression: upload validation accepted an audible 8 kHz WAV, but
+    chroma_cqt then rejected it because its basis exceeded Nyquist. The
+    analysis must use the STFT fallback and produce a real result so the
+    uploaded song can become available in Studio."""
+
+    sr = 8000
+    duration_seconds = 6
+    timeline = np.arange(sr * duration_seconds, dtype=np.float32) / sr
+    signal = (
+        0.35 * np.sin(2 * np.pi * 220 * timeline)
+        + 0.2 * np.sin(2 * np.pi * 330 * timeline)
+    ).astype(np.float32)
+    path = tmp_path / "valid-low-sample-rate.wav"
+    sf.write(str(path), signal, sr)
+
+    result = audio_analysis.analyze_audio(str(path), label="valid low-rate upload")
+
+    assert result.segment_method == "whole_clip"
+    assert result.segment_end_second == duration_seconds
+    assert result.musical_key in _PITCH_CLASSES
+    assert result.key_mode in {"major", "minor"}
+
+
 def test_analyze_catalog_track_marks_a_uniformly_silent_upload_failed_not_completed(db_session, tmp_path):
     # D2/Cause B, end to end: the raise above must actually reach a
     # persisted CatalogTrack row as analysis_status="failed", not

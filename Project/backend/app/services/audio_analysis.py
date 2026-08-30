@@ -74,12 +74,12 @@ EXTERNAL_ANALYSIS_MAX_ATTEMPTS = int(os.getenv("EXTERNAL_ANALYSIS_MAX_ATTEMPTS",
 # chroma/beat-tracking method, a different segment-selection heuristic,
 # etc.) so existing rows can be targeted for reprocessing by version later
 # -- see CatalogTrack.analysis_version's own docstring for the query shape
-# this is meant to support. "v3" adds an absolute dBFS floor to segment
-# selection, so old v2 external-track cache rows are reanalyzed instead of
-# continuing to trust windows that only sounded loud relative to a uniformly
-# near-silent track. v2 introduced real Krumhansl-Schmuckler key-finding;
+# this is meant to support. "v4" keeps CQT chroma as the normal path but
+# falls back to STFT chroma when a valid low-sample-rate file cannot support
+# CQT's requested frequency range. "v3" added an absolute dBFS floor to
+# segment selection; v2 introduced real Krumhansl-Schmuckler key-finding;
 # v1 used a bare strongest-average-chroma-bin heuristic.
-ANALYSIS_VERSION = "v3"
+ANALYSIS_VERSION = "v4"
 
 _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -445,6 +445,34 @@ _LONG_TRACK_REMAINDER_CHUNKS = 4
 _LONG_TRACK_REMAINDER_CHUNK_SECONDS = 75
 
 
+def _extract_chroma(librosa_module, waveform: np.ndarray, sr: float) -> np.ndarray:
+    """Extract twelve-bin chroma without rejecting valid low-rate audio.
+
+    CQT is the preferred representation used by the existing analysis. At
+    low sample rates, librosa can reject it because its highest CQT basis
+    frequency exceeds the signal's Nyquist frequency. That is a limitation
+    of this feature extractor, not evidence that the uploaded audio is
+    invalid, so only that specific error falls back to STFT chroma. Every
+    other ParameterError still propagates to the normal failed-analysis
+    path instead of being hidden.
+    """
+
+    try:
+        return librosa_module.feature.chroma_cqt(
+            y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH
+        )
+    except librosa_module.util.exceptions.ParameterError as exc:
+        if "nyquist" not in str(exc).lower():
+            raise
+        logger.info(
+            "CQT chroma is unavailable at sample rate %s; using STFT chroma",
+            sr,
+        )
+        return librosa_module.feature.chroma_stft(
+            y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH
+        )
+
+
 def _select_long_track_segment(
     librosa_module,
     path: str,
@@ -494,7 +522,7 @@ def _select_long_track_segment(
         )
         if waveform.size == 0:
             continue
-        chroma = librosa_module.feature.chroma_cqt(y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
+        chroma = _extract_chroma(librosa_module, waveform, sr)
         frames_per_second = sr / _CHROMA_HOP_LENGTH
         rms_frames = librosa_module.feature.rms(y=waveform, hop_length=_CHROMA_HOP_LENGTH)[0]
         overall_peak = max(overall_peak, float(np.max(np.abs(waveform))))
@@ -632,7 +660,7 @@ def analyze_audio(path: str, *, label: str) -> AnalysisResult:
     # beat_frames is the same beat grid beat_track derived tempo_bpm from --
     # reused directly, not a second onset/beat-tracking pass.
     beat_grid, downbeat_grid, phrase_boundaries = _beat_grids(librosa, beat_frames, sr, _BEAT_HOP_LENGTH)
-    chroma = librosa.feature.chroma_cqt(y=waveform, sr=sr, hop_length=_CHROMA_HOP_LENGTH)
+    chroma = _extract_chroma(librosa, waveform, sr)
     frames_per_second = sr / _CHROMA_HOP_LENGTH
     musical_key, key_mode, key_confidence_value = _estimate_key(chroma)
     # Same hop length as the chroma buckets above, so _bucket_rms_dbfs's

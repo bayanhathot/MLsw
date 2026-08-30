@@ -50,12 +50,14 @@ ESLint, and Prettier cover components and routes. Playwright exercises public
 navigation, guest route protection, and authenticated library/profile/social
 routes against the production build with controlled API fixtures.
 
-CI additionally runs three Playwright integration files against a real
+CI additionally runs four Playwright integration files against a real
 FastAPI/PostgreSQL/Redis stack: realtime delivery, Profile statistics/privacy,
-and persistent DJ coaching memory. The memory scenario performs registration,
-session creation, coaching, logout/login, and a second session through the
-browser, then verifies the effective remembered intent. These real-backend
-tests are required before container images can be built or deployed.
+persistent DJ coaching memory, and the complete CueMix product journey. The
+journey uploads and analyzes original generated WAV files through the real job
+queue, edits and previews their segments in Studio, renders and publishes the
+mix, plays it from Library, and verifies that Profile analytics changed. These
+real-backend tests are required before container images can be built or
+deployed.
 
 ## API conventions
 

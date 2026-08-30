@@ -190,15 +190,16 @@ def _find_duplicate_by_checksum(db: Session, sha256: str) -> CatalogTrack | None
     """Dedup policy (see the module docstring's "audio-derived vs. catalog
     metadata" split for the short version): a prior upload of byte-
     identical audio is a candidate for reuse only once *its own* analysis
-    has reached a terminal state (never a still-"pending" match -- that
-    match's own bpm/key/segment could still change, or fail, and a second
-    row copied from it now would silently go stale). Ties broken by lowest
-    id purely for determinism; any matching row has identical audio-derived
-    data by definition, so which one wins doesn't otherwise matter."""
+    completed successfully. A pending result could still change, while a
+    failed result may become analyzable after a pipeline fix and must not
+    poison every future upload of those bytes. Ties are broken by lowest id
+    purely for determinism; any successfully analyzed match has identical
+    audio-derived data by definition, so which one wins doesn't otherwise
+    matter."""
 
     return (
         db.query(CatalogTrack)
-        .filter(CatalogTrack.checksum_sha256 == sha256, CatalogTrack.analysis_status != "pending")
+        .filter(CatalogTrack.checksum_sha256 == sha256, CatalogTrack.analysis_status == "completed")
         .order_by(CatalogTrack.id.asc())
         .first()
     )

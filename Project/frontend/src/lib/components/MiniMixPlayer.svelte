@@ -24,6 +24,7 @@
 	let trackingEventId = '';
 	let trackingMixId = 0;
 	let trackingSegmentId = 0;
+	let trackingAudioUrl = '';
 	/** @type {Date | null} */
 	let trackingStartedAt = null;
 	let listenedSeconds = 0;
@@ -46,14 +47,25 @@
 	});
 
 	$effect(() => {
-		if (!audioElement || !audioUrl) return;
+		const player = audioElement;
+		const nextAudioUrl = audioUrl;
+		const nextMixId = Number(mix?.id || 0);
+		const nextSegmentId = Number(segment?.id || 0);
+		if (!player || !nextAudioUrl) return;
+		if (
+			trackingAudioUrl !== nextAudioUrl ||
+			trackingMixId !== nextMixId ||
+			trackingSegmentId !== nextSegmentId
+		) {
+			resetTracking();
+		}
 		if (shouldPlay) {
-			void audioElement.play().catch(() => {
+			void player.play().catch(() => {
 				shouldPlay = false;
 				error = 'Press play to start this mix.';
 			});
-		} else if (!audioElement.paused) {
-			audioElement.pause();
+		} else if (!player.paused) {
+			player.pause();
 		}
 	});
 
@@ -71,6 +83,7 @@
 		trackingEventId = makeEventId();
 		trackingMixId = Number(mix?.id || 0);
 		trackingSegmentId = Number(segment?.id || 0);
+		trackingAudioUrl = audioUrl;
 		trackingStartedAt = null;
 		listenedSeconds = 0;
 		lastMediaPosition = null;
@@ -79,13 +92,17 @@
 
 	/** @param {boolean} skipped @param {boolean} [keepalive] */
 	async function flushListening(skipped, keepalive = false) {
+		// Some browsers coalesce `timeupdate` events for short clips. The visible
+		// media position is still authoritative, so do not lose a real listen just
+		// because fewer timer events were delivered before the player was closed.
+		const observedSeconds = Math.max(listenedSeconds, currentTime);
 		if (
 			eventFlushed ||
 			$authStore.status !== 'authenticated' ||
 			!trackingSegmentId ||
 			!trackingMixId ||
 			!trackingStartedAt ||
-			listenedSeconds < 0.75
+			observedSeconds < 0.75
 		) {
 			return;
 		}
@@ -97,7 +114,7 @@
 				segmentId: trackingSegmentId,
 				startedAt: trackingStartedAt.toISOString(),
 				endedAt: new Date().toISOString(),
-				secondsListened: listenedSeconds,
+				secondsListened: observedSeconds,
 				skipped,
 				keepalive
 			});
@@ -133,7 +150,6 @@
 		currentTime = 0;
 		duration = range.length;
 		completedUrl = '';
-		resetTracking();
 	}
 
 	function mediaPlaying() {
