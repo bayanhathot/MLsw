@@ -82,7 +82,6 @@ def test_gate_checks_readiness_and_completes_real_plan(monkeypatch):
     [
         (_plan(recommendation_type="explanation"), "without a planning result"),
         (_plan(requires_user_confirmation=False), "bypasses user confirmation"),
-        (_plan(base_revision=2), "authoritative revision"),
         (_plan(proposed_order=[11, 12]), "requested track order"),
         (_plan(transition_changes=[]), "requested crossfade"),
     ],

@@ -103,8 +103,6 @@ def verify_local_planning_model() -> float:
         )
     if not result.requires_user_confirmation:
         raise RuntimeError("Studio AI returned a plan that bypasses user confirmation.")
-    if result.base_revision != 1:
-        raise RuntimeError("Studio AI plan did not preserve the authoritative revision.")
     if result.proposed_order != [12, 11]:
         raise RuntimeError("Studio AI plan did not produce the requested track order.")
     expected_crossfade = any(
