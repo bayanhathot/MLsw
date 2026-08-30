@@ -2,7 +2,7 @@
 measurably improves ranked candidate results for an otherwise-neutral
 prompt.
 
-Addresses CUEMIX_PROJECT_README.md's "Long-term memory" completion
+Addresses Project/README.md's "Optional LLM and preference evaluations"
 criterion: "Verify that preferences improve ranked results with a labeled
 evaluation."
 

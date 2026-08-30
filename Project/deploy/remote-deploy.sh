@@ -179,7 +179,7 @@ DEPLOY_ROOT="${DEPLOY_ROOT}" bash "${DEPLOY_ROOT}/deploy/verify-local-llm.sh"
 # safe to run on every deploy, not just the first. Runs as whichever user
 # this script itself runs as (the SSH deploy user), consistent with
 # DEPLOY_ROOT already being that user's home-relative path. See
-# deploy/backup.sh and deploy/README.md's Operations section.
+# deploy/backup.sh and README.md's Operations section.
 cron_marker="# cuemix-backup (managed by remote-deploy.sh -- do not edit by hand)"
 cron_line="0 3 * * * DEPLOY_ROOT=${DEPLOY_ROOT} /usr/bin/env bash ${DEPLOY_ROOT}/deploy/backup.sh >> ${DEPLOY_ROOT}/../cuemix-backups/backup.log 2>&1 ${cron_marker}"
 existing_crontab="$(crontab -l 2>/dev/null | grep -v -F "${cron_marker}" || true)"

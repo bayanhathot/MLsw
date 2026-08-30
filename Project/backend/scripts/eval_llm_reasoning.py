@@ -7,9 +7,9 @@ This is deliberately decoupled from prompt_parser.py: it talks to Ollama's
 /api/generate classification call parse_prompt() makes. It needs a genuinely
 live, reachable Ollama with OLLAMA_MODEL already pulled -- unlike
 eval_preferences.py, this cannot be mocked without defeating its purpose, and
-is NOT part of the standard `pytest` gate (see backend/README.md's
-"Evaluations" section). Run it manually, or in an environment with Ollama
-available:
+is NOT part of the standard `pytest` gate (see Project/README.md's
+"Optional LLM and preference evaluations" section). Run it manually, or in
+an environment with Ollama available:
 
     cd backend && python -m scripts.eval_llm_reasoning
 

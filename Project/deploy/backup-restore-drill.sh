@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # on the VM -- it prints plain, structured progress/summary text to stdout
 # for whatever invoked it (the "backup-restore-drill" GitHub Actions job,
 # workflow_dispatch run_backup_drill=true, forwards this into its job
-# summary) to capture; see deploy/README.md's Operations section. Safe to
+# summary) to capture; see README.md's Operations section. Safe to
 # also run manually.
 #
 # Usage:

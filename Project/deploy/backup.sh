@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Backs up production PostgreSQL and the uploads named volume to a
 # timestamped, retained directory on the VM. Installed as a daily cron job
 # by remote-deploy.sh (idempotent -- safe to also run manually or via the
-# cron entry it installs). See deploy/README.md's Operations section for
+# cron entry it installs). See README.md's Operations section for
 # the restore procedure (deploy/restore.sh) and why off-VM storage is the
 # natural next step this intentionally does not yet cover.
 

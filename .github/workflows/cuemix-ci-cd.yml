@@ -867,7 +867,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Manual only: redeploys images that were already published for
-    # `rollback_sha` (no rebuild) -- see deploy/README.md's Operations
+    # `rollback_sha` (no rebuild) -- see Project/README.md's Operations
     # section for the drill this was verified with. Independent of
     # publish-images/deploy-production, since a rollback deliberately skips
     # straight past building/testing the current ref.
@@ -987,7 +987,7 @@ jobs:
     # inputs are somehow set at once, rollback_sha wins and this is
     # skipped). Runs a real backup.sh and restore.sh against a scratch
     # database/volume on the VM -- production itself is never written to.
-    # See deploy/README.md's Operations section and
+    # See Project/README.md's Operations section and
     # deploy/backup-restore-drill.sh.
     if: >-
       github.event_name == 'workflow_dispatch' && inputs.run_backup_drill == true &&

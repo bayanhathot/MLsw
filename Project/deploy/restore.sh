@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Restores a backup.sh-produced database dump and/or uploads archive.
 # Defaults to the live production database/volume -- pass --target-db
 # and/or --target-uploads-volume to restore into a scratch copy instead
-# (see deploy/README.md's Operations section for the restore drill this
+# (see README.md's Operations section for the restore drill this
 # was verified with; a scratch target never touches production data,
 # since it's created as a separate Postgres database / Docker volume
 # alongside the real one).

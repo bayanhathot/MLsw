@@ -2,7 +2,7 @@ name: Uptime check
 
 # Chosen over a third-party monitor (UptimeRobot/Better Uptime) so the whole
 # check is self-contained in this repository, with no external account to
-# provision -- see deploy/README.md's Operations section for how to read
+# provision -- see Project/README.md's Operations section for how to read
 # results and what an off-VM/third-party monitor would add on top of this.
 
 on:
