@@ -19,14 +19,11 @@ x-backend-environment: &backend-environment
   # production outage go unnoticed -- see docker-compose.prod.yml's own
   # comment on backend's redis dependency.
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-  # "none" here keeps local dev zero-friction (no LLM call made, even
-  # though the ollama container below now starts by default); the app
-  # itself defaults to "ollama", the sole LLM option, when this is unset
-  # entirely.
-  VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-none}
-  # Defaults match the "ollama" service below, so VIBE_LLM_PROVIDER=ollama
-  # works with no further configuration once qwen3:8b is pulled:
-  # `docker compose exec ollama ollama pull qwen3:8b`.
+  # Ollama is the sole LLM option and is enabled locally by default. The
+  # one-shot ollama-model-init service below automatically pulls and warms
+  # the configured model before the backend or Studio AI starts.
+  VIBE_LLM_PROVIDER: ${VIBE_LLM_PROVIDER:-ollama}
+  # Defaults match the Ollama server and automatic model initializer below.
   OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
   OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
   OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-15}
@@ -149,6 +146,8 @@ services:
       # doesn't happen to also name redis) would never create it.
       redis:
         condition: service_healthy
+      ollama-model-init:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
@@ -183,6 +182,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      ollama-model-init:
+        condition: service_completed_successfully
     expose:
       - "8001"
     restart: unless-stopped
@@ -258,14 +259,33 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # NOT mirrored here on purpose (see docker-compose.prod.yml's
-  # ollama-keepalive for the real fix and its full rationale): local dev
-  # defaults VIBE_LLM_PROVIDER=none and never auto-pulls a model today, so a
-  # keepalive loop here would silently start downloading the multi-GB
-  # OLLAMA_MODEL on every `docker compose up` for developers who never asked
-  # for Ollama at all -- that fails the "low-cost" bar this fix needs to
-  # clear locally, even though it's the right call in production where the
-  # model is already expected to be present.
+  # Provision the local model without any manual `ollama pull` step. This
+  # uses the Ollama image only as a CLI client connected to the real server.
+  # `ollama pull` is idempotent, so an existing ollama_data volume only pays
+  # for a fast manifest check; a fresh installation downloads the model once.
+  # Warming it here also means Studio's strict /ready check can succeed as
+  # soon as the application services start.
+  ollama-model-init:
+    image: ollama/ollama:0.11.4
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        model="$${OLLAMA_MODEL:-qwen3:8b}"
+        echo "ollama-model-init: ensuring $${model} is installed..."
+        ollama pull "$${model}"
+        echo "ollama-model-init: warming $${model}..."
+        ollama run "$${model}" "Respond with only: ok" >/dev/null
+        echo "ollama-model-init: $${model} is ready."
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres_data:

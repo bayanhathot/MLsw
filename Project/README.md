@@ -27,12 +27,11 @@ docker compose up --build
 
 Open the app at <http://localhost:8080> and the API docs at
 <http://localhost:8080/api/docs>. Compose applies all Alembic migrations
-before starting the API and UI. The Ollama container starts by default, but
-the model isn't pulled automatically — run
-`docker compose exec ollama ollama pull qwen3:8b` once to actually use LLM
-prompt classification; `docker-compose.yml`'s local default for
-`VIBE_LLM_PROVIDER` is `none`, while `docker-compose.prod.yml` and the app's
-own fallback both default to `ollama`.
+before starting the API and UI. On the first startup, the one-shot
+`ollama-model-init` service automatically downloads and warms `qwen3:8b`, then
+the backend and Studio AI start with local LLM support enabled. The model is
+kept in the persistent `ollama_data` volume, so later builds and starts reuse
+it without another full download. No manual `ollama pull` command is needed.
 
 Compose seeds a realistic ~50-listener dataset -- accounts, profiles, a
 social graph, forum posts/comments/votes, direct messages, mixes, DJ
