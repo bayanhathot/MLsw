@@ -122,10 +122,16 @@ test('a user uploads songs, builds and publishes a Studio mix, plays it, and see
 		await page.getByTestId('segment-end-input').fill('3');
 		await page.getByLabel('Segment label').fill(label);
 		const editorAudio = page.locator('.editor-panel audio');
-		await expect(editorAudio).toHaveAttribute('src', /\/catalog\/tracks\/\d+\/audio/);
+		// WaveformSegmentEditor hands WaveSurfer the live <audio> element plus the
+		// catalog URL; WaveSurfer always fetches the full track itself to decode
+		// waveform peaks and then swaps the element's src to the local blob: URL
+		// it decoded from (see wavesurfer.js's Player#setSrc). "ready" is the
+		// reliable signal that this swap has already happened, so wait for it
+		// before asserting on src instead of racing the fetch.
 		await expect(page.getByTestId('studio-waveform')).toHaveAttribute('data-status', 'ready', {
 			timeout: 30_000
 		});
+		await expect(editorAudio).toHaveAttribute('src', /^blob:/);
 		await page.getByRole('button', { name: 'Play segment' }).click();
 		await expect
 			.poll(() => editorAudio.evaluate((audio) => !audio.paused), { timeout: 10_000 })
