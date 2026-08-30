@@ -152,7 +152,6 @@
 	{/if}
 </div>
 
-
 <style>
 	.home-stage {
 		width: min(1500px, 100%);
