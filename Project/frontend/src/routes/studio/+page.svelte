@@ -453,6 +453,39 @@
 		return firstSentence.length > 140 ? `${firstSentence.slice(0, 137)}…` : firstSentence;
 	}
 
+	/** @param {string} text */
+	function escapeHtml(text) {
+		/** @type {Record<string, string>} */
+		const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+		return text.replace(/[&<>"']/g, (ch) => entities[ch] || ch);
+	}
+
+	/** Minimal, XSS-safe **bold** + bullet-list + paragraph renderer for chat text. @param {string} text */
+	function renderChatText(text) {
+		const lines = escapeHtml(text || '').split('\n');
+		let html = '';
+		let inList = false;
+		for (const rawLine of lines) {
+			const line = rawLine.trim();
+			const bullet = /^[-*]\s+(.*)/.exec(line);
+			if (bullet) {
+				if (!inList) {
+					html += '<ul>';
+					inList = true;
+				}
+				html += `<li>${bullet[1]}</li>`;
+			} else {
+				if (inList) {
+					html += '</ul>';
+					inList = false;
+				}
+				if (line) html += `<p>${line}</p>`;
+			}
+		}
+		if (inList) html += '</ul>';
+		return html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+	}
+
 	async function createDraft() {
 		if (!newMixTitle.trim()) return;
 		try {
@@ -605,6 +638,13 @@
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Auto-mix failed.';
 		}
+	}
+
+	function clearChat() {
+		assistantMessages = [];
+		recommendation = null;
+		assistantInput = '';
+		compareNextAi = true;
 	}
 
 	async function askAssistant() {
@@ -921,28 +961,162 @@
 		<aside class:collapsed={!assistantOpen} class="panel assistant-panel">
 			<div class="panel-title">
 				<div>
-					<p class="eyebrow">Local LLM · always thinking</p>
+					<p class="eyebrow">Local LLM</p>
 					<h2>AI Mix Assistant</h2>
 				</div>
-				<button class="ghost" onclick={() => (assistantOpen = !assistantOpen)}
-					>{assistantOpen ? 'Collapse' : 'Open'}</button
-				>
+				<div class="assistant-title-actions">
+					{#if assistantMessages.length}
+						<button class="ghost" onclick={clearChat} disabled={busy === 'assistant'}
+							>Clear chat</button
+						>
+					{/if}
+					<button class="ghost" onclick={() => (assistantOpen = !assistantOpen)}
+						>{assistantOpen ? 'Collapse' : 'Open'}</button
+					>
+				</div>
 			</div>
 			{#if assistantOpen}
 				<div class="chat-log">
-					{#each assistantMessages as message, index (index)}<p
-							class:user={message.role === 'user'}
-						>
-							<b>{message.role === 'user' ? 'You' : 'Assistant'}</b>{message.content}
-						</p>{:else}<p class="empty">
+					{#each assistantMessages as message, index (index)}
+						<div class="bubble-row" class:user={message.role === 'user'}>
+							{#if message.role === 'assistant'}<span class="bubble-tag">Assistant</span>{/if}
+							<!-- eslint-disable-next-line svelte/no-at-html-tags -- renderChatText escapes all input before inserting its own fixed <p>/<ul>/<li>/<strong> tags -->
+							<div class="bubble">{@html renderChatText(message.content)}</div>
+						</div>
+					{:else}<p class="empty">
 							Give the analyst several constraints at once: duration, locked tracks, energy arc, BPM
 							jumps, and transition style. It remembers this conversation and waits for your
 							confirmation before applying a plan.
 						</p>{/each}
+					{#if recommendation}
+						<div class="bubble-row">
+							<span class="bubble-tag">Assistant</span>
+							<article class="recommendation">
+								<p class="recommendation-headline">{summaryHeadline(recommendation)}</p>
+								<div class="row-actions">
+									{#if recommendation.segment_bound_change}
+										<button onclick={playAiRecommendation}>Play AI</button><button
+											onclick={compareRecommendation}>Compare</button
+										>
+									{/if}
+									{#if recommendation.recommendation_type === 'plan'}<button
+											class="accent"
+											disabled={busy === 'assistant-apply'}
+											onclick={applyRecommendation}
+											>{busy === 'assistant-apply'
+												? 'Validating…'
+												: 'Confirm and apply plan'}</button
+										>{/if}<button onclick={keepMine}>Keep Mine</button>
+								</div>
+								<details class="assistant-more">
+									<summary
+										>Why? <span class="confidence-pill"
+											>{Math.round(recommendation.confidence * 100)}% grounded</span
+										></summary
+									>
+									<p>{recommendation.explanation}</p>
+									{#if recommendation.remembered_constraints?.length}
+										<section class="assistant-detail">
+											<b>Remembered constraints</b>
+											<ul>
+												{#each recommendation.remembered_constraints as constraint, constraintIndex (`${constraint}-${constraintIndex}`)}<li
+													>
+														{constraint}
+													</li>{/each}
+											</ul>
+										</section>
+									{/if}
+									{#if recommendation.calculations}
+										<div class="assistant-math">
+											<span
+												>Current<strong
+													>{formatTime(recommendation.calculations.current_duration_ms)}</strong
+												></span
+											>
+											<span
+												>Proposed<strong
+													>{formatTime(recommendation.calculations.proposed_duration_ms)}</strong
+												></span
+											>
+											<span
+												>Overlap<strong
+													>{formatTime(recommendation.calculations.transition_overlap_ms)}</strong
+												></span
+											>
+											<span
+												>BPM jump<strong
+													>{recommendation.calculations.average_bpm_jump == null
+														? 'No data'
+														: recommendation.calculations.average_bpm_jump.toFixed(1)}</strong
+												></span
+											>
+										</div>
+									{/if}
+									{#if recommendation.proposed_order?.length}
+										<section class="assistant-detail">
+											<b>Proposed order</b>
+											<ol>
+												{#each recommendation.proposed_order as itemId (itemId)}<li>
+														{assistantItemLabel(itemId)}
+													</li>{/each}
+											</ol>
+										</section>
+									{/if}
+									{#if recommendation.transition_changes?.length}
+										<section class="assistant-detail">
+											<b>Transition changes</b>
+											<ul>
+												{#each recommendation.transition_changes as change (change.item_id)}<li>
+														{assistantItemLabel(change.item_id)}: {change.transition_type.replaceAll(
+															'_',
+															' '
+														)}
+														· {(change.duration_ms / 1000).toFixed(1)}s
+													</li>{/each}
+											</ul>
+										</section>
+									{/if}
+									{#if recommendation.segment_bound_change}
+										<p class="assistant-bound">
+											Saved segment range: {formatTime(
+												recommendation.segment_bound_change.proposed_start_ms
+											)}–{formatTime(recommendation.segment_bound_change.proposed_end_ms)}
+										</p>
+									{/if}
+									{#if recommendation.warnings?.length}
+										<section class="assistant-detail warning-list">
+											<b>Warnings</b>
+											<ul>
+												{#each recommendation.warnings as warning, warningIndex (`${warning}-${warningIndex}`)}<li
+													>
+														{warning}
+													</li>{/each}
+											</ul>
+										</section>
+									{/if}
+									{#if recommendation.reason_tags?.length}<small
+											>{recommendation.reason_tags.join(' · ')}</small
+										>{/if}
+								</details>
+							</article>
+						</div>
+					{/if}
+					{#if busy === 'assistant'}
+						<div class="bubble-row">
+							<span class="bubble-tag">Assistant</span>
+							<div class="bubble thinking" role="status" aria-live="polite">
+								<span>Thinking</span><i></i><i></i><i></i>
+							</div>
+						</div>
+					{/if}
 				</div>
 				<div class="suggestion-chips">
 					{#each assistantSuggestions as suggestion (suggestion)}
-						<button type="button" onclick={() => useSuggestion(suggestion)}>{suggestion}</button>
+						<button
+							type="button"
+							disabled={busy === 'assistant'}
+							onclick={() => useSuggestion(suggestion)}>{suggestion}</button
+						>
 					{/each}
 				</div>
 				<form
@@ -955,119 +1129,21 @@
 					<textarea
 						bind:value={assistantInput}
 						maxlength="2000"
-						placeholder="Keep the first track, stay under 2:30, increase energy, and minimize BPM jumps…"
-					></textarea><button
+						disabled={busy === 'assistant'}
+						placeholder={busy === 'assistant'
+							? 'Waiting for the assistant to finish…'
+							: 'Keep the first track, stay under 2:30, increase energy, and minimize BPM jumps…'}
+						onkeydown={(event) => {
+							if (event.key === 'Enter' && !event.shiftKey) {
+								event.preventDefault();
+								if (assistantInput.trim() && busy !== 'assistant') void askAssistant();
+							}
+						}}></textarea><button
 						class="primary"
 						disabled={!assistantInput.trim() || busy === 'assistant'}
 						>{busy === 'assistant' ? 'Reasoning…' : 'Ask assistant'}</button
 					>
 				</form>
-				{#if recommendation}<article class="recommendation">
-						<p class="recommendation-headline">{summaryHeadline(recommendation)}</p>
-						<div class="row-actions">
-							{#if recommendation.segment_bound_change}
-								<button onclick={playAiRecommendation}>Play AI</button><button
-									onclick={compareRecommendation}>Compare</button
-								>
-							{/if}
-							{#if recommendation.recommendation_type === 'plan'}<button
-									class="accent"
-									disabled={busy === 'assistant-apply'}
-									onclick={applyRecommendation}
-									>{busy === 'assistant-apply' ? 'Validating…' : 'Confirm and apply plan'}</button
-								>{/if}<button onclick={keepMine}>Keep Mine</button>
-						</div>
-						<details class="assistant-more">
-							<summary
-								>Why? <span class="confidence-pill"
-									>{Math.round(recommendation.confidence * 100)}% grounded</span
-								></summary
-							>
-							<p>{recommendation.explanation}</p>
-							{#if recommendation.remembered_constraints?.length}
-								<section class="assistant-detail">
-									<b>Remembered constraints</b>
-									<ul>
-										{#each recommendation.remembered_constraints as constraint, constraintIndex (`${constraint}-${constraintIndex}`)}<li
-											>
-												{constraint}
-											</li>{/each}
-									</ul>
-								</section>
-							{/if}
-							{#if recommendation.calculations}
-								<div class="assistant-math">
-									<span
-										>Current<strong
-											>{formatTime(recommendation.calculations.current_duration_ms)}</strong
-										></span
-									>
-									<span
-										>Proposed<strong
-											>{formatTime(recommendation.calculations.proposed_duration_ms)}</strong
-										></span
-									>
-									<span
-										>Overlap<strong
-											>{formatTime(recommendation.calculations.transition_overlap_ms)}</strong
-										></span
-									>
-									<span
-										>BPM jump<strong
-											>{recommendation.calculations.average_bpm_jump == null
-												? 'No data'
-												: recommendation.calculations.average_bpm_jump.toFixed(1)}</strong
-										></span
-									>
-								</div>
-							{/if}
-							{#if recommendation.proposed_order?.length}
-								<section class="assistant-detail">
-									<b>Proposed order</b>
-									<ol>
-										{#each recommendation.proposed_order as itemId (itemId)}<li>
-												{assistantItemLabel(itemId)}
-											</li>{/each}
-									</ol>
-								</section>
-							{/if}
-							{#if recommendation.transition_changes?.length}
-								<section class="assistant-detail">
-									<b>Transition changes</b>
-									<ul>
-										{#each recommendation.transition_changes as change (change.item_id)}<li>
-												{assistantItemLabel(change.item_id)}: {change.transition_type.replaceAll(
-													'_',
-													' '
-												)}
-												· {(change.duration_ms / 1000).toFixed(1)}s
-											</li>{/each}
-									</ul>
-								</section>
-							{/if}
-							{#if recommendation.segment_bound_change}
-								<p class="assistant-bound">
-									Saved segment range: {formatTime(
-										recommendation.segment_bound_change.proposed_start_ms
-									)}–{formatTime(recommendation.segment_bound_change.proposed_end_ms)}
-								</p>
-							{/if}
-							{#if recommendation.warnings?.length}
-								<section class="assistant-detail warning-list">
-									<b>Warnings</b>
-									<ul>
-										{#each recommendation.warnings as warning, warningIndex (`${warning}-${warningIndex}`)}<li
-											>
-												{warning}
-											</li>{/each}
-									</ul>
-								</section>
-							{/if}
-							{#if recommendation.reason_tags?.length}<small
-									>{recommendation.reason_tags.join(' · ')}</small
-								>{/if}
-						</details>
-					</article>{/if}
 			{/if}
 		</aside>
 	</section>
@@ -1079,70 +1155,16 @@
 				<h2>{activeMix?.title || 'Create a Studio draft'}</h2>
 			</div>
 			<div class="draft-controls">
-				<div class="popover-anchor">
-					<button
-						class="switcher-trigger"
-						onclick={() => {
-							draftSwitcherOpen = !draftSwitcherOpen;
-							newDraftOpen = false;
-						}}
-					>
-						{activeMix ? `${activeMix.title} · r${activeMix.revision}` : 'Select draft'}
-						<span class="chev">⌄</span>
-					</button>
-					{#if draftSwitcherOpen}
-						<div class="popover draft-popover">
-							<input
-								bind:value={draftSearch}
-								placeholder="Search your drafts…"
-								aria-label="Search drafts"
-							/>
-							<div class="draft-group-list">
-								{#each filteredMixGroups as group (group.title)}
-									<div class="draft-group">
-										<button
-											class:selected={group.latest.id === activeMixId}
-											class="draft-row"
-											onclick={() => selectMix(group.latest)}
-										>
-											<span class="draft-row-title">{group.title}</span>
-											<span class="draft-row-meta">
-												<span
-													class="status-pill"
-													class:published={group.latest.status === 'published'}
-													>{group.latest.status}</span
-												>
-												r{group.latest.revision} · {formatRelativeTime(group.latest.createdAt)}
-											</span>
-										</button>
-										{#if group.older.length}
-											<button
-												class="draft-history-toggle"
-												onclick={() => toggleDraftGroup(group.title)}
-											>
-												{expandedDraftGroups.includes(group.title) ? 'Hide' : 'Show'}
-												{group.older.length} earlier revision{group.older.length > 1 ? 's' : ''}
-											</button>
-											{#if expandedDraftGroups.includes(group.title)}
-												{#each group.older as mix (mix.id)}
-													<button
-														class:selected={mix.id === activeMixId}
-														class="draft-row nested"
-														onclick={() => selectMix(mix)}
-													>
-														<span class="draft-row-meta"
-															>r{mix.revision} · {formatRelativeTime(mix.createdAt)}</span
-														>
-													</button>
-												{/each}
-											{/if}
-										{/if}
-									</div>
-								{:else}<p class="empty">No drafts match "{draftSearch}".</p>{/each}
-							</div>
-						</div>
-					{/if}
-				</div>
+				<button
+					class="switcher-trigger"
+					onclick={() => {
+						draftSwitcherOpen = !draftSwitcherOpen;
+						newDraftOpen = false;
+					}}
+				>
+					<span class="switcher-icon" aria-hidden="true">&#9776;</span>
+					{activeMix ? `${activeMix.title} · r${activeMix.revision}` : 'Select draft'}
+				</button>
 				<div class="popover-anchor">
 					<button
 						class="new-draft-trigger"
@@ -1182,6 +1204,67 @@
 				</div>
 			</div>
 		</div>
+
+		{#if draftSwitcherOpen}
+			<div
+				class="drawer-backdrop"
+				role="presentation"
+				onclick={() => (draftSwitcherOpen = false)}
+			></div>
+			<div class="drafts-drawer" role="dialog" aria-label="Your drafts and mixes">
+				<div class="drawer-head">
+					<h3>Your drafts &amp; mixes</h3>
+					<button class="ghost" onclick={() => (draftSwitcherOpen = false)}>Close</button>
+				</div>
+				<input
+					class="drawer-search"
+					bind:value={draftSearch}
+					placeholder="Search your drafts by title…"
+					aria-label="Search drafts"
+				/>
+				<div class="draft-group-list">
+					{#each filteredMixGroups as group (group.title)}
+						<div class="draft-group">
+							<button
+								class:selected={group.latest.id === activeMixId}
+								class="draft-row"
+								onclick={() => selectMix(group.latest)}
+							>
+								<span class="draft-row-title">{group.title}</span>
+								<span class="draft-row-meta">
+									<span class="status-pill" class:published={group.latest.status === 'published'}
+										>{group.latest.status}</span
+									>
+									r{group.latest.revision} · {group.latest.segments.length} segment{group.latest
+										.segments.length === 1
+										? ''
+										: 's'} · {formatRelativeTime(group.latest.createdAt)}
+								</span>
+							</button>
+							{#if group.older.length}
+								<button class="draft-history-toggle" onclick={() => toggleDraftGroup(group.title)}>
+									{expandedDraftGroups.includes(group.title) ? 'Hide' : 'Show'}
+									{group.older.length} earlier revision{group.older.length > 1 ? 's' : ''}
+								</button>
+								{#if expandedDraftGroups.includes(group.title)}
+									{#each group.older as mix (mix.id)}
+										<button
+											class:selected={mix.id === activeMixId}
+											class="draft-row nested"
+											onclick={() => selectMix(mix)}
+										>
+											<span class="draft-row-meta"
+												>r{mix.revision} · {formatRelativeTime(mix.createdAt)}</span
+											>
+										</button>
+									{/each}
+								{/if}
+							{/if}
+						</div>
+					{:else}<p class="empty">No drafts match "{draftSearch}".</p>{/each}
+				</div>
+			</div>
+		{/if}
 
 		{#if activeMix}
 			<div class="mix-meta">
@@ -1487,7 +1570,7 @@
 	.bounds-grid input,
 	.panel > label input,
 	.library-head input,
-	.draft-popover input,
+	.drawer-search,
 	.new-draft-popover input,
 	.mix-meta input,
 	.transition-card input,
@@ -1503,7 +1586,8 @@
 	.row-actions button,
 	.item-actions button,
 	.render-actions button,
-	.draft-controls > .popover-anchor > button,
+	.switcher-trigger,
+	.new-draft-trigger,
 	.bounds-grid button,
 	.editor-actions button,
 	.assistant-form button,
@@ -1522,7 +1606,8 @@
 	.row-actions button:hover,
 	.item-actions button:hover,
 	.render-actions button:hover,
-	.draft-controls > .popover-anchor > button:hover,
+	.switcher-trigger:hover,
+	.new-draft-trigger:hover,
 	.bounds-grid button:hover,
 	.editor-actions button:hover,
 	.assistant-form button:hover,
@@ -1561,6 +1646,11 @@
 		max-height: 330px;
 		overflow: auto;
 		margin-top: 12px;
+	}
+	.chat-log {
+		max-height: 420px;
+		gap: 10px;
+		scroll-behavior: smooth;
 	}
 	.track-row {
 		display: flex;
@@ -1745,26 +1835,87 @@
 	.assistant-panel.collapsed {
 		align-self: start;
 	}
-	.chat-log p {
+	.assistant-title-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.bubble-row {
 		display: grid;
+		justify-items: start;
 		gap: 4px;
-		margin: 0;
-		padding: 10px;
-		border-radius: 10px;
-		background: var(--well);
-		color: var(--text-dim);
-		font-size: 12px;
 	}
-	.chat-log p.user {
-		background: var(--panel-raised);
-		color: var(--text);
+	.bubble-row.user {
+		justify-items: end;
 	}
-	.chat-log b {
+	.bubble-tag {
+		padding-left: 2px;
+		color: var(--text-faint);
 		font-family: var(--font-mono);
 		font-size: 9px;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
-		color: var(--amber);
+	}
+	.bubble {
+		max-width: 92%;
+		padding: 10px 13px;
+		border-radius: 14px;
+		border-bottom-left-radius: 4px;
+		background: var(--well);
+		color: var(--text-dim);
+		font-size: 12.5px;
+		line-height: 1.55;
+	}
+	.bubble :global(p) {
+		margin: 0 0 6px;
+	}
+	.bubble :global(p:last-child) {
+		margin-bottom: 0;
+	}
+	.bubble :global(ul) {
+		margin: 0 0 6px;
+		padding-left: 18px;
+	}
+	.bubble-row.user .bubble {
+		border-bottom-left-radius: 14px;
+		border-bottom-right-radius: 4px;
+		background: var(--cyan-dim);
+		color: var(--text);
+	}
+	.bubble.thinking {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--text-faint);
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		font-family: var(--font-mono);
+	}
+	.bubble.thinking i {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: var(--amber);
+		animation: thinking-pulse 1.1s ease-in-out infinite;
+	}
+	.bubble.thinking i:nth-child(3) {
+		animation-delay: 0.15s;
+	}
+	.bubble.thinking i:nth-child(4) {
+		animation-delay: 0.3s;
+	}
+	@keyframes thinking-pulse {
+		0%,
+		80%,
+		100% {
+			opacity: 0.25;
+			transform: scale(0.85);
+		}
+		40% {
+			opacity: 1;
+			transform: scale(1);
+		}
 	}
 	.suggestion-chips {
 		display: flex;
@@ -1789,10 +1940,11 @@
 	.recommendation {
 		display: grid;
 		gap: 10px;
-		margin-top: 12px;
+		max-width: 92%;
 		padding: 13px;
 		border: 1px solid rgba(255, 149, 72, 0.35);
-		border-radius: 10px;
+		border-radius: 14px;
+		border-bottom-left-radius: 4px;
 		background: var(--amber-dim);
 	}
 	.recommendation-headline {
@@ -1905,7 +2057,7 @@
 	.new-draft-trigger {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 8px;
 		border: 1px solid var(--seam);
 		border-radius: 8px;
 		background: var(--panel-raised);
@@ -1914,9 +2066,8 @@
 		font-weight: 600;
 		cursor: pointer;
 	}
-	.switcher-trigger .chev {
-		color: var(--text-faint);
-		font-size: 11px;
+	.switcher-icon {
+		color: var(--cyan);
 	}
 	.popover {
 		position: absolute;
@@ -1932,14 +2083,60 @@
 		background: var(--panel-raised);
 		box-shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
 	}
-	.draft-popover {
-		width: 320px;
+	.drawer-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 40;
+		background: rgba(4, 6, 9, 0.6);
+		backdrop-filter: blur(2px);
+	}
+	.drafts-drawer {
+		position: fixed;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 41;
+		display: grid;
+		grid-template-rows: auto auto 1fr;
+		gap: 12px;
+		width: min(420px, 92vw);
+		padding: 20px;
+		border-left: 1px solid var(--seam);
+		background: var(--panel);
+		box-shadow: -24px 0 60px rgba(0, 0, 0, 0.55);
+		overflow: hidden;
+		animation: drawer-in 0.18s ease-out;
+	}
+	@keyframes drawer-in {
+		from {
+			transform: translateX(24px);
+			opacity: 0;
+		}
+		to {
+			transform: translateX(0);
+			opacity: 1;
+		}
+	}
+	.drawer-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.drawer-head h3 {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: 18px;
+		font-weight: 600;
+	}
+	.drawer-search {
+		width: 100%;
 	}
 	.draft-group-list {
 		display: grid;
-		gap: 4px;
-		max-height: 320px;
+		align-content: start;
+		gap: 6px;
 		overflow: auto;
+		padding-right: 4px;
 	}
 	.draft-group {
 		display: grid;
@@ -1947,13 +2144,13 @@
 	}
 	.draft-row {
 		display: grid;
-		gap: 3px;
+		gap: 4px;
 		width: 100%;
 		border: 1px solid transparent;
-		border-radius: 8px;
+		border-radius: 10px;
 		background: var(--well);
 		color: var(--text);
-		padding: 8px 10px;
+		padding: 11px 13px;
 		text-align: left;
 		cursor: pointer;
 	}
@@ -2139,6 +2336,10 @@
 		opacity: 0.45;
 		cursor: not-allowed;
 	}
+	.studio-page :is(button, input, select, textarea, summary):focus-visible {
+		outline: 2px solid var(--cyan);
+		outline-offset: 2px;
+	}
 	@media (max-width: 1100px) {
 		.studio-grid {
 			grid-template-columns: 1fr 1fr;
@@ -2176,6 +2377,9 @@
 		.transition-card {
 			scroll-snap-align: start;
 			min-width: 84vw;
+		}
+		.drafts-drawer {
+			width: 100vw;
 		}
 	}
 </style>
