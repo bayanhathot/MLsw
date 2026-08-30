@@ -374,6 +374,12 @@ class StudioAssistantRequest(BaseModel):
     messages: list[StudioAssistantMessage] = Field(min_length=1, max_length=12)
     mix_id: int | None = Field(default=None, ge=1)
     active_saved_segment_id: int | None = Field(default=None, ge=1)
+    # When set, studio_ai_client._context runs a real catalog/Audius search
+    # for this text and folds up to 10 results into context["discovery_results"]
+    # *before* calling the model -- the model may only ever echo tracks that
+    # actually appear there (see StudioAssistantRecommendation.discovery_results),
+    # never free-associate one. See cuemix-studio-ai-v2-spec.md §3.
+    discovery_query: str | None = Field(default=None, max_length=200)
 
 
 class StudioAssistantTransitionChange(BaseModel):
@@ -402,11 +408,66 @@ class StudioAssistantCalculations(BaseModel):
     known_bpm_pairs: int = Field(default=0, ge=0)
 
 
+class DiscoveryTrack(BaseModel):
+    """An addable track candidate -- as input, one of up to 10 real search
+    results folded into context["discovery_results"] (studio_ai_client._context);
+    as output on a Recommendation, the model may only echo one of those exact
+    entries back (same source_type/source_track_id), annotated with its own
+    `reason`, never invent a track absent from context. See spec §3."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: Literal["catalog", "audius"]
+    source_track_id: str
+    title: str
+    artist: str
+    duration_ms: int = Field(gt=0)
+    bpm: float | None = None
+    musical_key: str | None = None
+    camelot: str | None = None
+    vibe: str | None = None
+    genre: str | None = None
+    # Only ever set on the model's *output* echo -- absent on the plain
+    # search-result entries fed into context as input.
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class StudioAssistantAddItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: Literal["catalog", "audius", "saved_segment"]
+    source_track_id: str | None = Field(default=None, min_length=1, max_length=255)
+    saved_segment_id: int | None = Field(default=None, ge=1)
+    # Required when materializing a *new* saved segment from a catalog/Audius
+    # track (source_type != "saved_segment"); ignored for an existing
+    # saved_segment_id, which already has its own bounds.
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, gt=0)
+    # None appends to the end of the mix; an id inserts immediately after
+    # that existing mix item. There is no "insert at position 0" sentinel --
+    # position is always resolved via an existing item's id, never an ordinal.
+    insert_after_item_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        if self.source_type == "saved_segment":
+            if self.saved_segment_id is None or self.source_track_id is not None:
+                raise ValueError("saved_segment source requires only saved_segment_id.")
+        else:
+            if self.source_track_id is None or self.saved_segment_id is not None:
+                raise ValueError("catalog/audius source requires only source_track_id.")
+            if self.start_ms is None or self.end_ms is None:
+                raise ValueError("A new segment requires start_ms and end_ms.")
+            if self.end_ms <= self.start_ms:
+                raise ValueError("end_ms must be greater than start_ms.")
+        return self
+
+
 class StudioAssistantRecommendation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     recommendation_type: Literal[
-        "explanation", "clarification", "plan", "unavailable"
+        "explanation", "clarification", "plan", "refusal", "unavailable"
     ]
     base_revision: int | None = Field(default=None, ge=1)
     remembered_constraints: list[str] = Field(default_factory=list, max_length=8)
@@ -415,6 +476,22 @@ class StudioAssistantRecommendation(BaseModel):
         default_factory=list, max_length=5
     )
     segment_bound_change: StudioAssistantSegmentBoundChange | None = None
+    # Existing mix items to drop, by id. Deliberately a sibling field to
+    # proposed_order rather than an overload of it -- proposed_order must
+    # still contain "every current item exactly once", so there is no way
+    # to express a removal through it alone. Capped low (5): removing more
+    # in one turn is more likely a misfire worth a clarification instead.
+    removed_item_ids: list[int] = Field(default_factory=list, max_length=5)
+    add_item: StudioAssistantAddItem | None = None
+    discovery_results: list[DiscoveryTrack] = Field(default_factory=list, max_length=10)
+    # Advisory only -- the model suggests which Studio action might help
+    # ("preview the transition between items 3 and 4"); it never executes
+    # anything. The frontend renders this as a button the user clicks,
+    # which calls the existing preview/render endpoints directly. See §6.
+    suggested_action: (
+        Literal["preview_transition", "preview_segment", "render_mix"] | None
+    ) = None
+    action_target_item_id: int | None = Field(default=None, ge=1)
     calculations: StudioAssistantCalculations | None = None
     warnings: list[str] = Field(default_factory=list, max_length=8)
     reason_tags: list[str] = Field(default_factory=list, max_length=8)
@@ -422,10 +499,48 @@ class StudioAssistantRecommendation(BaseModel):
     confidence: float = Field(ge=0, le=1)
     requires_user_confirmation: bool = True
 
+    @model_validator(mode="after")
+    def validate_refusal_is_inert(self):
+        # Enforced here, not just via a prompt instruction (see spec §9.1):
+        # a refusal must never carry any field that could mutate the mix or
+        # imply real search results were found, regardless of what the model
+        # actually returned.
+        if self.recommendation_type == "refusal" and (
+            self.proposed_order is not None
+            or self.transition_changes
+            or self.segment_bound_change is not None
+            or self.removed_item_ids
+            or self.add_item is not None
+            or self.discovery_results
+            or self.suggested_action is not None
+        ):
+            raise ValueError("A refusal may not include any proposed change or action.")
+        return self
+
 
 class StudioAssistantRead(BaseModel):
     available: bool
     recommendation: StudioAssistantRecommendation
+
+
+class StudioConstraint(BaseModel):
+    """A constraint the *frontend* is tracking client-side (pinned by the
+    user in the UI, never parsed from LLM prose server-side -- see spec
+    §9.3) and asks apply_assistant_plan to mechanically enforce."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["keep_item", "max_duration_ms"]
+    item_id: int | None = Field(default=None, ge=1)
+    value_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_shape(self):
+        if self.type == "keep_item" and self.item_id is None:
+            raise ValueError("A keep_item constraint requires item_id.")
+        if self.type == "max_duration_ms" and self.value_ms is None:
+            raise ValueError("A max_duration_ms constraint requires value_ms.")
+        return self
 
 
 class StudioAssistantPlanApplyRequest(BaseModel):
@@ -438,10 +553,21 @@ class StudioAssistantPlanApplyRequest(BaseModel):
         default_factory=list, max_length=5
     )
     segment_bound_change: StudioAssistantSegmentBoundChange | None = None
+    removed_item_ids: list[int] = Field(default_factory=list, max_length=5)
+    add_item: StudioAssistantAddItem | None = None
+    # Populated by the frontend from whatever the user has pinned in the UI
+    # -- never derived from remembered_constraints/LLM output, which stay
+    # advisory-only. See spec §9.3.
+    active_constraints: list[StudioConstraint] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def validate_plan(self):
-        has_mix_changes = self.proposed_order is not None or bool(self.transition_changes)
+        has_mix_changes = (
+            self.proposed_order is not None
+            or bool(self.transition_changes)
+            or bool(self.removed_item_ids)
+            or self.add_item is not None
+        )
         if not has_mix_changes and self.segment_bound_change is None:
             raise ValueError("An assistant plan must contain at least one change.")
         if has_mix_changes and (self.mix_id is None or self.expected_revision is None):

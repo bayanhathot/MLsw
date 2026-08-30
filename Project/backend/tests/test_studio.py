@@ -573,3 +573,363 @@ def test_studio_assistant_recalculates_and_atomically_applies_multi_step_plan(
         },
     )
     assert stale.status_code == 409
+
+
+def _build_mix_with_two_items(client, db_session, owner):
+    track = _catalog_track(db_session, owner["id"], title="Assistant V2 Source")
+    first = _save(client, track.id, 1000, 21_000, "First")
+    second = _save(client, track.id, 22_000, 42_000, "Second")
+    mix = client.post("/studio/mixes", json={"title": "Assistant V2 mix"}).json()
+    for segment in (first, second):
+        mix = client.post(
+            f"/studio/mixes/{mix['id']}/items",
+            json={"saved_segment_id": segment["id"], "expected_revision": mix["revision"]},
+        ).json()
+    return mix, track
+
+
+def test_assistant_apply_add_item_from_existing_saved_segment(client, db_session):
+    owner = register_and_login(client)
+    mix, track = _build_mix_with_two_items(client, db_session, owner)
+    extra = _save(client, track.id, 43_000, 50_000, "Extra saved segment")
+
+    applied = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "add_item": {"source_type": "saved_segment", "saved_segment_id": extra["id"]},
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    applied_mix = applied.json()["mix"]
+    assert len(applied_mix["segments"]) == 3
+    assert applied_mix["segments"][-1]["saved_segment_id"] == extra["id"]
+
+
+def test_assistant_apply_add_item_materializes_a_new_catalog_segment(client, db_session):
+    owner = register_and_login(client)
+    mix, track = _build_mix_with_two_items(client, db_session, owner)
+
+    applied = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "add_item": {
+                "source_type": "catalog",
+                "source_track_id": str(track.id),
+                "start_ms": 1000,
+                "end_ms": 6000,
+            },
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    applied_mix = applied.json()["mix"]
+    assert len(applied_mix["segments"]) == 3
+    new_item = applied_mix["segments"][-1]
+    assert new_item["source_start_ms"] == 1000
+    assert new_item["source_end_ms"] == 6000
+    # The new saved segment this materialized is now listed for the user too.
+    saved_segments = client.get("/studio/segments").json()
+    assert any(row["id"] == new_item["saved_segment_id"] for row in saved_segments)
+
+
+def test_assistant_apply_add_item_inserts_after_a_specific_item(client, db_session):
+    owner = register_and_login(client)
+    mix, track = _build_mix_with_two_items(client, db_session, owner)
+    first_item_id = mix["segments"][0]["id"]
+    extra = _save(client, track.id, 43_000, 50_000, "Middle insert")
+
+    applied = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "add_item": {
+                "source_type": "saved_segment",
+                "saved_segment_id": extra["id"],
+                "insert_after_item_id": first_item_id,
+            },
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    positions = [item["saved_segment_id"] for item in applied.json()["mix"]["segments"]]
+    assert positions[1] == extra["id"]
+
+
+def test_assistant_apply_removed_item_ids_alone(client, db_session):
+    owner = register_and_login(client)
+    mix, _track = _build_mix_with_two_items(client, db_session, owner)
+    removed_id = mix["segments"][0]["id"]
+
+    applied = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "removed_item_ids": [removed_id],
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    remaining = applied.json()["mix"]["segments"]
+    assert len(remaining) == 1
+    assert all(item["id"] != removed_id for item in remaining)
+
+
+def test_assistant_apply_removed_item_ids_combined_with_proposed_order(client, db_session):
+    owner = register_and_login(client)
+    track = _catalog_track(db_session, owner["id"], title="Three item source")
+    saved = [
+        _save(client, track.id, 1000 + index * 5000, 5000 + index * 5000, f"Item {index}")
+        for index in range(3)
+    ]
+    mix = client.post("/studio/mixes", json={"title": "Remove and reorder"}).json()
+    for segment in saved:
+        mix = client.post(
+            f"/studio/mixes/{mix['id']}/items",
+            json={"saved_segment_id": segment["id"], "expected_revision": mix["revision"]},
+        ).json()
+    ids = [item["id"] for item in mix["segments"]]
+    remove_id, keep_a, keep_b = ids[1], ids[0], ids[2]
+
+    applied = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "removed_item_ids": [remove_id],
+            "proposed_order": [keep_b, keep_a],
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    remaining_ids = [item["id"] for item in applied.json()["mix"]["segments"]]
+    assert remaining_ids == [keep_b, keep_a]
+
+
+def test_assistant_apply_rejects_add_item_without_mix_context(client, db_session):
+    owner = register_and_login(client)
+    track = _catalog_track(db_session, owner["id"])
+    _save(client, track.id, 1000, 5000, "Solo")
+
+    response = client.post(
+        "/studio/assistant/apply",
+        json={
+            "add_item": {
+                "source_type": "catalog",
+                "source_track_id": str(track.id),
+                "start_ms": 0,
+                "end_ms": 4000,
+            }
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_assistant_apply_enforces_keep_item_constraint(client, db_session):
+    owner = register_and_login(client)
+    mix, _track = _build_mix_with_two_items(client, db_session, owner)
+    pinned_id = mix["segments"][0]["id"]
+
+    violating = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "removed_item_ids": [pinned_id],
+            "active_constraints": [{"type": "keep_item", "item_id": pinned_id}],
+        },
+    )
+    assert violating.status_code == 422
+    assert "pinned" in violating.json()["detail"]
+
+
+def test_assistant_apply_enforces_max_duration_constraint(client, db_session):
+    owner = register_and_login(client)
+    mix, track = _build_mix_with_two_items(client, db_session, owner)
+
+    violating = client.post(
+        "/studio/assistant/apply",
+        json={
+            "mix_id": mix["id"],
+            "expected_revision": mix["revision"],
+            "add_item": {
+                "source_type": "catalog",
+                "source_track_id": str(track.id),
+                "start_ms": 1000,
+                "end_ms": 21_000,
+            },
+            "active_constraints": [{"type": "max_duration_ms", "value_ms": 1000}],
+        },
+    )
+    assert violating.status_code == 422
+    assert "duration limit" in violating.json()["detail"]
+
+
+def _mock_chat_response(monkeypatch, payload):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return payload
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setenv("STUDIO_AI_URL", "http://studio-ai-service:8001")
+    monkeypatch.setattr("app.services.studio_ai_client.httpx.Client", Client)
+
+
+def _base_advisory_recommendation(**overrides):
+    payload = {
+        "recommendation_type": "explanation",
+        "base_revision": None,
+        "remembered_constraints": [],
+        "proposed_order": None,
+        "transition_changes": [],
+        "segment_bound_change": None,
+        "removed_item_ids": [],
+        "add_item": None,
+        "discovery_results": [],
+        "suggested_action": None,
+        "action_target_item_id": None,
+        "calculations": None,
+        "warnings": [],
+        "reason_tags": [],
+        "explanation": "Here is a match.",
+        "confidence": 0.8,
+        "requires_user_confirmation": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_assistant_discovery_echo_must_match_real_search_results(client, db_session, monkeypatch):
+    owner = register_and_login(client)
+    _catalog_track(db_session, owner["id"], title="Discoverable Groove")
+    # _context()'s own discovery search (studio_service.search_tracks,
+    # source="all") would otherwise also reach Audius through the same
+    # patched global httpx.Client below (see _mock_chat_response's own
+    # comment) -- keep this test about catalog discovery only.
+    monkeypatch.setattr("app.services.audius_service.search_tracks", lambda *_a, **_k: [])
+
+    _mock_chat_response(
+        monkeypatch,
+        _base_advisory_recommendation(
+            discovery_results=[
+                {
+                    "source_type": "catalog",
+                    "source_track_id": "999999",
+                    "title": "Fabricated",
+                    "artist": "Nobody",
+                    "duration_ms": 60000,
+                    "reason": "invented",
+                }
+            ]
+        ),
+    )
+    hallucinated = client.post(
+        "/studio/assistant/chat",
+        json={
+            "messages": [{"role": "user", "content": "find something groovy"}],
+            "discovery_query": "groove",
+        },
+    )
+    assert hallucinated.status_code == 200
+    assert hallucinated.json()["available"] is False
+
+    # source=catalog only: monkeypatching httpx.Client (below, via
+    # app.services.studio_ai_client.httpx.Client) replaces the shared global
+    # httpx module's Client for the whole process, including
+    # audius_service's own use of it -- an "all"/"audius" search here would
+    # hit that same fake Client and blow up on a missing .get(), unrelated
+    # to what this test is actually checking.
+    search = client.get("/studio/tracks/search?q=Discoverable Groove&source=catalog").json()
+    real_track = search[0]
+    _mock_chat_response(
+        monkeypatch,
+        _base_advisory_recommendation(
+            discovery_results=[
+                {
+                    "source_type": real_track["source_type"],
+                    "source_track_id": real_track["source_track_id"],
+                    "title": real_track["title"],
+                    "artist": real_track["artist"],
+                    "duration_ms": real_track["duration_ms"],
+                    "reason": "matches your request",
+                }
+            ]
+        ),
+    )
+    grounded = client.post(
+        "/studio/assistant/chat",
+        json={
+            "messages": [{"role": "user", "content": "find something groovy"}],
+            "discovery_query": "Discoverable Groove",
+        },
+    )
+    assert grounded.status_code == 200, grounded.text
+    assert grounded.json()["available"] is True
+    assert (
+        grounded.json()["recommendation"]["discovery_results"][0]["source_track_id"]
+        == real_track["source_track_id"]
+    )
+
+
+def test_assistant_refusal_is_returned_for_out_of_scope_requests(client, monkeypatch):
+    register_and_login(client)
+    _mock_chat_response(
+        monkeypatch,
+        _base_advisory_recommendation(
+            recommendation_type="refusal",
+            reason_tags=["out-of-scope"],
+            explanation="I can only help with this mix, music discovery, and Studio controls.",
+            confidence=0.95,
+        ),
+    )
+    response = client.post(
+        "/studio/assistant/chat",
+        json={"messages": [{"role": "user", "content": "Write me a poem about clouds"}]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["recommendation"]["recommendation_type"] == "refusal"
+
+
+def test_assistant_suggested_action_passes_through_as_advisory(client, db_session, monkeypatch):
+    owner = register_and_login(client)
+    mix, _track = _build_mix_with_two_items(client, db_session, owner)
+    target_item_id = mix["segments"][0]["id"]
+    _mock_chat_response(
+        monkeypatch,
+        _base_advisory_recommendation(
+            suggested_action="preview_transition",
+            action_target_item_id=target_item_id,
+            explanation="You could preview this transition.",
+            confidence=0.7,
+        ),
+    )
+    response = client.post(
+        "/studio/assistant/chat",
+        json={
+            "mix_id": mix["id"],
+            "messages": [{"role": "user", "content": "how does this sound?"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    recommendation = response.json()["recommendation"]
+    assert recommendation["suggested_action"] == "preview_transition"
+    assert recommendation["action_target_item_id"] == target_item_id
+    assert response.json()["available"] is True

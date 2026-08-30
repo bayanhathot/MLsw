@@ -4,8 +4,11 @@ from threading import BoundedSemaphore, Lock
 from time import sleep
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from studio_ai.main import app
+from studio_ai.schemas import AddItem, Recommendation
 
 
 def _request():
@@ -285,3 +288,148 @@ def test_twenty_call_stress_is_bounded_and_fails_fast_when_busy(monkeypatch):
     assert set(statuses) <= {200, 503}
     assert statuses.count(200) >= 2
     assert len(statuses) == 20
+
+
+def _minimal_recommendation(**overrides):
+    payload = {
+        "recommendation_type": "explanation",
+        "explanation": "Here is what I found.",
+        "confidence": 0.7,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_refusal_round_trips_with_all_mutation_fields_empty():
+    result = Recommendation.model_validate(
+        _minimal_recommendation(
+            recommendation_type="refusal",
+            explanation="I can only help with this mix and Studio controls.",
+        )
+    )
+    assert result.recommendation_type == "refusal"
+    assert result.proposed_order is None
+    assert result.removed_item_ids == []
+    assert result.add_item is None
+    assert result.discovery_results == []
+    assert result.suggested_action is None
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("proposed_order", [1, 2]),
+        ("transition_changes", [{"item_id": 1, "transition_type": "cut", "duration_ms": 0}]),
+        ("segment_bound_change", {"candidate_id": 1, "proposed_start_ms": 0, "proposed_end_ms": 1000}),
+        ("removed_item_ids", [1]),
+        (
+            "add_item",
+            {"source_type": "saved_segment", "saved_segment_id": 1, "insert_after_item_id": None},
+        ),
+        ("suggested_action", "render_mix"),
+    ],
+)
+def test_refusal_rejects_any_mutation_or_action_field(field, value):
+    with pytest.raises(ValidationError, match="A refusal may not include"):
+        Recommendation.model_validate(
+            _minimal_recommendation(recommendation_type="refusal", **{field: value})
+        )
+
+
+def test_add_item_requires_exactly_one_source():
+    # Neither source set.
+    with pytest.raises(ValidationError):
+        AddItem.model_validate({"source_type": "catalog"})
+    # Both sources set.
+    with pytest.raises(ValidationError):
+        AddItem.model_validate(
+            {
+                "source_type": "catalog",
+                "source_track_id": "42",
+                "saved_segment_id": 3,
+                "start_ms": 0,
+                "end_ms": 1000,
+            }
+        )
+    # A new catalog/audius segment without bounds.
+    with pytest.raises(ValidationError):
+        AddItem.model_validate({"source_type": "audius", "source_track_id": "abc"})
+    # Valid saved_segment reference.
+    saved = AddItem.model_validate({"source_type": "saved_segment", "saved_segment_id": 5})
+    assert saved.saved_segment_id == 5
+    # Valid new-segment reference.
+    fresh = AddItem.model_validate(
+        {"source_type": "catalog", "source_track_id": "42", "start_ms": 0, "end_ms": 5000}
+    )
+    assert fresh.source_track_id == "42"
+
+
+def test_removed_item_ids_respects_max_five_cap():
+    with pytest.raises(ValidationError):
+        Recommendation.model_validate(
+            _minimal_recommendation(
+                recommendation_type="plan",
+                removed_item_ids=[1, 2, 3, 4, 5, 6],
+            )
+        )
+    ok = Recommendation.model_validate(
+        _minimal_recommendation(recommendation_type="plan", removed_item_ids=[1, 2, 3, 4, 5])
+    )
+    assert ok.removed_item_ids == [1, 2, 3, 4, 5]
+
+
+def test_discovery_results_round_trip_with_reason():
+    result = Recommendation.model_validate(
+        _minimal_recommendation(
+            discovery_results=[
+                {
+                    "source_type": "audius",
+                    "source_track_id": "abc",
+                    "title": "Track",
+                    "artist": "Artist",
+                    "duration_ms": 120000,
+                    "reason": "matches your low-energy request",
+                }
+            ]
+        )
+    )
+    assert result.discovery_results[0].reason == "matches your low-energy request"
+
+
+def test_larger_schema_still_repairs_qwen_thinking_prefix(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    monkeypatch.setattr(
+        "studio_ai.main.prompt_parser._acquire_ollama_slot", lambda _timeout: lambda: None
+    )
+    monkeypatch.setattr("studio_ai.main.prompt_parser._record_ollama_call", lambda *_: None)
+
+    plan = _plan()
+    plan["removed_item_ids"] = [12]
+    plan["add_item"] = None
+    plan["discovery_results"] = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": '{"' + json.dumps(plan)}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("studio_ai.main.httpx.Client", Client)
+    response = TestClient(app).post("/internal/studio-ai/chat", json=_request())
+    assert response.status_code == 200
+    assert response.json()["removed_item_ids"] == [12]

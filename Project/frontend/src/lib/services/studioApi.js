@@ -231,14 +231,20 @@ export function recordStudioBehavior(eventType, savedSegmentId, mixId = null) {
 	});
 }
 
-/** @param {{role:'user'|'assistant',content:string}[]} messages @param {number|null|undefined} mixId @param {number|null|undefined} activeSavedSegmentId */
-export function chatWithStudioAssistant(messages, mixId, activeSavedSegmentId) {
+/** @param {{role:'user'|'assistant',content:string}[]} messages @param {number|null|undefined} mixId @param {number|null|undefined} activeSavedSegmentId @param {string|null} [discoveryQuery] */
+export function chatWithStudioAssistant(
+	messages,
+	mixId,
+	activeSavedSegmentId,
+	discoveryQuery = null
+) {
 	return apiRequest('/studio/assistant/chat', {
 		method: 'POST',
 		body: JSON.stringify({
 			messages,
 			mix_id: mixId || null,
-			active_saved_segment_id: activeSavedSegmentId || null
+			active_saved_segment_id: activeSavedSegmentId || null,
+			discovery_query: discoveryQuery || null
 		}),
 		// The required 8B always-thinking model can take roughly four minutes
 		// on a CPU-only host. Keep the browser ceiling just above the backend's
@@ -247,10 +253,17 @@ export function chatWithStudioAssistant(messages, mixId, activeSavedSegmentId) {
 	});
 }
 
-/** @param {import('../types.js').StudioAssistantRecommendation} recommendation @param {number|null|undefined} mixId */
-export async function applyStudioAssistantPlan(recommendation, mixId) {
+/**
+ * @param {import('../types.js').StudioAssistantRecommendation} recommendation
+ * @param {number|null|undefined} mixId
+ * @param {import('../types.js').StudioConstraint[]} [activeConstraints]
+ */
+export async function applyStudioAssistantPlan(recommendation, mixId, activeConstraints = []) {
 	const hasMixChanges =
-		Boolean(recommendation.proposed_order) || Boolean(recommendation.transition_changes?.length);
+		Boolean(recommendation.proposed_order) ||
+		Boolean(recommendation.transition_changes?.length) ||
+		Boolean(recommendation.removed_item_ids?.length) ||
+		Boolean(recommendation.add_item);
 	const raw = await apiRequest('/studio/assistant/apply', {
 		method: 'POST',
 		body: JSON.stringify({
@@ -258,7 +271,10 @@ export async function applyStudioAssistantPlan(recommendation, mixId) {
 			expected_revision: hasMixChanges ? recommendation.base_revision : null,
 			proposed_order: recommendation.proposed_order,
 			transition_changes: recommendation.transition_changes || [],
-			segment_bound_change: recommendation.segment_bound_change
+			segment_bound_change: recommendation.segment_bound_change,
+			removed_item_ids: recommendation.removed_item_ids || [],
+			add_item: recommendation.add_item || null,
+			active_constraints: activeConstraints || []
 		})
 	});
 	return {
