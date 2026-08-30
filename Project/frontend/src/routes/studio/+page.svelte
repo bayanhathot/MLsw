@@ -53,6 +53,14 @@
 	/** @type {import('$lib/types.js').AutoMixMode|null} */
 	let autoMode = $state(null);
 
+	let draftSwitcherOpen = $state(false);
+	let draftSearch = $state('');
+	/** @type {string[]} */
+	let expandedDraftGroups = $state([]);
+	let newDraftOpen = $state(false);
+	/** @type {'blank'|'auto'} */
+	let newDraftMode = $state('blank');
+
 	/** @type {HTMLAudioElement|undefined} */
 	let audioElement = $state();
 	let previewUrl = $state('');
@@ -100,6 +108,13 @@
 		)
 	);
 	let waveformMarkers = $derived(buildWaveformMarkers());
+	let groupedMixes = $derived(computeGroupedMixes());
+	let filteredMixGroups = $derived(
+		groupedMixes.filter((group) => {
+			const query = draftSearch.trim().toLowerCase();
+			return !query || group.title.toLowerCase().includes(query);
+		})
+	);
 
 	$effect(() => {
 		if ($authStore.status === 'guest') void goto(resolve('/login'));
@@ -371,11 +386,79 @@
 		activeMixId = mix.id;
 	}
 
+	function computeGroupedMixes() {
+		/** @type {{title:string, list:import('$lib/types.js').Mix[]}[]} */
+		const groups = [];
+		for (const mix of mixes) {
+			const group = groups.find((entry) => entry.title === mix.title);
+			if (group) group.list.push(mix);
+			else groups.push({ title: mix.title, list: [mix] });
+		}
+		return groups
+			.map(({ title, list }) => {
+				const sorted = list
+					.slice()
+					.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+				return { title, latest: sorted[0], older: sorted.slice(1) };
+			})
+			.sort(
+				(a, b) => new Date(b.latest.createdAt).getTime() - new Date(a.latest.createdAt).getTime()
+			);
+	}
+
+	/** @param {string} title */
+	function toggleDraftGroup(title) {
+		const next = expandedDraftGroups.filter((entry) => entry !== title);
+		expandedDraftGroups = next.length === expandedDraftGroups.length ? [...next, title] : next;
+	}
+
+	/** @param {import('$lib/types.js').Mix} mix */
+	function selectMix(mix) {
+		activeMixId = mix.id;
+		draftSwitcherOpen = false;
+		draftSearch = '';
+	}
+
+	/** @param {string} iso */
+	function formatRelativeTime(iso) {
+		const then = new Date(iso).getTime();
+		if (Number.isNaN(then)) return '';
+		const diffMs = Date.now() - then;
+		const minutes = Math.round(diffMs / 60_000);
+		if (minutes < 1) return 'just now';
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.round(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.round(hours / 24);
+		if (days < 30) return `${days}d ago`;
+		return new Date(iso).toLocaleDateString();
+	}
+
+	const assistantSuggestions = [
+		'Keep it under 2:30',
+		'Increase the energy arc',
+		'Minimize BPM jumps',
+		'Smooth out the transitions'
+	];
+
+	/** @param {string} suggestion */
+	function useSuggestion(suggestion) {
+		assistantInput = assistantInput.trim() ? `${assistantInput.trim()} ${suggestion}.` : suggestion;
+	}
+
+	/** @param {import('$lib/types.js').StudioAssistantRecommendation|null} rec */
+	function summaryHeadline(rec) {
+		if (!rec?.explanation) return '';
+		const firstSentence = rec.explanation.split(/(?<=[.!?])\s/)[0] || rec.explanation;
+		return firstSentence.length > 140 ? `${firstSentence.slice(0, 137)}…` : firstSentence;
+	}
+
 	async function createDraft() {
 		if (!newMixTitle.trim()) return;
 		try {
 			replaceMix(await createStudioMix(newMixTitle.trim()));
 			notice = 'Draft created. Every timeline change is saved immediately.';
+			newDraftOpen = false;
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Could not create draft.';
 		}
@@ -518,6 +601,7 @@
 				})
 			);
 			notice = 'Editable draft generated from your saved segments.';
+			newDraftOpen = false;
 		} catch (requestError) {
 			error = requestError instanceof Error ? requestError.message : 'Auto-mix failed.';
 		}
@@ -855,6 +939,11 @@
 							confirmation before applying a plan.
 						</p>{/each}
 				</div>
+				<div class="suggestion-chips">
+					{#each assistantSuggestions as suggestion (suggestion)}
+						<button type="button" onclick={() => useSuggestion(suggestion)}>{suggestion}</button>
+					{/each}
+				</div>
 				<form
 					class="assistant-form"
 					onsubmit={(event) => {
@@ -873,92 +962,7 @@
 					>
 				</form>
 				{#if recommendation}<article class="recommendation">
-						<span>{recommendation.recommendation_type.replaceAll('_', ' ')}</span><strong
-							>{Math.round(recommendation.confidence * 100)}% grounded confidence</strong
-						>
-						<p>{recommendation.explanation}</p>
-						{#if recommendation.remembered_constraints?.length}
-							<section class="assistant-detail">
-								<b>Remembered constraints</b>
-								<ul>
-									{#each recommendation.remembered_constraints as constraint, constraintIndex (`${constraint}-${constraintIndex}`)}<li
-										>
-											{constraint}
-										</li>{/each}
-								</ul>
-							</section>
-						{/if}
-						{#if recommendation.calculations}
-							<div class="assistant-math">
-								<span
-									>Current<strong
-										>{formatTime(recommendation.calculations.current_duration_ms)}</strong
-									></span
-								>
-								<span
-									>Proposed<strong
-										>{formatTime(recommendation.calculations.proposed_duration_ms)}</strong
-									></span
-								>
-								<span
-									>Overlap<strong
-										>{formatTime(recommendation.calculations.transition_overlap_ms)}</strong
-									></span
-								>
-								<span
-									>BPM jump<strong
-										>{recommendation.calculations.average_bpm_jump == null
-											? 'No data'
-											: recommendation.calculations.average_bpm_jump.toFixed(1)}</strong
-									></span
-								>
-							</div>
-						{/if}
-						{#if recommendation.proposed_order?.length}
-							<section class="assistant-detail">
-								<b>Proposed order</b>
-								<ol>
-									{#each recommendation.proposed_order as itemId (itemId)}<li>
-											{assistantItemLabel(itemId)}
-										</li>{/each}
-								</ol>
-							</section>
-						{/if}
-						{#if recommendation.transition_changes?.length}
-							<section class="assistant-detail">
-								<b>Transition changes</b>
-								<ul>
-									{#each recommendation.transition_changes as change (change.item_id)}<li>
-											{assistantItemLabel(change.item_id)}: {change.transition_type.replaceAll(
-												'_',
-												' '
-											)}
-											· {(change.duration_ms / 1000).toFixed(1)}s
-										</li>{/each}
-								</ul>
-							</section>
-						{/if}
-						{#if recommendation.segment_bound_change}
-							<p class="assistant-bound">
-								Saved segment range: {formatTime(
-									recommendation.segment_bound_change.proposed_start_ms
-								)}–{formatTime(recommendation.segment_bound_change.proposed_end_ms)}
-							</p>
-						{/if}
-						{#if recommendation.warnings?.length}
-							<section class="assistant-detail warning-list">
-								<b>Warnings</b>
-								<ul>
-									{#each recommendation.warnings as warning, warningIndex (`${warning}-${warningIndex}`)}<li
-										>
-											{warning}
-										</li>{/each}
-								</ul>
-							</section>
-						{/if}
-						{#if recommendation.reason_tags?.length}<small
-								>{recommendation.reason_tags.join(' · ')}</small
-							>{/if}
+						<p class="recommendation-headline">{summaryHeadline(recommendation)}</p>
 						<div class="row-actions">
 							{#if recommendation.segment_bound_change}
 								<button onclick={playAiRecommendation}>Play AI</button><button
@@ -972,6 +976,96 @@
 									>{busy === 'assistant-apply' ? 'Validating…' : 'Confirm and apply plan'}</button
 								>{/if}<button onclick={keepMine}>Keep Mine</button>
 						</div>
+						<details class="assistant-more">
+							<summary
+								>Why? <span class="confidence-pill"
+									>{Math.round(recommendation.confidence * 100)}% grounded</span
+								></summary
+							>
+							<p>{recommendation.explanation}</p>
+							{#if recommendation.remembered_constraints?.length}
+								<section class="assistant-detail">
+									<b>Remembered constraints</b>
+									<ul>
+										{#each recommendation.remembered_constraints as constraint, constraintIndex (`${constraint}-${constraintIndex}`)}<li
+											>
+												{constraint}
+											</li>{/each}
+									</ul>
+								</section>
+							{/if}
+							{#if recommendation.calculations}
+								<div class="assistant-math">
+									<span
+										>Current<strong
+											>{formatTime(recommendation.calculations.current_duration_ms)}</strong
+										></span
+									>
+									<span
+										>Proposed<strong
+											>{formatTime(recommendation.calculations.proposed_duration_ms)}</strong
+										></span
+									>
+									<span
+										>Overlap<strong
+											>{formatTime(recommendation.calculations.transition_overlap_ms)}</strong
+										></span
+									>
+									<span
+										>BPM jump<strong
+											>{recommendation.calculations.average_bpm_jump == null
+												? 'No data'
+												: recommendation.calculations.average_bpm_jump.toFixed(1)}</strong
+										></span
+									>
+								</div>
+							{/if}
+							{#if recommendation.proposed_order?.length}
+								<section class="assistant-detail">
+									<b>Proposed order</b>
+									<ol>
+										{#each recommendation.proposed_order as itemId (itemId)}<li>
+												{assistantItemLabel(itemId)}
+											</li>{/each}
+									</ol>
+								</section>
+							{/if}
+							{#if recommendation.transition_changes?.length}
+								<section class="assistant-detail">
+									<b>Transition changes</b>
+									<ul>
+										{#each recommendation.transition_changes as change (change.item_id)}<li>
+												{assistantItemLabel(change.item_id)}: {change.transition_type.replaceAll(
+													'_',
+													' '
+												)}
+												· {(change.duration_ms / 1000).toFixed(1)}s
+											</li>{/each}
+									</ul>
+								</section>
+							{/if}
+							{#if recommendation.segment_bound_change}
+								<p class="assistant-bound">
+									Saved segment range: {formatTime(
+										recommendation.segment_bound_change.proposed_start_ms
+									)}–{formatTime(recommendation.segment_bound_change.proposed_end_ms)}
+								</p>
+							{/if}
+							{#if recommendation.warnings?.length}
+								<section class="assistant-detail warning-list">
+									<b>Warnings</b>
+									<ul>
+										{#each recommendation.warnings as warning, warningIndex (`${warning}-${warningIndex}`)}<li
+											>
+												{warning}
+											</li>{/each}
+									</ul>
+								</section>
+							{/if}
+							{#if recommendation.reason_tags?.length}<small
+									>{recommendation.reason_tags.join(' · ')}</small
+								>{/if}
+						</details>
 					</article>{/if}
 			{/if}
 		</aside>
@@ -984,13 +1078,107 @@
 				<h2>{activeMix?.title || 'Create a Studio draft'}</h2>
 			</div>
 			<div class="draft-controls">
-				<select bind:value={activeMixId} aria-label="Active Studio mix"
-					><option value={0}>Select draft</option>{#each mixes as mix (mix.id)}<option
-							value={mix.id}>{mix.title} · r{mix.revision}</option
-						>{/each}</select
-				><input bind:value={newMixTitle} aria-label="New mix title" /><button onclick={createDraft}
-					>New draft</button
-				>
+				<div class="popover-anchor">
+					<button
+						class="switcher-trigger"
+						onclick={() => {
+							draftSwitcherOpen = !draftSwitcherOpen;
+							newDraftOpen = false;
+						}}
+					>
+						{activeMix ? `${activeMix.title} · r${activeMix.revision}` : 'Select draft'}
+						<span class="chev">⌄</span>
+					</button>
+					{#if draftSwitcherOpen}
+						<div class="popover draft-popover">
+							<input
+								bind:value={draftSearch}
+								placeholder="Search your drafts…"
+								aria-label="Search drafts"
+							/>
+							<div class="draft-group-list">
+								{#each filteredMixGroups as group (group.title)}
+									<div class="draft-group">
+										<button
+											class:selected={group.latest.id === activeMixId}
+											class="draft-row"
+											onclick={() => selectMix(group.latest)}
+										>
+											<span class="draft-row-title">{group.title}</span>
+											<span class="draft-row-meta">
+												<span
+													class="status-pill"
+													class:published={group.latest.status === 'published'}
+													>{group.latest.status}</span
+												>
+												r{group.latest.revision} · {formatRelativeTime(group.latest.createdAt)}
+											</span>
+										</button>
+										{#if group.older.length}
+											<button
+												class="draft-history-toggle"
+												onclick={() => toggleDraftGroup(group.title)}
+											>
+												{expandedDraftGroups.includes(group.title) ? 'Hide' : 'Show'}
+												{group.older.length} earlier revision{group.older.length > 1 ? 's' : ''}
+											</button>
+											{#if expandedDraftGroups.includes(group.title)}
+												{#each group.older as mix (mix.id)}
+													<button
+														class:selected={mix.id === activeMixId}
+														class="draft-row nested"
+														onclick={() => selectMix(mix)}
+													>
+														<span class="draft-row-meta"
+															>r{mix.revision} · {formatRelativeTime(mix.createdAt)}</span
+														>
+													</button>
+												{/each}
+											{/if}
+										{/if}
+									</div>
+								{:else}<p class="empty">No drafts match "{draftSearch}".</p>{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
+				<div class="popover-anchor">
+					<button
+						class="new-draft-trigger"
+						onclick={() => {
+							newDraftOpen = !newDraftOpen;
+							draftSwitcherOpen = false;
+						}}>+ New draft</button
+					>
+					{#if newDraftOpen}
+						<div class="popover new-draft-popover">
+							<div class="mode-tabs">
+								<button
+									class:active={newDraftMode === 'blank'}
+									onclick={() => (newDraftMode = 'blank')}>Blank draft</button
+								><button
+									class:active={newDraftMode === 'auto'}
+									disabled={!savedSegments.length}
+									onclick={() => (newDraftMode = 'auto')}>Auto-generate</button
+								>
+							</div>
+							{#if newDraftMode === 'blank'}
+								<label>Title<input bind:value={newMixTitle} aria-label="New mix title" /></label>
+								<button class="primary" onclick={createDraft}>Create blank draft</button>
+							{:else}
+								<p class="hint">Builds an editable draft from your saved segments.</p>
+								<label>Title<input bind:value={autoMixTitle} placeholder="Draft title" /></label>
+								<label>Intent<input bind:value={autoPrompt} placeholder="Custom intent" /></label>
+								<AutoMixModeSelector
+									value={autoMode}
+									compact
+									onChange={(mode) => (autoMode = mode)}
+								/>
+								<button class="accent" onclick={createAutoMix}>Generate editable draft</button>
+							{/if}
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 
@@ -1117,23 +1305,6 @@
 					>{/if}
 			</div>
 		{/if}
-
-		<div class="auto-mix">
-			<div>
-				<p class="eyebrow">Auto-mix source</p>
-				<h3>My saved segments</h3>
-			</div>
-			<input bind:value={autoMixTitle} placeholder="Draft title" /><input
-				bind:value={autoPrompt}
-				placeholder="Custom intent"
-			/><AutoMixModeSelector
-				value={autoMode}
-				compact
-				onChange={(mode) => (autoMode = mode)}
-			/><button class="accent" disabled={!savedSegments.length} onclick={createAutoMix}
-				>Generate editable draft</button
-			>
-		</div>
 	</section>
 </main>
 
@@ -1315,10 +1486,9 @@
 	.bounds-grid input,
 	.panel > label input,
 	.library-head input,
-	.draft-controls input,
-	.draft-controls select,
+	.draft-popover input,
+	.new-draft-popover input,
 	.mix-meta input,
-	.auto-mix input,
 	.transition-card input,
 	.transition-card select,
 	textarea {
@@ -1332,11 +1502,12 @@
 	.row-actions button,
 	.item-actions button,
 	.render-actions button,
-	.draft-controls button,
+	.draft-controls > .popover-anchor > button,
 	.bounds-grid button,
 	.editor-actions button,
 	.assistant-form button,
-	.auto-mix button,
+	.new-draft-popover button,
+	.suggestion-chips button,
 	.transition-card button {
 		border: 1px solid var(--seam);
 		border-radius: 8px;
@@ -1350,11 +1521,12 @@
 	.row-actions button:hover,
 	.item-actions button:hover,
 	.render-actions button:hover,
-	.draft-controls button:hover,
+	.draft-controls > .popover-anchor > button:hover,
 	.bounds-grid button:hover,
 	.editor-actions button:hover,
 	.assistant-form button:hover,
-	.auto-mix button:hover,
+	.new-draft-popover button:hover,
+	.suggestion-chips button:hover,
 	.transition-card button:hover {
 		border-color: var(--text-faint);
 	}
@@ -1472,8 +1644,7 @@
 		font-size: 12px;
 	}
 	.source-pill,
-	.chips span,
-	.recommendation > span {
+	.chips span {
 		padding: 5px 8px;
 		border-radius: 999px;
 		border: 1px solid var(--seam);
@@ -1594,6 +1765,17 @@
 		letter-spacing: 0.08em;
 		color: var(--amber);
 	}
+	.suggestion-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 12px;
+	}
+	.suggestion-chips button {
+		border-radius: 999px !important;
+		font-size: 11px;
+		padding: 6px 11px !important;
+	}
 	.assistant-form {
 		display: grid;
 		gap: 8px;
@@ -1605,19 +1787,51 @@
 	}
 	.recommendation {
 		display: grid;
-		gap: 8px;
+		gap: 10px;
 		margin-top: 12px;
 		padding: 13px;
 		border: 1px solid rgba(255, 149, 72, 0.35);
 		border-radius: 10px;
 		background: var(--amber-dim);
 	}
-	.recommendation > span {
-		border-color: rgba(255, 149, 72, 0.35);
-		color: var(--amber);
-	}
-	.recommendation p {
+	.recommendation-headline {
 		margin: 0;
+		color: var(--text);
+		font-family: var(--font-display);
+		font-size: 15px;
+		font-weight: 600;
+		line-height: 1.4;
+	}
+	.assistant-more {
+		border-top: 1px solid rgba(255, 149, 72, 0.25);
+		padding-top: 8px;
+	}
+	.assistant-more summary {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--text-dim);
+		font-size: 12px;
+		cursor: pointer;
+		list-style: none;
+	}
+	.assistant-more summary::-webkit-details-marker {
+		display: none;
+	}
+	.assistant-more[open] summary {
+		margin-bottom: 8px;
+	}
+	.confidence-pill {
+		padding: 2px 7px;
+		border-radius: 999px;
+		border: 1px solid rgba(255, 149, 72, 0.35);
+		color: var(--amber);
+		font-family: var(--font-mono);
+		font-size: 9px;
+		text-transform: uppercase;
+	}
+	.assistant-more p {
+		margin: 0 0 8px;
 		color: var(--text-dim);
 		font-size: 12px;
 	}
@@ -1679,8 +1893,139 @@
 		gap: 16px;
 	}
 	.draft-controls {
+		position: relative;
 		display: flex;
 		gap: 7px;
+	}
+	.popover-anchor {
+		position: relative;
+	}
+	.switcher-trigger,
+	.new-draft-trigger {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		border: 1px solid var(--seam);
+		border-radius: 8px;
+		background: var(--panel-raised);
+		color: var(--text);
+		padding: 8px 12px;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.switcher-trigger .chev {
+		color: var(--text-faint);
+		font-size: 11px;
+	}
+	.popover {
+		position: absolute;
+		top: calc(100% + 8px);
+		left: 0;
+		z-index: 20;
+		display: grid;
+		gap: 10px;
+		width: max(280px, 100%);
+		padding: 12px;
+		border: 1px solid var(--seam);
+		border-radius: 12px;
+		background: var(--panel-raised);
+		box-shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
+	}
+	.draft-popover {
+		width: 320px;
+	}
+	.draft-group-list {
+		display: grid;
+		gap: 4px;
+		max-height: 320px;
+		overflow: auto;
+	}
+	.draft-group {
+		display: grid;
+		gap: 2px;
+	}
+	.draft-row {
+		display: grid;
+		gap: 3px;
+		width: 100%;
+		border: 1px solid transparent;
+		border-radius: 8px;
+		background: var(--well);
+		color: var(--text);
+		padding: 8px 10px;
+		text-align: left;
+		cursor: pointer;
+	}
+	.draft-row.selected {
+		border-color: rgba(63, 230, 187, 0.5);
+		background: var(--cyan-dim);
+	}
+	.draft-row.nested {
+		margin-left: 12px;
+		background: transparent;
+	}
+	.draft-row-title {
+		font-weight: 600;
+	}
+	.draft-row-meta {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--text-faint);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		text-transform: uppercase;
+	}
+	.status-pill {
+		padding: 2px 6px;
+		border-radius: 999px;
+		background: var(--well);
+		border: 1px solid var(--seam);
+	}
+	.status-pill.published {
+		color: var(--cyan);
+		border-color: rgba(63, 230, 187, 0.4);
+	}
+	.draft-history-toggle {
+		border: 0;
+		background: transparent;
+		color: var(--text-faint);
+		font-size: 11px;
+		text-align: left;
+		cursor: pointer;
+		padding: 4px 10px;
+	}
+	.new-draft-popover {
+		width: 280px;
+	}
+	.mode-tabs {
+		display: flex;
+		gap: 6px;
+	}
+	.mode-tabs button {
+		flex: 1;
+		border: 1px solid var(--seam);
+		border-radius: 8px;
+		background: var(--well);
+		color: var(--text-dim);
+		padding: 7px;
+		cursor: pointer;
+	}
+	.mode-tabs button.active {
+		border-color: rgba(63, 230, 187, 0.5);
+		background: var(--cyan-dim);
+		color: var(--cyan);
+	}
+	.new-draft-popover label {
+		display: grid;
+		gap: 4px;
+		color: var(--text-dim);
+		font-size: 11px;
+	}
+	.new-draft-popover .hint {
+		margin: 0;
+		color: var(--text-faint);
+		font-size: 11px;
 	}
 	.timeline {
 		display: flex;
@@ -1789,18 +2134,6 @@
 		font-size: 11px;
 		font-variant-numeric: tabular-nums;
 	}
-	.auto-mix {
-		display: grid;
-		grid-template-columns: auto minmax(150px, 0.6fr) minmax(220px, 1fr) minmax(300px, 1.2fr) auto;
-		align-items: center;
-		gap: 9px;
-		padding-top: 14px;
-		border-top: 1px solid var(--seam);
-	}
-	.auto-mix h3 {
-		font-family: var(--font-display);
-		font-weight: 600;
-	}
 	button:disabled {
 		opacity: 0.45;
 		cursor: not-allowed;
@@ -1810,12 +2143,6 @@
 			grid-template-columns: 1fr 1fr;
 		}
 		.assistant-panel {
-			grid-column: 1/-1;
-		}
-		.auto-mix {
-			grid-template-columns: 1fr 1fr;
-		}
-		.auto-mix > div {
 			grid-column: 1/-1;
 		}
 	}
@@ -1839,9 +2166,6 @@
 			grid-template-columns: 1fr;
 		}
 		.bounds-grid {
-			grid-template-columns: 1fr;
-		}
-		.auto-mix {
 			grid-template-columns: 1fr;
 		}
 		.timeline {
