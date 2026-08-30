@@ -147,8 +147,9 @@ test('a user uploads songs, builds and publishes a Studio mix, plays it, and see
 	await saveTrackSegment(firstTitle, firstSegment);
 	await saveTrackSegment(secondTitle, secondSegment);
 
+	await page.getByRole('button', { name: '+ New draft' }).click();
 	await page.getByLabel('New mix title').fill(mixTitle);
-	await page.getByRole('button', { name: 'New draft' }).click();
+	await page.getByRole('button', { name: 'Create blank draft' }).click();
 	await expect(
 		page.getByText('Draft created. Every timeline change is saved immediately.')
 	).toBeVisible();
